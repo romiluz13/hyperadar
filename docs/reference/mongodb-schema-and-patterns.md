@@ -118,6 +118,8 @@ db.createCollection("posts", {
 
 Start with `moderate`/`warn` during dev, tighten to `strict`/`error` for production.
 
+**TTL on time-series (MongoDB 8.x gotcha):** a plain TTL index on a time-series `timeField` fails with `InvalidOptions: TTL indexes on time-series collections require a partialFilterExpression on the metaField`. For v1 we skipped the TTL (age-out is a nice-to-have). To add it later, use a `partialFilterExpression` on the `metaField`, or age out via a scheduled aggregation that moves old signals to a cold collection.
+
 ## Anti-patterns to avoid
 
 - **Splitting homogeneous data into many collections** (e.g. one collection per source). Keep all posts in `posts`, all signals in `signals`. Distinguish by a `source` field (polymorphic pattern).
