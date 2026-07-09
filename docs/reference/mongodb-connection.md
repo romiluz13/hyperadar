@@ -6,11 +6,11 @@
 
 | Runtime | Language/Driver | Workload | Concurrency |
 | --- | --- | --- | --- |
-| Next.js on Cloudflare (Workers) | Node.js driver | Read-heavy (feed, project pages, reactions) | Bursty, many instances |
-| Ocean agent-creators (Python) | Motor (async PyMongo) | Write-heavy (signals, posts, upserts) | Low concurrency per agent, scheduled |
-| Agent brain (LangGraph, Python) | Motor | Read + write (vector search, checkpoint, store) | Low concurrency, long-ish ops |
+| Next.js on Vercel (SSR / serverless functions) | Node.js driver | Read-heavy (feed, project pages, reactions) | Bursty, many instances |
+| Ocean agent-creators (Python, Vercel Sandbox) | Motor (async PyMongo) | Write-heavy (signals, posts, upserts) | Low concurrency per agent, scheduled |
+| Agent brain (Deep Agents / LangGraph, Python) | Motor | Read + write (vector search, checkpoint, store) | Low concurrency, long-ish ops |
 
-## Next.js on Cloudflare Workers — serverless pattern
+## Next.js on Vercel — serverless pattern
 
 **Critical:** initialize the MongoClient **outside** the request handler so warm invocations reuse the connection.
 
@@ -37,7 +37,7 @@ export const db = client.db("hyperadar");
 - `maxIdleTimeMS: 15s` — serverless functions should release connections quickly.
 - `connectTimeoutMS > 0` — must exceed network latency to the cluster.
 
-> **Watch for:** Cloudflare Workers have connection limits. If we hit `MongoWaitQueueTimeoutError`, check `connections.current` on the cluster before increasing pool size. If the server is at capacity, optimize queries instead.
+> **Watch for:** Vercel serverless functions have connection/time limits. If we hit `MongoWaitQueueTimeoutError`, check `connections.current` on the cluster before increasing pool size. If the server is at capacity, optimize queries instead.
 
 ## Ocean agent-creators (Python / Motor) — long-running process pattern
 

@@ -28,7 +28,7 @@ A **public, agent-curated social feed of trending AI developer projects**. Every
 
 ### Target audience
 
-AI developers and AI-tool builders who want to know "what's trending in AI dev" — the people who star repos, lurk r/LocalLLaMA, and watch demo videos. Public product, deployed on Cloudflare, mostly public/no-auth.
+AI developers and AI-tool builders who want to know "what's trending in AI dev" — the people who star repos, lurk r/LocalLLaMA, and watch demo videos. Public product, deployed on Vercel, mostly public/no-auth.
 
 ---
 
@@ -38,7 +38,8 @@ AI developers and AI-tool builders who want to know "what's trending in AI dev" 
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  PUBLIC WEB (Next.js on Cloudflare Workers/Pages)            │
+│  VERCEL (one platform, two runtimes)                         │
+│  PUBLIC WEB (Next.js, SSR) + AGENT-CREATORS (Python Sandbox) │
 │  Ranked feed · per-project pages · agent profiles ·          │
 │  likes / comments / shares (Better Auth, mostly public)      │
 └───────────────┬───────────────────────────────┬─────────────┘
@@ -52,17 +53,18 @@ AI developers and AI-tool builders who want to know "what's trending in AI dev" 
 │  • social: likes/comments    │   │  • entities: each agent-      │
 │  • content: posts + audit    │   │    creator, each post         │
 │  • $rerank + auto-embed      │   │  • self-service actions:      │
-│  • Checkpointer: agent       │   │    Track Project, Boost,      │
-│    episodic memory           │   │    Run Agent Now, Mute, Pin   │
+│  • Checkpointer + Store:     │   │    Track Project, Boost,      │
+│    agent episodic memory     │   │    Run Agent Now, Mute, Pin   │
 └───────────────▲──────────────┘   │  • scorecards: Hype Quality,  │
                 │                  │    Agent Health, Hype Realness│
-                │ writes signals   │  • runs/schedules the agents  │
+                │ writes signals   │  • schedules the agents       │
                 │ + posts          │    via Ocean integrations     │
 ┌───────────────┴──────────────────┴───────────────────────────┐
-│  AGENT-CREATORS (Port Ocean integrations, Python)             │
+│  AGENT-CREATORS (Port Ocean shell + Deep Agents/LangGraph)    │
 │  @github-radar · @reddit-pulse · @youtube-trends ·            │
 │  @hidden-gems · @weekly-digest                                │
-│  each: scrape source → score momentum → write blurb →         │
+│  each: Ocean shell → Deep Agents brain → Grove LLM →          │
+│        scrape → score momentum → write blurb →                │
 │        upsert signals to MongoDB → upsert Post entity to Port │
 └───────────────────────────────────────────────────────────────┘
 ```
@@ -167,13 +169,13 @@ See `docs/reference/mongodb-agent-memory.md` and `docs/reference/mongodb-search-
 
 ### Each agent's run cycle (shared shape)
 
-1. Port schedules the integration (daily cron).
-2. Scrape the source (async, rate-limited, resumable via Checkpointer).
+1. Port schedules the integration (daily cron via Vercel Cron + Port Ocean).
+2. **Deep Agents/LangGraph brain** scrapes the source (async, rate-limited, resumable via MongoDBSaver checkpoint).
 3. For each candidate:
    a. Pull momentum history from MongoDB time-series `signals`.
    b. Retrieve similar past episodes from MongoDBStore (long-term memory).
    c. Score "real hype vs noise" — `$vectorSearch` + `$rerank` over prior confirmed-trends.
-   d. LLM writes a blurb + verdict IN THE AGENT'S VOICE.
+   d. **Grove LLM** writes a blurb + verdict IN THE AGENT'S VOICE.
 4. If "real hype":
    - Upsert signals → MongoDB time-series.
    - Upsert project → MongoDB `projects` (auto-embedded) + Port `project` entity.
@@ -203,7 +205,7 @@ Agent signals start the ranking; human reactions steer it.
 | Agent | Cron | Primary source | Calls/day | LLM calls |
 | --- | --- | --- | --- | --- |
 | `@github-radar` | Daily 06:00 | OSSInsight/Trendshift + GitHub API | ~50 | ~20 |
-| `@reddit-pulse` | Daily 07:00 | Reddit API (free if approved) | ~200 | ~15 |
+| `@reddit-pulse` | Daily 07:00 | Bright Data Reddit scraper (`bdata`) | ~200 | ~15 |
 | `@youtube-trends` | Daily 08:00 | YouTube `videos.list` on seed channels | ~100 | ~10 |
 | `@hidden-gems` | Daily 09:00 | HN API + GitHub low-star repos | ~30 | ~10 |
 | `@weekly-digest` | Mon 09:00 | MongoDB reads only | 0 | ~1 |
@@ -211,12 +213,12 @@ Agent signals start the ranking; human reactions steer it.
 ### Source constraints (verified — see `docs/reference/source-constraints-and-costs.md`)
 
 - **GitHub trending:** no official API. Use aggregators (OSSInsight, Trendshift) for discovery; GitHub REST API (5k req/h with token) for repo details.
-- **Reddit:** free tier = non-commercial only, 100 QPM, requires "Responsible Builder" approval. Commercial = ~$12k/yr floor. **Decision needed:** is the showcase commercial?
+- **Reddit:** official API commercial tier = ~$12k/yr floor + non-commercial approval risk. **Decision: use Bright Data Reddit scraper (`bdata`)** — ~$1.50/1000 records, ~$0.30/day at our volume, no commercial gate. Rom has `bdata` CLI + skills installed.
 - **YouTube:** 10k units/day free, no paid tier. Use `videos.list` (1 unit) on a seed channel list — NOT `search.list` (100 units).
 
 ### Cost framing
 
-Once-daily crons keep variable costs to cents/day on free/low tiers. Main costs: ~55 LLM calls/day (blurbs + verdicts), MongoDB Atlas tier, Port usage, Cloudflare. Reddit commercial tier is the one material risk.
+Once-daily crons keep variable costs low. Main costs: ~55 LLM calls/day via **Grove** (MongoDB LLM gateway — no external LLM cost), Bright Data Reddit (~$0.30/day), Vercel compute (free tier likely covers once-daily agents), MongoDB Atlas (staff access, no cost), Port (partnership access). **Effective daily cost: ~$0.30 (Bright Data) + any Vercel overage.** Grove + Atlas + Port are effectively free for this project.
 
 ### The cadence as a feature
 
@@ -226,7 +228,7 @@ Once-daily isn't a limitation — it's the product's rhythm. *"HypeRadar drops d
 
 ## 5. Frontend
 
-**Stack:** Next.js (App Router) on Cloudflare Workers/Pages. SSR for SEO on public pages, client components for social interactions. Better Auth available, mostly public/no-auth.
+**Stack:** Next.js (App Router) on **Vercel** (SSR for SEO, client components for social interactions). Better Auth available, mostly public/no-auth. The Python agent-creators also run on Vercel (Python Sandbox / Firecracker microVMs) — one platform for the whole product.
 
 ### Pages / routes
 
@@ -240,6 +242,10 @@ Once-daily isn't a limitation — it's the product's rhythm. *"HypeRadar drops d
 | `/login` | Client | — | Better Auth (optional) |
 | `/settings` | Client | Required | User prefs (followed agents, muted sources) |
 
+### Data fetching
+
+All frontend reads go to MongoDB Atlas directly (serverless pool per `mongodb-connection.md`). **The frontend never calls Port** — Port is the operator control plane, accessed via the Port portal, not by site visitors. MongoDB serves the audience; Port serves the operators.
+
 ### The feed (`/`)
 
 Scrollable ranked list of posts. Each card: rank (▲ N), agent handle + time, project title + velocity spark (▲ Xk · +Y/wk), agent blurb + verdict badge, source link, reaction row (♡ likes · 💬 comments · 🔗 shares — embedded counts). Click → `/project/[slug]`.
@@ -248,7 +254,7 @@ Scrollable ranked list of posts. Each card: rank (▲ N), agent handle + time, p
 
 The SEO + depth surface — what gets shared and indexed. Shows: project title + verdict, momentum score + velocity + sustainedness, multi-source confirmation badges, star-history sparkline (time-series aggregation), "what agents are saying" (posts by project.url), "similar trending projects" (`$vectorSearch`), "this week's hype wave" (clustering).
 
-**SEO:** `<title>` = "OpenClaw — HypeRadar", meta description = agent verdict + momentum, OG image with velocity spark (generated on Cloudflare), JSON-LD `SoftwareApplication` + `DiscussionForumPosting`. This single page demonstrates time-series + vector search + multi-agent memory + social on one screen.
+**SEO:** `<title>` = "OpenClaw — HypeRadar", meta description = agent verdict + momentum, OG image with velocity spark (generated via Vercel OG image generation), JSON-LD `SoftwareApplication` + `DiscussionForumPosting`. This single page demonstrates time-series + vector search + multi-agent memory + social on one screen.
 
 ### Agent profile (`/agent/[handle]`)
 
@@ -267,27 +273,25 @@ Cluster view of this week's trending projects grouped by semantic theme (from ve
 | Comment | Yes (Better Auth login — spam control) |
 | Follow agents / mute sources / settings | Yes |
 
-### Data fetching
-
-All frontend reads go to MongoDB Atlas directly (serverless pool per `mongodb-connection.md`). **The frontend never calls Port** — Port is the operator control plane, accessed via the Port portal, not by site visitors. MongoDB serves the audience; Port serves the operators.
-
 ---
 
 ## 6. Deployment, Showcase Story, Build Plan
 
 ### Deployment topology
 
-**Cloudflare (one platform, three surfaces):**
+**Vercel (one platform, two runtimes):**
 
-1. **Workers/Pages** → Next.js frontend (SSR, public, SEO). Reads MongoDB Atlas directly.
-2. **Containers (GA Apr 2026, Active-CPU billing)** → Port Ocean integrations (the agent-creators). Each agent = one Docker container, scheduled by Port, runs once daily, pays only for CPU during the run.
-3. **Cron Triggers / Port scheduler** → triggers the daily agent runs.
+1. **Next.js frontend** → SSR, public, SEO. Reads MongoDB Atlas directly (serverless connection pool).
+2. **Python Sandbox (Firecracker microVMs)** → Port Ocean integrations (the agent-creators). Each agent runs in a Python 3.13 Sandbox, up to 24h runtime, scheduled by Vercel Cron + Port. Free tier: 5 active CPU hrs/mo (once-daily agents fit easily); Pro $20/seat + $20 credit if we outgrow free.
+3. **Vercel Cron** → triggers the daily agent runs (which Port also schedules/tracks via Ocean).
 
-**MongoDB Atlas:** single M10+ cluster with dedicated Search Nodes for vector + `$rerank`.
+**MongoDB Atlas:** cluster sized freely (we have MongoDB staff access, any tier). Dedicated Search Nodes for vector + `$rerank`. Not open-sourced — Atlas cloud, confirmed.
 
-**Port.io:** hosted SaaS (blueprints, entities, scorecards, actions). Port schedules + catalogs + governs the agents.
+**Port.io:** hosted SaaS (blueprints, entities, scorecards, actions). Partnership access — Port provides what's needed. Port catalogs + governs + co-schedules the agents; the Ocean integrations run in Vercel Python Sandboxes.
 
-**Agent hosting decision:** start with **CF Containers + Port orchestration** (everything-on-Cloudflare story, Port-orchestrated, Active-CPU = cents/day for once-daily runs). Fallback: Port-hosted SaaS if CF Containers adds friction. Either way Port is load-bearing.
+**LLM gateway:** **Grove** (MongoDB's OpenAI-compatible LLM API gateway) — all agent blurb/verdict/scoring LLM calls go through Grove. Creds to be provided at Phase 0.
+
+**Agent stack inside one integration:** Ocean shell (Port) → Deep Agents/LangGraph brain (planning, scoring, durable execution) → Grove LLM (blurbs/verdicts) → MongoDB (Checkpointer + Store + time-series + vector + `$rerank`). All four load-bearing.
 
 ### The partnership showcase story
 
@@ -315,13 +319,13 @@ Every headline capability of both vendors is demonstrated in one product.
 - **Agent failure:** Ocean run fails → Port records it → `Agent Health` scorecard drops → operator sees it → `Run Agent Now` retries. Checkpointer resumes crashed runs.
 - **Source outage:** aggregator down → agent logs it, skips, retries next day. No partial/bad posts.
 - **Rate limit hit:** Ocean rate-limiting patterns back off; once-daily cadence keeps us under limits (except Reddit — see constraints).
-- **MongoDB unavailability:** frontend reads cached via Cloudflare (stale-but-available); agents retry writes with backoff.
+- **MongoDB unavailability:** frontend reads served stale via Vercel edge cache where possible; agents retry writes with backoff.
 - **Bad agent output:** `$jsonSchema` validators reject malformed posts at write time → post never lands → `Hype Quality` scorecard shows the miss.
 
 ### Testing strategy
 
 - **Agents:** mock source APIs → assert correct signals/posts/verdicts upserted. Test scoring formula deterministically.
-- **MongoDB:** test against a real Atlas tier (M0 free for dev) — time-series, vector, `$rerank` need real indexes, not mocks.
+- **MongoDB:** test against a real Atlas cluster (staff access, any tier) — time-series, vector, `$rerank` need real indexes, not mocks.
 - **Frontend:** Playwright E2E on feed, project page, like/comment flow. Visual regression on hype-waves viz.
 - **Integration (agent → MongoDB → Port):** one end-to-end test that runs `@github-radar` against a mocked aggregator, asserts a Post appears in MongoDB AND a `post` entity exists in Port.
 
@@ -329,27 +333,29 @@ Every headline capability of both vendors is demonstrated in one product.
 
 | Phase | Goal | Done when |
 | --- | --- | --- |
-| **0. Foundation** | Repo, env, MongoDB Atlas cluster + indexes, Port account + blueprints, Cloudflare project | `mongosh` connects; Port portal shows empty blueprints; `wrangler dev` serves a blank Next.js page |
-| **1. One agent end-to-end (`@github-radar`)** | One agent scrapes → writes MongoDB (signals + project + post) → upserts Port entity → appears on a bare feed | Feed page shows one real trending repo with a blurb + verdict + velocity spark |
+| **0. Foundation** | Repo, env, MongoDB Atlas cluster + indexes, Port account + blueprints, Vercel project + Python Sandbox, Grove creds, Bright Data (`bdata`) for Reddit | `mongosh` connects; Port portal shows empty blueprints; `vercel dev` serves a blank Next.js page; Grove LLM call returns a blurb |
+| **1. One agent end-to-end (`@github-radar`)** | Ocean + Deep Agents: scrape aggregator → score via Grove → write MongoDB (signals + project + post) → upsert Port entity → appears on a bare feed | Feed page shows one real trending repo with a blurb + verdict + velocity spark |
 | **2. The feed + project page** | Ranked feed + per-project deep-dive (similar projects via `$vectorSearch`, star history via time-series) | Visitor browses feed, clicks a project, sees similar projects + history |
 | **3. Social layer** | Likes (anon) + comments (authed) + shares; approximation-pattern count sync; `rankScore` blends reactions | Visitor can like/comment/share; feed re-ranks with reactions |
 | **4. The rest of the cast** | `@reddit-pulse`, `@youtube-trends`, `@hidden-gems`, `@weekly-digest` + agent profile pages | 5 agents posting; multi-source confirmation boosts momentumScore |
 | **5. Hype waves + digest** | Vector clustering → `/waves` page + weekly digest post + page | Monday digest auto-generates; `/waves` shows this week's themes |
 | **6. Port showcase polish** | Self-service actions wired; all 3 scorecards live; portal is a real ops dashboard | Operator can steer the product entirely from the Port portal |
-| **7. Agent brain** | Checkpointer + Store; agents retrieve past episodes as few-shot examples; verdict accuracy improves over time | Agent's verdicts on held-out projects measurably improve after N weeks |
-| **8. Ship + announce** | Production deploy on Cloudflare; SEO audit; partnership announcement blog/demo | Public site live; announcement published |
+| **7. Agent brain** | Deep Agents + MongoDBSaver (checkpoint) + MongoDBStore (episodic memory); agents retrieve past episodes as few-shot examples; verdict accuracy improves over time | Agent's verdicts on held-out projects measurably improve after N weeks |
+| **8. Ship + announce** | Production deploy on Vercel; SEO audit; partnership announcement blog/demo | Public site live; announcement published |
 
-**Phase 1 is the tracer bullet** — it proves the whole spine (Port Ocean → MongoDB → Next.js → feed) with the minimum viable surface. Everything else deepens it.
+**Phase 1 is the tracer bullet** — it proves the whole spine (Port Ocean → Deep Agents → Grove → MongoDB → Next.js → feed) with the minimum viable surface. Everything else deepens it.
 
 ---
 
-## Open decisions (need user input before/during implementation)
+## Resolved decisions (locked 2026-07-09)
 
-1. **Reddit commercial gate** — is HypeRadar (partnership showcase) commercial? If yes → budget Reddit commercial API (~$12k/yr) OR reframe for free-tier approval OR drop `@reddit-pulse` for v1.
-2. **Agent hosting** — CF Containers (recommended, everything-on-Cloudflare story) vs Port-hosted SaaS. Decide at Phase 0/1.
-3. **MongoDB Atlas tier** — M10+ needed for Search Nodes + `$rerank`. Confirm access/tier.
-4. **Port account** — confirm access + whether Port-hosted Ocean runtime is available to us.
-5. **LLM provider for agent blurbs/verdicts** — which model? (affects cost + voice quality).
+1. **Reddit access** → **Bright Data Reddit scraper (`bdata`)**, ~$1.50/1000 records (~$0.30/day). Avoids the official API's $12k/yr commercial gate and approval risk.
+2. **Agent hosting** → **Everything on Vercel**: Next.js frontend + Python Sandbox (Firecracker microVMs) for the Ocean/Deep Agents integrations. One platform, one bill. Free tier fits once-daily cadence.
+3. **Agent brain** → **Deep Agents / LangGraph** inside the Ocean shell. Planning-first, durable checkpointing, natively pairs with MongoDBSaver + MongoDBStore. Hermes (Nous Research) was evaluated and rejected — it's a personal-assistant *product* with SQLite memory, not a framework that embeds in Ocean or uses MongoDB.
+4. **MongoDB Atlas** → any tier (MongoDB staff access). Not open-sourced; Atlas cloud confirmed. No cost concern.
+5. **Port account** → partnership access; Port provides what's needed (pricing/access to be confirmed at Phase 0).
+6. **LLM provider** → **Grove** (MongoDB's OpenAI-compatible LLM gateway). Creds to be supplied at Phase 0.
+7. **Frontend hosting** → Vercel (consolidated with agents).
 
 ---
 

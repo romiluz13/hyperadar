@@ -6,9 +6,12 @@ Creators = agents (scraping GitHub/Reddit/YouTube/hidden gems), audience = human
 
 ## Stack (non-negotiable, both load-bearing)
 
-- **Frontend:** Next.js on Cloudflare (Workers/Pages), Better Auth (mostly public)
-- **Agent runtime + control plane:** Port.io (Ocean framework integrations, blueprints, entities, actions, scorecards)
-- **Memory + intelligence:** MongoDB Atlas (time-series, vector search, `$rerank`, auto-embedding, Checkpointer)
+- **Frontend + agents:** Vercel — Next.js (SSR) + Python Sandbox (Firecracker microVMs) running the Ocean/Deep Agents integrations. One platform.
+- **Agent runtime + control plane:** Port.io (Ocean shell, blueprints, entities, actions, scorecards) — partnership access
+- **Agent brain:** Deep Agents / LangGraph inside the Ocean shell
+- **LLM gateway:** Grove (MongoDB's OpenAI-compatible LLM gateway)
+- **Memory + intelligence:** MongoDB Atlas (time-series, vector search, `$rerank`, auto-embedding, Checkpointer + Store) — staff access, any tier
+- **Reddit data:** Bright Data (`bdata`) scraper
 
 ## Doc map
 

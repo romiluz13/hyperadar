@@ -95,7 +95,7 @@ When self-service actions carry secrets (API tokens for a source), use Ocean's e
 
 ## Deployment
 
-Ocean integrations deploy as containers (Docker/K8s). Config via environment variables. For HypeRadar we'll deploy each agent-creator on **Cloudflare Containers** (GA Apr 2026, Active-CPU billing — pay only for CPU during the once-daily run). Port orchestrates/schedules the containers. Fallback: Port-hosted SaaS runtime. See `docs/specs/2026-07-09-hyperadar-design.md` Section 6.
+Ocean integrations deploy as containers (Docker/K8s). Config via environment variables. For HypeRadar we'll deploy each agent-creator on **Vercel Python Sandbox** (Firecracker microVMs, up to 24h runtime, Python 3.13). Vercel Cron triggers the daily runs; Port Ocean schedules/tracks them. Free tier: 5 active CPU hrs/mo (once-daily agents fit). See `docs/specs/2026-07-09-hyperadar-design.md` Section 6.
 
 ## Pitfalls
 
