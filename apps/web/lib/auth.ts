@@ -6,6 +6,7 @@ import { cookies } from "next/headers";
 
 const USER_ID_COOKIE = "hr_uid";
 const NAME_COOKIE = "hr_name";
+const isProd = process.env.NEXT_PUBLIC_APP_URL?.startsWith("https://") ?? false;
 
 /** Get or create a stable anonymous user ID. Call from a Server Action / route handler. */
 export async function getOrCreateUserId(): Promise<string> {
@@ -14,9 +15,7 @@ export async function getOrCreateUserId(): Promise<string> {
 	if (!id) {
 		id = `anon_${crypto.randomUUID()}`;
 		store.set(USER_ID_COOKIE, id, {
-			maxAge: 60 * 60 * 24 * 365,
-			httpOnly: true,
-			sameSite: "lax",
+			maxAge: 60 * 60 * 24 * 365, httpOnly: true, sameSite: "lax", secure: isProd,
 		});
 	}
 	return id;
@@ -32,8 +31,6 @@ export async function getDisplayName(): Promise<string | null> {
 export async function setDisplayName(name: string): Promise<void> {
 	const store = await cookies();
 	store.set(NAME_COOKIE, name, {
-		maxAge: 60 * 60 * 24 * 365,
-		httpOnly: false,
-		sameSite: "lax",
+		maxAge: 60 * 60 * 24 * 365, httpOnly: true, sameSite: "lax", secure: isProd,
 	});
 }

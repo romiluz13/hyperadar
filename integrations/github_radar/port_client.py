@@ -25,6 +25,12 @@ def _token() -> str:
     global _cached_token
     if _cached_token:
         return _cached_token
+    return _refresh_token()
+
+
+def _refresh_token() -> str:
+    """Fetch a fresh Port access token (the old one may have expired)."""
+    global _cached_token
     body = json.dumps({"clientId": _client_id, "clientSecret": _client_secret}).encode()
     req = urllib.request.Request(
         f"{BASE}/auth/access_token",
@@ -41,7 +47,7 @@ def _token() -> str:
     return tok
 
 
-def _req(method: str, path: str, body: dict | None = None) -> dict:
+def _req(method: str, path: str, body: dict | None = None, _retried: bool = False) -> dict:
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(
         f"{BASE}{path}",
@@ -56,7 +62,16 @@ def _req(method: str, path: str, body: dict | None = None) -> dict:
         with urllib.request.urlopen(req) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
-        return json.loads(e.read())
+        # 401 → token expired; refresh once and retry
+        if e.code == 401 and not _retried:
+            _refresh_token()
+            return _req(method, path, body, _retried=True)
+        try:
+            return json.loads(e.read())
+        except json.JSONDecodeError:
+            return {"ok": False, "error": "http_error", "status": e.code, "message": str(e)}
+    except urllib.error.URLError as e:
+        return {"ok": False, "error": "network_error", "message": str(e)}
 
 
 def _upsert(blueprint: str, identifier: str, payload: dict) -> dict:
@@ -167,6 +182,16 @@ def upsert_post(
 
 
 def _slug(s: str) -> str:
-    """Make a Port-safe entity identifier from a URL/string."""
+    """Make a Port-safe entity identifier from a URL/string.
+
+    For GitHub URLs, produces owner-repo (matching the web slug in lib/slug.ts
+    and mongo.py) so the Port entity, MongoDB doc, and web route all share one key.
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(s)
+    parts = [p for p in parsed.path.split("/") if p]
+    if parsed.hostname == "github.com" and len(parts) >= 2:
+        return f"{parts[0]}-{parts[1]}".lower()[:60]
+    # Fallback: alphanumeric + hyphen
     keep = [c if c.isalnum() else "-" for c in s]
     return "".join(keep).strip("-")[:60] or "entity"

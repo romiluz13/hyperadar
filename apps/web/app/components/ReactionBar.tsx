@@ -6,12 +6,14 @@ type Props = {
 	postId: string;
 	initialLikes: number;
 	initialShares: number;
+	initialComments: number;
 };
 
-export function ReactionBar({ postId, initialLikes, initialShares }: Props) {
+export function ReactionBar({ postId, initialLikes, initialShares, initialComments }: Props) {
 	const [liked, setLiked] = useState(false);
 	const [likes, setLikes] = useState(initialLikes);
 	const [shares, setShares] = useState(initialShares);
+	const [comments] = useState(initialComments);
 	const [pending, startTransition] = useTransition();
 
 	useEffect(() => {
@@ -80,7 +82,7 @@ export function ReactionBar({ postId, initialLikes, initialShares }: Props) {
 			>
 				{liked ? "❤️" : "🤍"} {likes}
 			</button>
-			<span style={{ color: "#555", fontSize: "0.8rem" }}>💬 {0}</span>
+			<span style={{ color: "#555", fontSize: "0.8rem" }}>💬 {comments}</span>
 			<button
 				onClick={share}
 				disabled={pending}

@@ -12,7 +12,7 @@ _MODEL = None
 def _model():
     global _MODEL
     if _MODEL is None:
-        from sentence_transformers import SentenceTransformer
+        from sentence_transformers import SentenceTransformer  # pyright: ignore[reportMissingImports]
 
         _MODEL = SentenceTransformer("all-MiniLM-L6-v2")
     return _MODEL

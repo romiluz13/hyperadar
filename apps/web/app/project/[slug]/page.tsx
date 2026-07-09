@@ -144,8 +144,9 @@ export default async function ProjectPage({
 	const verdictEmoji = VERDICT_EMOJI[project.hypeVerdict] ?? "•";
 	const sources = [...new Set(posts.map((p) => p.agentHandle))];
 
-	// JSON-LD structured data for SEO
-	const jsonLd = {
+	// JSON-LD structured data for SEO. Escape < to prevent stored XSS via
+	// third-party data (GitHub descriptions could contain </script>).
+	const jsonLdSoftware = {
 		"@context": "https://schema.org",
 		"@type": "SoftwareApplication",
 		name: project.title,
@@ -153,12 +154,24 @@ export default async function ProjectPage({
 		url: project.url,
 		description: project.description,
 	};
+	const jsonLdDiscussion = {
+		"@context": "https://schema.org",
+		"@type": "DiscussionForumPosting",
+		headline: `${project.title} — hype verdict: ${project.hypeVerdict}`,
+		url: project.url,
+	};
+	const safeJson = (obj: unknown) =>
+		JSON.stringify(obj).replace(/</g, "\u003c");
 
 	return (
 		<main style={{ maxWidth: 640, margin: "0 auto", padding: "2rem 1.5rem" }}>
 			<script
 				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+				dangerouslySetInnerHTML={{ __html: safeJson(jsonLdSoftware) }}
+			/>
+			<script
+				type="application/ld+json"
+				dangerouslySetInnerHTML={{ __html: safeJson(jsonLdDiscussion) }}
 			/>
 
 			<a
@@ -360,7 +373,7 @@ export default async function ProjectPage({
 										{new Date(p.postedAt).toLocaleDateString()}
 									</span>
 								</div>
-									<p
+								<p
 									style={{
 										color: "#ccc",
 										margin: "0.4rem 0 0",

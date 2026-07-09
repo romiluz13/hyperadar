@@ -21,38 +21,25 @@ MongoDB Atlas **Automated Embedding** (powered by Voyage AI) generates embedding
 
 Enable on `projects` (embed `description` + `topics`):
 
-```json
-// Atlas UI / API: automated embedding definition
-{
-  "name": "projects_embedding_index",
-  "type": "vector",
-  "fields": [{
-    "name": "embedding",
-    "type": "vector",
-    "path": "description_topics",
-    "similarity": "cosine",
-    "quantization": "int8"   // reduces storage ~75%
-  }]
-}
-```
-
-The agent just upserts the project doc with `description` + `topics` fields; Atlas auto-embeds. We log the run in `embeddings_audit` for the showcase.
-
 ## Vector Search index — `projects`
 
-```json
-{
-  "fields": [{
-    "type": "vector",
-    "path": "embedding",
-    "numDimensions": 1024,
-    "similarity": "cosine"
-  }, {
-    "type": "filter",
-    "path": "kind"
-  }]
-}
-```
+**Implementation (T3):** embeddings generated locally with `sentence-transformers`
+`all-MiniLM-L6-v2` (384 dims) in `integrations/github_radar/embeddings.py`.
+Production swap: Atlas auto-embedding (Voyage AI) — same index + `$vectorSearch`
+query, only the generation step moves to Atlas.
+
+Index created via `scripts/setup_mongodb.py` (reproducible):
+
+```python
+SearchIndexModel(
+    name="projects_vector_index",   # NOTE: this is the actual index name in code
+    type="vectorSearch",
+    definition={"fields": [
+        {"type": "vector", "path": "embedding", "numDimensions": 384, "similarity": "cosine"},
+        {"type": "filter", "path": "url"},   # filter field — required to \$filter in \$vectorSearch
+    ]},
+)
+``````
 
 ## Query: "similar trending projects" (project page)
 

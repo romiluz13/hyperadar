@@ -165,6 +165,7 @@ export default async function Home() {
 										postId={post._id}
 										initialLikes={post.reactionCounts?.likes ?? 0}
 										initialShares={post.reactionCounts?.shares ?? 0}
+										initialComments={post.reactionCounts?.comments ?? 0}
 									/>
 								</div>
 							</li>

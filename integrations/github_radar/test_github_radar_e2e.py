@@ -31,6 +31,7 @@ def mongo_db(env_loaded):
 @pytest.fixture()
 def port_token(env_loaded):
     import json
+    import urllib.error
     import urllib.request
 
     body = json.dumps(
@@ -45,8 +46,11 @@ def port_token(env_loaded):
         method="POST",
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req) as r:
-        return json.loads(r.read())["accessToken"]
+    try:
+        with urllib.request.urlopen(req) as r:
+            return json.loads(r.read())["accessToken"]
+    except (urllib.error.URLError, KeyError) as e:
+        pytest.skip(f"Port auth unavailable: {e}")
 
 
 def _mock_candidates():
@@ -87,6 +91,7 @@ def test_agent_run_writes_mongodb_and_port(
     import agent
 
     cands = _mock_candidates()
+    test_url = cands[0]["url"]
     _CANDIDATE_CACHE.clear()
     _CANDIDATE_CACHE.update({c["url"]: c for c in cands})
     history = []
@@ -96,45 +101,68 @@ def test_agent_run_writes_mongodb_and_port(
 
     import asyncio
 
-    out = asyncio.run(
-        agent.write_hype_post.ainvoke(
-            {
-                "repo_url": cands[0]["url"],
-                "blurb": "▲ 9000★/wk. Test repo. This is real.",
-                "verdict": "hype looks real",
-            }
+    post = None
+    entities: list = []
+    try:
+        out = asyncio.run(
+            agent.write_hype_post.ainvoke(
+                {
+                    "repo_url": test_url,
+                    "blurb": "▲ 9000★/wk. Test repo. This is real.",
+                    "verdict": "hype looks real",
+                }
+            )
         )
-    )
-    assert "Posted" in out
+        assert "Posted" in out
 
-    # --- Assert MongoDB has the post + project + signal ---
-    post = mongo_db.posts.find_one({"project.url": cands[0]["url"]})
-    assert post is not None
-    assert post["agentHandle"] == "@github-radar"
-    assert post["verdict"] == "hype looks real"
-    assert "body" in post and "▲" in post["body"]
+        # --- Assert MongoDB has the post + project + signal ---
+        post = mongo_db.posts.find_one({"project.url": test_url})
+        assert post is not None
+        assert post["agentHandle"] == "@github-radar"
+        assert post["verdict"] == "hype looks real"
+        assert "body" in post and "▲" in post["body"]
 
-    proj = mongo_db.projects.find_one({"url": cands[0]["url"]})
-    assert proj is not None
-    assert proj["momentumScore"] == m["momentumScore"]
+        proj = mongo_db.projects.find_one({"url": test_url})
+        assert proj is not None
+        assert proj["momentumScore"] == m["momentumScore"]
 
-    sig = mongo_db.signals.find_one({"projectId": cands[0]["url"]})
-    assert sig is not None
-    assert sig["metric"] == "stars"
+        sig = mongo_db.signals.find_one({"projectId": test_url})
+        assert sig is not None
+        assert sig["metric"] == "stars"
 
-    # --- Assert a hyperadar_post entity exists in Port with relations ---
-    req = urllib.request.Request(
-        "https://api.getport.io/v1/blueprints/hyperadar_post/entities",
-        headers={"Authorization": f"Bearer {port_token}"},
-    )
-    with urllib.request.urlopen(req) as r:
-        entities = json.loads(r.read()).get("entities", [])
-    test_posts = [
-        e
-        for e in entities
-        if e.get("properties", {}).get("body", "").startswith("▲ 9000")
-    ]
-    assert test_posts, "expected a hyperadar_post entity for the test post"
-    rels = test_posts[0].get("relations", {})
-    assert rels.get("agent") == "github-radar"
-    assert "project" in rels
+        # --- Assert a hyperadar_post entity exists in Port with relations ---
+        req = urllib.request.Request(
+            "https://api.getport.io/v1/blueprints/hyperadar_post/entities",
+            headers={"Authorization": f"Bearer {port_token}"},
+        )
+        with urllib.request.urlopen(req) as r:
+            entities = json.loads(r.read()).get("entities", [])
+        test_posts = [
+            e
+            for e in entities
+            if e.get("properties", {}).get("body", "").startswith("▲ 9000")
+        ]
+        assert test_posts, "expected a hyperadar_post entity for the test post"
+        rels = test_posts[0].get("relations", {})
+        assert rels.get("agent") == "github-radar"
+        assert "project" in rels
+    finally:
+        # --- Teardown: remove test data from MongoDB + Port ---
+        mongo_db.posts.delete_many({"project.url": test_url})
+        mongo_db.projects.delete_many({"url": test_url})
+        mongo_db.signals.delete_many({"projectId": test_url})
+        if post is not None:
+            mongo_db.reactions.delete_many({"postId": str(post["_id"])})
+        # Port: delete the test post entity (best-effort)
+        try:
+            for e in entities:
+                if e.get("properties", {}).get("body", "").startswith("▲ 9000"):
+                    urllib.request.urlopen(
+                        urllib.request.Request(
+                            f"https://api.getport.io/v1/blueprints/hyperadar_post/entities/{e['identifier']}",
+                            method="DELETE",
+                            headers={"Authorization": f"Bearer {port_token}"},
+                        )
+                    )
+        except Exception:
+            pass  # best-effort cleanup

@@ -100,6 +100,13 @@ Two parallel models — Port blueprints (catalog/control plane) and MongoDB coll
 | `HypeSignal` | `signalId` | source, metric (stars/mentions/views), value, delta, capturedAt | belongs to `Project` |
 | `Digest` | `digestId` | weekOf, itemCount, topMovers[], summary | belongs to `AgentCreator` |
 
+**Implementation note (T1):** blueprints are created with namespaced identifiers
+`hyperadar_agent`, `hyperadar_source`, `hyperadar_project`, `hyperadar_post`,
+`hyperadar_signal`, `hyperadar_digest` (see `scripts/setup_mongodb.py` and
+`integrations/github_radar/port_client.py`). Entity identifiers are URL-safe
+slugs (`owner-repo` for GitHub URLs), matching the web slug and MongoDB `slug`
+field so the Port entity, MongoDB doc, and `/project/[slug]` route all share one key.
+
 ### Port Self-Service Actions
 
 | Action | Triggered on | What it does |
