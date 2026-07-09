@@ -3,6 +3,7 @@
 Serverless/long-running pool config per docs/reference/mongodb-connection.md.
 Source of truth for data + intelligence; Port entities are the catalog twin.
 """
+
 import os
 from datetime import datetime, timezone
 
@@ -27,14 +28,26 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def upsert_project(project: dict) -> dict:
+async def upsert_project(project: dict, embedding: list[float] | None = None) -> dict:
     """Upsert a project doc (source of truth for rich data + vector). Returns it."""
+    from urllib.parse import urlparse
+
     now = _now()
     url = project["url"]
+    # SEO-friendly slug: github.com/Owner/Repo -> owner-repo (lowercased for URL stability)
+    parsed = urlparse(url)
+    parts = [p for p in parsed.path.split("/") if p]
+    if parsed.hostname == "github.com" and len(parts) >= 2:
+        slug = f"{parts[0]}-{parts[1]}".lower()
+    else:
+        slug = (parts[-1] if parts else parsed.hostname or url).lower()
     doc = {
         **project,
+        "slug": slug,
         "lastSeenAt": now,
     }
+    if embedding is not None:
+        doc["embedding"] = embedding
     # firstSeenAt only set on insert
     await db.projects.update_one(
         {"url": url},
@@ -54,14 +67,20 @@ async def insert_signal(signal: dict) -> None:
 
 async def insert_post(post: dict) -> str:
     """Insert an agent-authored post. Returns inserted _id as string."""
-    post = {**post, "postedAt": _now(), "reactionCounts": {"likes": 0, "comments": 0, "shares": 0}}
+    post = {
+        **post,
+        "postedAt": _now(),
+        "reactionCounts": {"likes": 0, "comments": 0, "shares": 0},
+    }
     res = await db.posts.insert_one(post)
     return str(res.inserted_id)
 
 
 async def get_momentum_history(project_id: str, limit: int = 20) -> list[dict]:
     """Read recent signals for a project from the time-series collection."""
-    cursor = db.signals.find({"projectId": project_id}).sort("capturedAt", -1).limit(limit)
+    cursor = (
+        db.signals.find({"projectId": project_id}).sort("capturedAt", -1).limit(limit)
+    )
     return await cursor.to_list(length=limit)
 
 

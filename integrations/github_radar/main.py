@@ -10,6 +10,7 @@ agent/project/post entities in Port. MongoDBSaver checkpoints the run.
 T2 tracer bullet: proves the whole spine
 (Port catalog + Deep Agents + Grove + MongoDB memory + feed data) with one agent.
 """
+
 import asyncio
 import os
 from datetime import datetime, timezone
@@ -39,11 +40,15 @@ async def run_once() -> dict:
     #    from_conn_string is a context manager; .setup() creates checkpoint collections.
     thread_id = f"github-radar:{datetime.now(timezone.utc).isoformat()}"
     config = {"configurable": {"thread_id": thread_id}}
-    start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_of_day = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
 
     with MongoDBSaver.from_conn_string(os.environ["MONGODB_URI"]) as checkpointer:
         agent = build_agent(checkpointer=checkpointer)
-        await agent.ainvoke({"messages": "Run today's GitHub radar scan."}, config=config)
+        await agent.ainvoke(
+            {"messages": "Run today's GitHub radar scan."}, config=config
+        )
 
     # 3. Count posts created today by this agent.
     posts_today = await mongo.db.posts.count_documents(

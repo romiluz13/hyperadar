@@ -4,14 +4,15 @@ version = "0.1.0"
 description = "HypeRadar @github-radar agent-creator: scrapes GitHub trending, scores via Grove, writes MongoDB + Port."
 requires-python = ">=3.11"
 dependencies = [
-    "deepagents",
-    "langchain-openai",
-    "langgraph",
-    "langgraph-checkpoint-mongodb",
-    "motor",
-    "pymongo",
-    "httpx",
-    "python-dotenv",
+  "deepagents",
+  "langchain-openai",
+  "langgraph",
+  "langgraph-checkpoint-mongodb",
+  "motor",
+  "pymongo",
+  "httpx",
+  "python-dotenv",
+  "sentence-transformers",
 ]
 
 [dependency-groups]

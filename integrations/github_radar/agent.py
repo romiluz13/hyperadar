@@ -7,12 +7,14 @@ inspect momentum, and for each worth posting write a blurb + verdict in the
 Deep Agents provides planning/tool-calling on LangGraph; MongoDBSaver checkpoints
 the run (durable, resumable) — the showcase of MongoDB as agent memory.
 """
+
 import os
 
 from deepagents import create_deep_agent
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 
+import embeddings
 import mongo
 import port_client
 from github_source import fetch_trending_candidates, compute_momentum
@@ -91,31 +93,53 @@ async def write_hype_post(repo_url: str, blurb: str, verdict: str) -> str:
 
     project_id = c["url"]
     project_doc = {
-        "url": c["url"], "title": c["title"], "kind": c["kind"],
-        "description": c["description"], "topics": c["topics"],
-        "momentumScore": m["momentumScore"], "hypeVerdict": verdict,
+        "url": c["url"],
+        "title": c["title"],
+        "kind": c["kind"],
+        "description": c["description"],
+        "topics": c["topics"],
+        "momentumScore": m["momentumScore"],
+        "hypeVerdict": verdict,
     }
-    # 1. MongoDB: upsert project + insert signal + insert post (source of truth)
-    await mongo.upsert_project(project_doc)
-    await mongo.insert_signal({
-        "projectId": project_id, "source": "github",
-        "metric": "stars", "value": c["stars"],
-        "delta": m["starsPerWeek"],
-    })
+    # 1. MongoDB: upsert project (with embedding) + insert signal + insert post
+    embedding = embeddings.embed_project(c["title"], c["description"], c["topics"])
+    await mongo.upsert_project(project_doc, embedding=embedding)
+    await mongo.insert_signal(
+        {
+            "projectId": project_id,
+            "source": "github",
+            "metric": "stars",
+            "value": c["stars"],
+            "delta": m["starsPerWeek"],
+        }
+    )
     rank_score = m["momentumScore"]  # v1: rank = momentum (reactions blend in T4)
     post_doc = {
-        "agentHandle": AGENT_HANDLE, "body": blurb, "verdict": verdict,
+        "agentHandle": AGENT_HANDLE,
+        "body": blurb,
+        "verdict": verdict,
         "rankScore": rank_score,
-        "project": {"url": c["url"], "title": c["title"], "kind": c["kind"],
-                     "momentumScore": m["momentumScore"]},
+        "project": {
+            "url": c["url"],
+            "title": c["title"],
+            "kind": c["kind"],
+            "momentumScore": m["momentumScore"],
+        },
         "signalsSummary": f"stars={c['stars']}, +{m['starsPerWeek']}/wk",
     }
     post_id = await mongo.insert_post(post_doc)
 
     # 2. Port: upsert agent + project + post entities (catalog twin)
     port_client.upsert_agent(AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE)
-    port_client.upsert_project(c["url"], c["title"], c["kind"], c["description"],
-                                c["topics"], m["momentumScore"], verdict)
+    port_client.upsert_project(
+        c["url"],
+        c["title"],
+        c["kind"],
+        c["description"],
+        c["topics"],
+        m["momentumScore"],
+        verdict,
+    )
     port_client.upsert_post(post_id, AGENT_HANDLE, c["url"], blurb, verdict, rank_score)
 
     return f"Posted: {c['title']} (momentum {m['momentumScore']}, verdict '{verdict}') -> post {post_id}"
@@ -132,7 +156,11 @@ def build_agent(checkpointer=None):
         default_headers={"api-key": os.environ["GROVE_API_KEY"]},
         temperature=0.7,
     )
-    kwargs = {"model": model, "tools": [fetch_trending_repos, write_hype_post], "system_prompt": SYSTEM_PROMPT}
+    kwargs = {
+        "model": model,
+        "tools": [fetch_trending_repos, write_hype_post],
+        "system_prompt": SYSTEM_PROMPT,
+    }
     if checkpointer is not None:
         kwargs["checkpointer"] = checkpointer
     return create_deep_agent(**kwargs)

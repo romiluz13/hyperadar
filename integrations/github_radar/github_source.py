@@ -5,6 +5,7 @@ docs/reference/source-constraints-and-costs.md). The Search API is the official
 proxy: recently-created, high-star repos sorted by stars. Authenticated via
 GITHUB_TOKEN (5k req/h).
 """
+
 import contextlib
 import os
 from datetime import datetime, timedelta, timezone
@@ -29,34 +30,40 @@ async def fetch_trending_candidates(max_results: int = 10) -> list[dict]:
         "per_page": max_results,
     }
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get("https://api.github.com/search/repositories",
-                             params=params, headers=_headers)
+        r = await client.get(
+            "https://api.github.com/search/repositories",
+            params=params,
+            headers=_headers,
+        )
         r.raise_for_status()
         items = r.json().get("items", [])
 
     candidates = []
     for it in items:
-        candidates.append({
-            "url": it["html_url"],
-            "title": it["full_name"],
-            "kind": "repo",
-            "description": it.get("description") or "",
-            "topics": it.get("topics") or [],
-            "stars": it.get("stargazers_count", 0),
-            "created_at": it.get("created_at"),
-            "pushed_at": it.get("pushed_at"),
-            "language": it.get("language"),
-            "owner": it["owner"]["login"],
-            "repo": it["name"],
-        })
+        candidates.append(
+            {
+                "url": it["html_url"],
+                "title": it["full_name"],
+                "kind": "repo",
+                "description": it.get("description") or "",
+                "topics": it.get("topics") or [],
+                "stars": it.get("stargazers_count", 0),
+                "created_at": it.get("created_at"),
+                "pushed_at": it.get("pushed_at"),
+                "language": it.get("language"),
+                "owner": it["owner"]["login"],
+                "repo": it["name"],
+            }
+        )
     return candidates
 
 
 async def get_repo_details(owner: str, repo: str) -> dict:
     """Full repo metadata (1 req, cheap)."""
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(f"https://api.github.com/repos/{owner}/{repo}",
-                             headers=_headers)
+        r = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}", headers=_headers
+        )
         r.raise_for_status()
         return r.json()
 
@@ -76,7 +83,9 @@ def compute_momentum(candidate: dict, history: list[dict], prior_posts: int) -> 
     age_days = 30.0  # default if missing
     if created:
         with contextlib.suppress(ValueError):
-            age_days = max((now - datetime.fromisoformat(created.replace("Z", "+00:00"))).days, 1)
+            age_days = max(
+                (now - datetime.fromisoformat(created.replace("Z", "+00:00"))).days, 1
+            )
     stars = candidate.get("stars", 0)
     stars_per_week = stars / (age_days / 7)
 
