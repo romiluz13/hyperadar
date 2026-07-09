@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/mongo";
 import { urlToSlug } from "@/lib/slug";
+import { ReactionBar } from "@/app/components/ReactionBar";
 
 export const dynamic = "force-dynamic"; // SSR, fresh each request
 
@@ -160,11 +161,11 @@ export default async function Home() {
 									>
 										{v.emoji} {post.verdict}
 									</span>
-									<span style={{ color: "#555", fontSize: "0.8rem" }}>
-										♡ {post.reactionCounts?.likes ?? 0} · 💬{" "}
-										{post.reactionCounts?.comments ?? 0} · 🔗{" "}
-										{post.reactionCounts?.shares ?? 0}
-									</span>
+									<ReactionBar
+										postId={post._id}
+										initialLikes={post.reactionCounts?.likes ?? 0}
+										initialShares={post.reactionCounts?.shares ?? 0}
+									/>
 								</div>
 							</li>
 						);

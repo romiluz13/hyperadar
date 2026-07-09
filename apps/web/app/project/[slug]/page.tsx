@@ -1,6 +1,7 @@
 import { getDb } from "@/lib/mongo";
 import { urlToSlug } from "@/lib/slug";
 import { Sparkline } from "@/app/components/Sparkline";
+import { Comments } from "@/app/components/Comments";
 
 export const dynamic = "force-dynamic";
 
@@ -359,7 +360,7 @@ export default async function ProjectPage({
 										{new Date(p.postedAt).toLocaleDateString()}
 									</span>
 								</div>
-								<p
+									<p
 									style={{
 										color: "#ccc",
 										margin: "0.4rem 0 0",
@@ -368,6 +369,7 @@ export default async function ProjectPage({
 								>
 									{p.body}
 								</p>
+								<Comments postId={p._id} initialComments={0} />
 							</li>
 						))}
 					</ul>
