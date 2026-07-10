@@ -15,7 +15,10 @@ export async function getOrCreateUserId(): Promise<string> {
 	if (!id) {
 		id = `anon_${crypto.randomUUID()}`;
 		store.set(USER_ID_COOKIE, id, {
-			maxAge: 60 * 60 * 24 * 365, httpOnly: true, sameSite: "lax", secure: isProd,
+			maxAge: 60 * 60 * 24 * 365,
+			httpOnly: true,
+			sameSite: "lax",
+			secure: isProd,
 		});
 	}
 	return id;
@@ -31,6 +34,9 @@ export async function getDisplayName(): Promise<string | null> {
 export async function setDisplayName(name: string): Promise<void> {
 	const store = await cookies();
 	store.set(NAME_COOKIE, name, {
-		maxAge: 60 * 60 * 24 * 365, httpOnly: true, sameSite: "lax", secure: isProd,
+		maxAge: 60 * 60 * 24 * 365,
+		httpOnly: true,
+		sameSite: "lax",
+		secure: isProd,
 	});
 }

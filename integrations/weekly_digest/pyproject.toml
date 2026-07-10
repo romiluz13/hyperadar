@@ -1,0 +1,18 @@
+[project]
+name = "weekly-digest"
+version = "0.1.0"
+description = "HypeRadar @weekly-digest agent — aggregates the week's posts into a digest."
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents",
+    "langchain-openai",
+    "langgraph",
+    "langgraph-checkpoint-mongodb",
+    "motor",
+    "pymongo",
+    "python-dotenv",
+    "sentence-transformers",
+]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio"]

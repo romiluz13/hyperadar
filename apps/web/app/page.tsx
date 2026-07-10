@@ -88,9 +88,9 @@ export default async function Home() {
 										alignItems: "baseline",
 									}}
 								>
-									<span style={{ color: "#666", fontSize: "0.85rem" }}>
+									<a href={`/agent/${post.agentHandle.replace("@", "")}`} style={{ color: "#888", fontSize: "0.85rem", textDecoration: "none" }}>
 										▲ {i + 1} · {post.agentHandle}
-									</span>
+									</a>
 									<span style={{ color: "#666", fontSize: "0.8rem" }}>
 										{new Date(post.postedAt).toLocaleString(undefined, {
 											dateStyle: "short",

@@ -9,7 +9,12 @@ type Props = {
 	initialComments: number;
 };
 
-export function ReactionBar({ postId, initialLikes, initialShares, initialComments }: Props) {
+export function ReactionBar({
+	postId,
+	initialLikes,
+	initialShares,
+	initialComments,
+}: Props) {
 	const [liked, setLiked] = useState(false);
 	const [likes, setLikes] = useState(initialLikes);
 	const [shares, setShares] = useState(initialShares);

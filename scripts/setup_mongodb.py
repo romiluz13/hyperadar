@@ -7,6 +7,7 @@ Usage:
     set -a && source .env && set +a
     uv run --with pymongo --with 'pymongo[srv]' python scripts/setup_mongodb.py
 """
+
 import os
 import sys
 
@@ -43,37 +44,73 @@ def main():
     print(f"Connected to {DB_NAME} (server {client.server_info()['version']})")
 
     # 1. signals — time-series
-    ensure_collection(db, "signals", timeseries={
-        "timeField": "capturedAt", "metaField": "projectId", "granularity": "hours",
-    })
+    ensure_collection(
+        db,
+        "signals",
+        timeseries={
+            "timeField": "capturedAt",
+            "metaField": "projectId",
+            "granularity": "hours",
+        },
+    )
     ensure_index(db.signals, [("projectId", 1), ("capturedAt", -1)], name="proj_time")
 
     # 2. projects — with schema validation
-    ensure_collection(db, "projects", validator={"$jsonSchema": {
-        "bsonType": "object", "required": ["url", "title", "kind", "firstSeenAt"],
-        "properties": {
-            "url": {"bsonType": "string"}, "title": {"bsonType": "string"},
-            "kind": {"bsonType": "string", "enum": ["repo", "video", "thread", "site"]},
-            "description": {"bsonType": "string"},
-            "topics": {"bsonType": "array", "items": {"bsonType": "string"}},
-            "momentumScore": {"bsonType": "number", "minimum": 0, "maximum": 100},
-            "hypeVerdict": {"bsonType": "string"},
-            "firstSeenAt": {"bsonType": "date"}, "lastSeenAt": {"bsonType": "date"},
+    ensure_collection(
+        db,
+        "projects",
+        validator={
+            "$jsonSchema": {
+                "bsonType": "object",
+                "required": ["url", "title", "kind", "firstSeenAt"],
+                "properties": {
+                    "url": {"bsonType": "string"},
+                    "title": {"bsonType": "string"},
+                    "kind": {
+                        "bsonType": "string",
+                        "enum": ["repo", "video", "thread", "site"],
+                    },
+                    "description": {"bsonType": "string"},
+                    "topics": {"bsonType": "array", "items": {"bsonType": "string"}},
+                    "momentumScore": {
+                        "bsonType": "number",
+                        "minimum": 0,
+                        "maximum": 100,
+                    },
+                    "hypeVerdict": {"bsonType": "string"},
+                    "firstSeenAt": {"bsonType": "date"},
+                    "lastSeenAt": {"bsonType": "date"},
+                },
+            }
         },
-    }}, validationLevel="moderate", validationAction="warn")
+        validationLevel="moderate",
+        validationAction="warn",
+    )
     ensure_index(db.projects, "url", unique=True, name="url_unique")
     ensure_index(db.projects, "slug", name="slug")
 
     # 3. posts — with schema validation
-    ensure_collection(db, "posts", validator={"$jsonSchema": {
-        "bsonType": "object", "required": ["agentHandle", "body", "postedAt", "project"],
-        "properties": {
-            "agentHandle": {"bsonType": "string"}, "body": {"bsonType": "string", "maxLength": 2000},
-            "verdict": {"bsonType": "string"}, "postedAt": {"bsonType": "date"},
-            "rankScore": {"bsonType": "number"}, "reactionCounts": {"bsonType": "object"},
-            "project": {"bsonType": "object", "required": ["url", "title"]},
+    ensure_collection(
+        db,
+        "posts",
+        validator={
+            "$jsonSchema": {
+                "bsonType": "object",
+                "required": ["agentHandle", "body", "postedAt", "project"],
+                "properties": {
+                    "agentHandle": {"bsonType": "string"},
+                    "body": {"bsonType": "string", "maxLength": 2000},
+                    "verdict": {"bsonType": "string"},
+                    "postedAt": {"bsonType": "date"},
+                    "rankScore": {"bsonType": "number"},
+                    "reactionCounts": {"bsonType": "object"},
+                    "project": {"bsonType": "object", "required": ["url", "title"]},
+                },
+            }
         },
-    }}, validationLevel="moderate", validationAction="warn")
+        validationLevel="moderate",
+        validationAction="warn",
+    )
     ensure_index(db.posts, [("rankScore", -1), ("postedAt", -1)], name="feed_rank")
     ensure_index(db.posts, [("agentHandle", 1), ("postedAt", -1)], name="agent_posts")
     ensure_index(db.posts, "project.url", name="project_url")
@@ -81,7 +118,12 @@ def main():
     # 4. reactions
     ensure_collection(db, "reactions")
     # Unique: one reaction per type per user per post (like AND comment allowed)
-    ensure_index(db.reactions, [("postId", 1), ("userId", 1), ("type", 1)], unique=True, name="one_reaction_per_type")
+    ensure_index(
+        db.reactions,
+        [("postId", 1), ("userId", 1), ("type", 1)],
+        unique=True,
+        name="one_reaction_per_type",
+    )
     ensure_index(db.reactions, [("postId", 1), ("type", 1)], name="post_type")
 
     # 5. agents
@@ -101,10 +143,17 @@ def main():
         model = SearchIndexModel(
             name="projects_vector_index",
             type="vectorSearch",
-            definition={"fields": [
-                {"type": "vector", "path": "embedding", "numDimensions": 384, "similarity": "cosine"},
-                {"type": "filter", "path": "url"},
-            ]},
+            definition={
+                "fields": [
+                    {
+                        "type": "vector",
+                        "path": "embedding",
+                        "numDimensions": 384,
+                        "similarity": "cosine",
+                    },
+                    {"type": "filter", "path": "url"},
+                ]
+            },
         )
         db.projects.create_search_index(model=model)
         print("✓ vector search index created (projects_vector_index)")
