@@ -39,6 +39,13 @@ async def write_post(
         signal: {source, metric, value, delta} — the raw hype signal
         rank_score: the post's rank score (momentum-based in v1)
     """
+    # 0. Validate URL scheme — prevent stored XSS via javascript: URLs from
+    #    external sources (Reddit, HN, YouTube SERP may return arbitrary URLs)
+    from urllib.parse import urlparse
+    parsed = urlparse(project["url"])
+    if parsed.scheme not in ("http", "https", ""):
+        raise ValueError(f"Invalid URL scheme: {project['url']}")
+
     # 1. Embed the project (for $vectorSearch "similar projects")
     embedding = embeddings.embed_project(
         project["title"], project.get("description", ""), project.get("topics", [])
@@ -58,18 +65,21 @@ async def write_post(
 
     # 2b. Multi-source confirmation: if other agents already posted about this
     #     project, boost the momentumScore (cross-agent signal — the differentiator).
-    other_agent_posts = await mongo.db.posts.count_documents({
+    #     Count DISTINCT agents, not posts (one agent posting twice ≠ multi-source).
+    other_agents = await mongo.db.posts.distinct("agentHandle", {
         "project.url": project["url"],
         "agentHandle": {"$ne": agent_handle},
     })
-    if other_agent_posts > 0:
-        boost = min(other_agent_posts * 10, 20)  # +10 per other agent, cap +20
+    if other_agents:
+        boost = min(len(other_agents) * 10, 20)  # +10 per distinct agent, cap +20
         boosted_score = min(project.get("momentumScore", 0) + boost, 100)
         await mongo.db.projects.update_one(
             {"url": project["url"]},
             {"$set": {"momentumScore": boosted_score}},
         )
         rank_score = min(rank_score + boost, 100)
+        # Use the boosted score in the post doc too (so the feed shows it)
+        project = {**project, "momentumScore": boosted_score}
 
     # 3. Insert raw signal to MongoDB time-series
     await mongo.insert_signal({

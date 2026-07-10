@@ -6,6 +6,7 @@ See docs/reference/source-constraints-and-costs.md.
 """
 import asyncio
 import json
+import logging
 
 # Subreddits to monitor — AI dev focused
 SUBREDDITS = [
@@ -70,7 +71,8 @@ async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
                         "num_comments": int(related.get("num_comments", 0) or 0),
                         "stars": int(related.get("num_upvotes", 0) or 0),
                     })
-        except Exception:
+        except Exception as e:
+            logging.warning("reddit_source fetch failed for %s: %s", sub_url, e)
             continue
 
     return candidates[:max_results]

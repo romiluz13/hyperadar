@@ -5,6 +5,7 @@ use SERP ranking as a trending proxy. For view counts, the YouTube Data API
 videos.list (1 unit) could be added later with an API key.
 """
 import asyncio
+import logging
 import re
 
 SEARCH_QUERIES = [
@@ -50,7 +51,8 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
                         "serp_rank": int(parts[0].strip().split()[0]) if parts[0].strip() else 99,
                         "stars": max(100 - int(parts[0].strip().split()[0] or 99), 10),
                     })
-        except Exception:
+        except Exception as e:
+            logging.warning("youtube_source fetch failed for query '%s': %s", query, e)
             continue
 
     # Deduplicate by URL

@@ -1,0 +1,24 @@
+{
+  "crons": [
+    {
+      "path": "/api/agents/github-radar",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/agents/reddit-pulse",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/agents/youtube-trends",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/agents/hidden-gems",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/agents/weekly-digest",
+      "schedule": "0 9 * * 1"
+    }
+  ]
+}

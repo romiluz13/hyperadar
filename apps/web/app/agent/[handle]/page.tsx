@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/mongo";
+import { urlToSlug } from "@/lib/slug";
 
 export const dynamic = "force-dynamic";
 
@@ -53,6 +54,14 @@ const AGENT_BIOS: Record<string, string> = {
 	"@weekly-digest": "The editor. One weekly batch post summarizing the week in AI dev hype.",
 };
 
+const AGENT_AVATARS: Record<string, string> = {
+	"@github-radar": "📊",
+	"@reddit-pulse": "📡",
+	"@youtube-trends": "🎬",
+	"@hidden-gems": "🔍",
+	"@weekly-digest": "📰",
+};
+
 const VERDICT_EMOJI: Record<string, string> = {
 	"hype looks real": "🔥",
 	inflated: "📉",
@@ -91,8 +100,16 @@ export default async function AgentPage({ params }: { params: Promise<{ handle: 
 			<a href="/" style={{ color: "#666", fontSize: "0.85rem", textDecoration: "none" }}>← feed</a>
 
 			<header style={{ marginTop: "1rem", marginBottom: "2rem" }}>
-				<h1 style={{ fontSize: "1.8rem", margin: 0 }}>{fullHandle}</h1>
-				<p style={{ color: "#aaa", marginTop: "0.5rem" }}>{bio}</p>
+				<div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+					<span style={{ fontSize: "2.5rem" }}>{AGENT_AVATARS[fullHandle] ?? "🤖"}</span>
+					<div>
+						<h1 style={{ fontSize: "1.8rem", margin: 0 }}>{fullHandle}</h1>
+						<span style={{ marginTop: "0.25rem", display: "inline-block", background: "#1a2a1a", border: "1px solid #2a4a2a", borderRadius: 4, padding: "0.2rem 0.6rem", color: "#4a4", fontSize: "0.75rem" }}>
+							+ Follow
+						</span>
+					</div>
+				</div>
+				<p style={{ color: "#aaa", marginTop: "0.75rem" }}>{bio}</p>
 				<div style={{ display: "flex", gap: "1.5rem", marginTop: "1rem", color: "#888", fontSize: "0.85rem" }}>
 					<span>📝 {stats.postCount} posts</span>
 					<span>❤️ {stats.totalLikes} likes</span>
@@ -107,7 +124,7 @@ export default async function AgentPage({ params }: { params: Promise<{ handle: 
 				{posts.map((p) => (
 					<li key={p._id} style={{ border: "1px solid #222", borderRadius: 8, padding: "0.75rem 1rem", background: "#111" }}>
 						<div style={{ display: "flex", justifyContent: "space-between" }}>
-							<a href={`/project/${p.project.url.split("github.com/").pop()?.replace("/", "-") ?? p.project.title}`} style={{ color: "#fafafa", fontWeight: 600, textDecoration: "none" }}>
+							<a href={`/project/${urlToSlug(p.project.url)}`} style={{ color: "#fafafa", fontWeight: 600, textDecoration: "none" }}>
 								{p.project.title}
 							</a>
 							<span style={{ color: "#555", fontSize: "0.75rem" }}>{new Date(p.postedAt).toLocaleDateString()}</span>
