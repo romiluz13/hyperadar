@@ -4,15 +4,15 @@ version = "0.1.0"
 description = "HypeRadar @youtube-trends agent — discovers trending AI YouTube videos via Bright Data search."
 requires-python = ">=3.11"
 dependencies = [
-    "deepagents",
-    "langchain-openai",
-    "langgraph",
-    "langgraph-checkpoint-mongodb",
-    "motor",
-    "pymongo",
-    "httpx",
-    "python-dotenv",
-    "sentence-transformers",
+  "deepagents",
+  "langchain-openai",
+  "langgraph",
+  "langgraph-checkpoint-mongodb",
+  "motor",
+  "pymongo",
+  "httpx",
+  "python-dotenv",
+  "sentence-transformers",
 ]
 
 [dependency-groups]

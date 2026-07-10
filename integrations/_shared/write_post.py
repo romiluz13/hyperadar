@@ -10,6 +10,7 @@ Every agent-creator calls write_post() to persist a hype post. This handles:
 Agent identity (handle, name, bio, source_type) is passed in so each agent
 gets its own voice but shares the write infrastructure.
 """
+
 from . import embeddings
 from . import mongo
 from . import port_client
@@ -42,6 +43,7 @@ async def write_post(
     # 0. Validate URL scheme — prevent stored XSS via javascript: URLs from
     #    external sources (Reddit, HN, YouTube SERP may return arbitrary URLs)
     from urllib.parse import urlparse
+
     parsed = urlparse(project["url"])
     if parsed.scheme not in ("http", "https", ""):
         raise ValueError(f"Invalid URL scheme: {project['url']}")
@@ -66,10 +68,13 @@ async def write_post(
     # 2b. Multi-source confirmation: if other agents already posted about this
     #     project, boost the momentumScore (cross-agent signal — the differentiator).
     #     Count DISTINCT agents, not posts (one agent posting twice ≠ multi-source).
-    other_agents = await mongo.db.posts.distinct("agentHandle", {
-        "project.url": project["url"],
-        "agentHandle": {"$ne": agent_handle},
-    })
+    other_agents = await mongo.db.posts.distinct(
+        "agentHandle",
+        {
+            "project.url": project["url"],
+            "agentHandle": {"$ne": agent_handle},
+        },
+    )
     if other_agents:
         boost = min(len(other_agents) * 10, 20)  # +10 per distinct agent, cap +20
         boosted_score = min(project.get("momentumScore", 0) + boost, 100)
@@ -82,13 +87,15 @@ async def write_post(
         project = {**project, "momentumScore": boosted_score}
 
     # 3. Insert raw signal to MongoDB time-series
-    await mongo.insert_signal({
-        "projectId": project["url"],
-        "source": signal.get("source", source_type),
-        "metric": signal.get("metric", "mentions"),
-        "value": signal.get("value", 0),
-        "delta": signal.get("delta", 0),
-    })
+    await mongo.insert_signal(
+        {
+            "projectId": project["url"],
+            "source": signal.get("source", source_type),
+            "metric": signal.get("metric", "mentions"),
+            "value": signal.get("value", 0),
+            "delta": signal.get("delta", 0),
+        }
+    )
 
     # 4. Insert post to MongoDB
     post_doc = {
@@ -102,25 +109,35 @@ async def write_post(
             "kind": project["kind"],
             "momentumScore": project.get("momentumScore", 0),
         },
-        "signalsSummary": signal.get("summary", f"{signal.get('metric','mentions')}={signal.get('value',0)}"),
+        "signalsSummary": signal.get(
+            "summary", f"{signal.get('metric', 'mentions')}={signal.get('value', 0)}"
+        ),
     }
     post_id = await mongo.insert_post(post_doc)
 
     # 5. Upsert Port entities (catalog twin with relations)
     port_client.upsert_agent(agent_handle, agent_name, agent_bio, source_type)
     port_client.upsert_project(
-        project["url"], project["title"], project["kind"],
-        project.get("description", ""), project.get("topics", []),
-        project.get("momentumScore", 0), verdict,
+        project["url"],
+        project["title"],
+        project["kind"],
+        project.get("description", ""),
+        project.get("topics", []),
+        project.get("momentumScore", 0),
+        verdict,
     )
-    port_client.upsert_post(post_id, agent_handle, project["url"], blurb, verdict, rank_score)
+    port_client.upsert_post(
+        post_id, agent_handle, project["url"], blurb, verdict, rank_score
+    )
 
     # 6. Audit the embedding (transparency log — Pattern 8)
-    await mongo.db.embeddings_audit.insert_one({
-        "projectId": project["url"],
-        "agentHandle": agent_handle,
-        "dims": len(embedding),
-        "model": "all-MiniLM-L6-v2",
-    })
+    await mongo.db.embeddings_audit.insert_one(
+        {
+            "projectId": project["url"],
+            "agentHandle": agent_handle,
+            "dims": len(embedding),
+            "model": "all-MiniLM-L6-v2",
+        }
+    )
 
     return post_id

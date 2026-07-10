@@ -1,0 +1,150 @@
+"""Hype wave clustering — groups this week's trending projects into semantic themes.
+
+Uses $vectorSearch to find similar projects, then clusters them with a simple
+cosine-similarity grouping (k-means would need scikit-learn; this is lighter).
+Grove labels each cluster with a theme name.
+"""
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+
+import httpx
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pymongo  # noqa: E402
+
+
+def _get_db():
+    client = pymongo.MongoClient(os.environ["MONGODB_URI"])
+    return client[os.environ.get("MONGODB_DB", "hyperadar")]
+
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(y * y for y in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def cluster_projects(projects: list[dict], threshold: float = 0.7) -> list[list[dict]]:
+    """Group projects by embedding similarity (greedy clustering).
+
+    Returns a list of clusters, each a list of project dicts.
+    """
+    clusters: list[list[dict]] = []
+    for p in projects:
+        emb = p.get("embedding")
+        if not emb:
+            continue
+        # Find the best matching existing cluster
+        best_cluster = None
+        best_sim = 0.0
+        for cluster in clusters:
+            # Compare to the cluster's first member
+            sim = _cosine_sim(emb, cluster[0].get("embedding", []))
+            if sim > best_sim:
+                best_sim = sim
+                best_cluster = cluster
+        if best_cluster and best_sim >= threshold:
+            best_cluster.append(p)
+        else:
+            clusters.append([p])
+    return clusters
+
+
+def label_cluster(cluster: list[dict]) -> str:
+    """Label a cluster with a theme name using Grove LLM."""
+    titles = [p["title"] for p in cluster]
+    topics = []
+    for p in cluster:
+        topics.extend(p.get("topics", [])[:3])
+    # Deduplicate topics
+    topics = list(dict.fromkeys(topics))[:8]
+
+    prompt = (
+        f"You are labeling a cluster of trending AI dev projects. "
+        f"Give it a short 2-4 word theme label (e.g. 'local-first agents', 'MCP servers', 'eval tooling'). "
+        f"Projects: {', '.join(titles[:5])}. Topics: {', '.join(topics)}. "
+        f"Respond with ONLY the theme label, nothing else."
+    )
+
+    try:
+        r = httpx.post(
+            f"{os.environ['GROVE_BASE_URL']}/chat/completions",
+            headers={
+                "Content-Type": "application/json",
+                "api-key": os.environ["GROVE_API_KEY"],
+            },
+            json={
+                "model": os.environ["GROVE_MODEL"],
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        label = r.json()["choices"][0]["message"]["content"].strip()
+        # Clean up: remove quotes, newlines
+        return label.strip("\"'\n")[:60]
+    except Exception:
+        # Fallback: use the most common topic
+        return topics[0] if topics else "uncategorized"
+
+
+def compute_hype_waves() -> list[dict]:
+    """Compute this week's hype waves. Returns clusters with labels + aggregate momentum."""
+    db = _get_db()
+    since = datetime.now(timezone.utc) - timedelta(days=7)
+    projects = list(db.projects.find({
+        "embedding": {"$exists": True},
+        "lastSeenAt": {"$gte": since},
+    }))
+
+    if not projects:
+        return []
+
+    clusters = cluster_projects(projects, threshold=0.65)
+
+    waves = []
+    for cluster in clusters:
+        label = label_cluster(cluster)
+        avg_momentum = sum(p.get("momentumScore", 0) for p in cluster) / len(cluster)
+        waves.append({
+            "label": label,
+            "projects": [
+                {
+                    "title": p["title"],
+                    "url": p["url"],
+                    "slug": p.get("slug", ""),
+                    "momentumScore": p.get("momentumScore", 0),
+                    "kind": p.get("kind", "repo"),
+                }
+                for p in cluster
+            ],
+            "avgMomentum": round(avg_momentum, 1),
+            "count": len(cluster),
+        })
+
+    # Sort by aggregate momentum (most hyped waves first)
+    waves.sort(key=lambda w: w["avgMomentum"], reverse=True)
+
+    # Store in digests collection
+    week_of = datetime.now(timezone.utc).strftime("%Y-W%W")
+    db.digests.update_one(
+        {"weekId": week_of},
+        {
+            "$set": {
+                "weekId": week_of,
+                "weekOf": datetime.now(timezone.utc),
+                "waves": waves,
+                "computedAt": datetime.now(timezone.utc),
+            }
+        },
+        upsert=True,
+    )
+
+    return waves

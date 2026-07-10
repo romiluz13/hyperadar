@@ -4,6 +4,7 @@ Each agent's main.py calls run_agent() with its build_agent function.
 Handles: Port agent upsert, Deep Agents invocation, MongoDBSaver checkpointing,
 and post-count reporting.
 """
+
 import os
 import sys
 from datetime import datetime, timezone
@@ -29,11 +30,15 @@ async def run_agent(agent_handle, agent_name, agent_bio, source_type, build_agen
     # 2. MongoDBSaver checkpoint (durable, resumable)
     thread_id = f"{agent_handle}:{datetime.now(timezone.utc).isoformat()}"
     config = {"configurable": {"thread_id": thread_id}}
-    start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_of_day = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
 
     with MongoDBSaver.from_conn_string(os.environ["MONGODB_URI"]) as checkpointer:
         agent = build_agent_fn(checkpointer=checkpointer)
-        await agent.ainvoke({"messages": f"Run today's {agent_handle} scan."}, config=config)
+        await agent.ainvoke(
+            {"messages": f"Run today's {agent_handle} scan."}, config=config
+        )
 
     # 3. Count posts created today by this agent
     posts_today = await mongo.db.posts.count_documents(

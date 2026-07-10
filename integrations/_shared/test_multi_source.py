@@ -3,6 +3,7 @@
 Tests the cross-agent signal that's HypeRadar's differentiator:
 when a project appears across ≥2 agents' posts, its momentumScore boosts.
 """
+
 import os
 from datetime import datetime, timezone
 
@@ -14,6 +15,7 @@ from bson import ObjectId
 def db():
     import pymongo
     from dotenv import load_dotenv
+
     load_dotenv()
     client = pymongo.MongoClient(os.environ["MONGODB_URI"])
     return client[os.environ.get("MONGODB_DB", "hyperadar")]
@@ -21,16 +23,25 @@ def db():
 
 def _make_post(db, agent_handle, project_url, momentum=50.0):
     """Insert a test post, return the post _id."""
-    return str(db.posts.insert_one({
-        "agentHandle": agent_handle,
-        "body": f"test blurb from {agent_handle}",
-        "verdict": "hype looks real",
-        "rankScore": momentum,
-        "postedAt": datetime.now(timezone.utc),
-        "reactionCounts": {"likes": 0, "comments": 0, "shares": 0},
-        "project": {"url": project_url, "title": "test/repo", "kind": "repo", "momentumScore": momentum},
-        "signalsSummary": "test",
-    }).inserted_id)
+    return str(
+        db.posts.insert_one(
+            {
+                "agentHandle": agent_handle,
+                "body": f"test blurb from {agent_handle}",
+                "verdict": "hype looks real",
+                "rankScore": momentum,
+                "postedAt": datetime.now(timezone.utc),
+                "reactionCounts": {"likes": 0, "comments": 0, "shares": 0},
+                "project": {
+                    "url": project_url,
+                    "title": "test/repo",
+                    "kind": "repo",
+                    "momentumScore": momentum,
+                },
+                "signalsSummary": "test",
+            }
+        ).inserted_id
+    )
 
 
 def _cleanup(db, project_url):

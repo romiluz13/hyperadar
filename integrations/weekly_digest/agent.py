@@ -3,6 +3,7 @@
 Voice: the editor. "This week in AI dev: 3 breakouts, 2 hot threads, 1 hidden gem."
 Reads MongoDB only (no external sources). Uses Grove to write the summary.
 """
+
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -36,7 +37,11 @@ Workflow:
 async def fetch_week_posts() -> str:
     """Fetch this week's top posts from all HypeRadar agents."""
     since = datetime.now(timezone.utc) - timedelta(days=7)
-    cursor = mongo.db.posts.find({"postedAt": {"$gte": since}}).sort("rankScore", -1).limit(15)
+    cursor = (
+        mongo.db.posts.find({"postedAt": {"$gte": since}})
+        .sort("rankScore", -1)
+        .limit(15)
+    )
     posts = await cursor.to_list(length=15)
     if not posts:
         return "No posts this week."
@@ -68,21 +73,32 @@ async def write_digest(summary: str) -> str:
         "hypeVerdict": "hype looks real",
     }
     signal = {
-        "source": "aggregator", "metric": "mentions",
-        "value": 0, "delta": 0,
+        "source": "aggregator",
+        "metric": "mentions",
+        "value": 0,
+        "delta": 0,
         "summary": f"weekly digest for {week_of}",
     }
     post_id = await write_post(
-        AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE,
-        project, summary[:500], "hype looks real", signal, 100,
+        AGENT_HANDLE,
+        AGENT_NAME,
+        AGENT_BIO,
+        SOURCE_TYPE,
+        project,
+        summary[:500],
+        "hype looks real",
+        signal,
+        100,
     )
     # Also write a digest doc for the archive
-    await mongo.db.digests.insert_one({
-        "weekOf": datetime.now(timezone.utc),
-        "itemCount": 0,  # could count the week's posts
-        "summary": summary,
-        "agentHandle": AGENT_HANDLE,
-    })
+    await mongo.db.digests.insert_one(
+        {
+            "weekOf": datetime.now(timezone.utc),
+            "itemCount": 0,  # could count the week's posts
+            "summary": summary,
+            "agentHandle": AGENT_HANDLE,
+        }
+    )
     return f"Digest posted for {week_of} -> post {post_id}"
 
 
@@ -95,7 +111,11 @@ def build_agent(checkpointer=None):
         default_headers={"api-key": os.environ["GROVE_API_KEY"]},
         temperature=0.7,
     )
-    kwargs = {"model": model, "tools": [fetch_week_posts, write_digest], "system_prompt": SYSTEM_PROMPT}
+    kwargs = {
+        "model": model,
+        "tools": [fetch_week_posts, write_digest],
+        "system_prompt": SYSTEM_PROMPT,
+    }
     if checkpointer is not None:
         kwargs["checkpointer"] = checkpointer
     return create_deep_agent(**kwargs)

@@ -1,4 +1,5 @@
 """@weekly-digest runner."""
+
 import asyncio
 import os
 import sys

@@ -94,7 +94,10 @@ async def insert_post(post: dict) -> str:
 async def get_momentum_history(project_id: str, limit: int = 20) -> list[dict]:
     """Read recent signals for a project from the time-series collection."""
     cursor = (
-        _get_db().signals.find({"projectId": project_id}).sort("capturedAt", -1).limit(limit)
+        _get_db()
+        .signals.find({"projectId": project_id})
+        .sort("capturedAt", -1)
+        .limit(limit)
     )
     return await cursor.to_list(length=limit)
 

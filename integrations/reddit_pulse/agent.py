@@ -3,6 +3,7 @@
 Voice: the vibe reader. Cares about discourse energy, not just upvotes.
 "r/LocalLLaMA can't shut up about this — 3 front-page threads this week."
 """
+
 import os
 import sys
 
@@ -53,7 +54,7 @@ async def fetch_reddit_posts() -> str:
         lines.append(
             f"- {c['title']} | {c['url']}\n"
             f"  upvotes={c['upvotes']} | comments={c['num_comments']} | "
-            f"subreddit={c.get('subreddit','?')}\n"
+            f"subreddit={c.get('subreddit', '?')}\n"
             f"  desc: {c['description'][:120]}"
         )
     return "\n".join(lines)
@@ -74,18 +75,31 @@ async def write_reddit_post(post_url: str, blurb: str, verdict: str) -> str:
 
     momentum = min(c["upvotes"] / 10, 100)  # 1000 upvotes = 100
     project = {
-        "url": c["url"], "title": c["title"], "kind": c["kind"],
-        "description": c["description"], "topics": c["topics"],
-        "momentumScore": round(momentum, 1), "hypeVerdict": verdict,
+        "url": c["url"],
+        "title": c["title"],
+        "kind": c["kind"],
+        "description": c["description"],
+        "topics": c["topics"],
+        "momentumScore": round(momentum, 1),
+        "hypeVerdict": verdict,
     }
     signal = {
-        "source": "reddit", "metric": "upvotes",
-        "value": c["upvotes"], "delta": c["num_comments"],
+        "source": "reddit",
+        "metric": "upvotes",
+        "value": c["upvotes"],
+        "delta": c["num_comments"],
         "summary": f"upvotes={c['upvotes']}, comments={c['num_comments']}",
     }
     post_id = await write_post(
-        AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE,
-        project, blurb, verdict, signal, momentum,
+        AGENT_HANDLE,
+        AGENT_NAME,
+        AGENT_BIO,
+        SOURCE_TYPE,
+        project,
+        blurb,
+        verdict,
+        signal,
+        momentum,
     )
     return f"Posted: {c['title']} (upvotes {c['upvotes']}, verdict '{verdict}') -> post {post_id}"
 
@@ -99,7 +113,11 @@ def build_agent(checkpointer=None):
         default_headers={"api-key": os.environ["GROVE_API_KEY"]},
         temperature=0.7,
     )
-    kwargs = {"model": model, "tools": [fetch_reddit_posts, write_reddit_post], "system_prompt": SYSTEM_PROMPT}
+    kwargs = {
+        "model": model,
+        "tools": [fetch_reddit_posts, write_reddit_post],
+        "system_prompt": SYSTEM_PROMPT,
+    }
     if checkpointer is not None:
         kwargs["checkpointer"] = checkpointer
     return create_deep_agent(**kwargs)

@@ -48,6 +48,9 @@ export default async function Home() {
 				>
 					The trending AI-dev radar that Port operates and MongoDB remembers.
 				</p>
+				<div style={{ marginTop: "0.5rem", display: "flex", gap: "0.75rem" }}>
+					<a href="/waves" style={{ color: "#3b82f6", fontSize: "0.85rem", textDecoration: "none" }}>🌊 Hype Waves</a>
+				</div>
 			</header>
 
 			{posts.length === 0 ? (
@@ -88,7 +91,14 @@ export default async function Home() {
 										alignItems: "baseline",
 									}}
 								>
-									<a href={`/agent/${post.agentHandle.replace("@", "")}`} style={{ color: "#888", fontSize: "0.85rem", textDecoration: "none" }}>
+									<a
+										href={`/agent/${post.agentHandle.replace("@", "")}`}
+										style={{
+											color: "#888",
+											fontSize: "0.85rem",
+											textDecoration: "none",
+										}}
+									>
 										▲ {i + 1} · {post.agentHandle}
 									</a>
 									<span style={{ color: "#666", fontSize: "0.8rem" }}>

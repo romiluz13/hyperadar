@@ -3,6 +3,7 @@
 Tests that each agent-creator can fetch candidates (mocked) and write a post
 to MongoDB + Port via the shared write_post function.
 """
+
 import os
 import sys
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from _shared.write_post import write_post  # noqa: E402
 def db():
     import pymongo
     from dotenv import load_dotenv
+
     load_dotenv()
     client = pymongo.MongoClient(os.environ["MONGODB_URI"])
     return client[os.environ.get("MONGODB_DB", "hyperadar")]
@@ -38,16 +40,28 @@ class TestRedditPulse:
         url = f"https://www.reddit.com/r/test/test-{datetime.now(timezone.utc).timestamp()}"
         try:
             post_id = await write_post(
-                "@reddit-pulse", "Reddit Pulse", "test bio", "reddit",
+                "@reddit-pulse",
+                "Reddit Pulse",
+                "test bio",
+                "reddit",
                 {
-                    "url": url, "title": "r/test trending post", "kind": "thread",
-                    "description": "test desc", "topics": ["reddit", "ai"],
-                    "momentumScore": 65.0, "hypeVerdict": "hype looks real",
+                    "url": url,
+                    "title": "r/test trending post",
+                    "kind": "thread",
+                    "description": "test desc",
+                    "topics": ["reddit", "ai"],
+                    "momentumScore": 65.0,
+                    "hypeVerdict": "hype looks real",
                 },
                 "r/test can't shut up about this — 50 upvotes in 2h.",
                 "hype looks real",
-                {"source": "reddit", "metric": "upvotes", "value": 50, "delta": 12,
-                 "summary": "upvotes=50, comments=12"},
+                {
+                    "source": "reddit",
+                    "metric": "upvotes",
+                    "value": 50,
+                    "delta": 12,
+                    "summary": "upvotes=50, comments=12",
+                },
                 65.0,
             )
             assert post_id
@@ -65,16 +79,28 @@ class TestYouTubeTrends:
         url = f"https://www.youtube.com/watch?v=test{datetime.now(timezone.utc).timestamp()}"
         try:
             post_id = await write_post(
-                "@youtube-trends", "YouTube Trends", "test bio", "youtube",
+                "@youtube-trends",
+                "YouTube Trends",
+                "test bio",
+                "youtube",
                 {
-                    "url": url, "title": "AI Agent Demo", "kind": "video",
-                    "description": "12-min demo", "topics": ["youtube", "ai"],
-                    "momentumScore": 80.0, "hypeVerdict": "hype looks real",
+                    "url": url,
+                    "title": "AI Agent Demo",
+                    "kind": "video",
+                    "description": "12-min demo",
+                    "topics": ["youtube", "ai"],
+                    "momentumScore": 80.0,
+                    "hypeVerdict": "hype looks real",
                 },
                 "This 12-min demo hit 40k views in 48h.",
                 "hype looks real",
-                {"source": "youtube", "metric": "views", "value": 40000, "delta": 0,
-                 "summary": "serp_rank=1"},
+                {
+                    "source": "youtube",
+                    "metric": "views",
+                    "value": 40000,
+                    "delta": 0,
+                    "summary": "serp_rank=1",
+                },
                 80.0,
             )
             assert post_id
@@ -92,16 +118,28 @@ class TestHiddenGems:
         url = f"https://github.com/test/hidden-gem-{datetime.now(timezone.utc).timestamp()}"
         try:
             post_id = await write_post(
-                "@hidden-gems", "Hidden Gems", "test bio", "web",
+                "@hidden-gems",
+                "Hidden Gems",
+                "test bio",
+                "web",
                 {
-                    "url": url, "title": "test/hidden-gem", "kind": "repo",
-                    "description": "47 stars but rising", "topics": ["hn", "hidden-gem"],
-                    "momentumScore": 45.0, "hypeVerdict": "emerging",
+                    "url": url,
+                    "title": "test/hidden-gem",
+                    "kind": "repo",
+                    "description": "47 stars but rising",
+                    "topics": ["hn", "hidden-gem"],
+                    "momentumScore": 45.0,
+                    "hypeVerdict": "emerging",
                 },
                 "47 stars. But look at the trajectory.",
                 "emerging",
-                {"source": "hn", "metric": "stars", "value": 47, "delta": 0,
-                 "summary": "stars=47, hidden gem"},
+                {
+                    "source": "hn",
+                    "metric": "stars",
+                    "value": 47,
+                    "delta": 0,
+                    "summary": "stars=47, hidden gem",
+                },
                 45.0,
             )
             assert post_id
@@ -119,10 +157,21 @@ class TestUrlValidation:
         url = "javascript:alert('xss')"
         with pytest.raises(ValueError, match="Invalid URL scheme"):
             await write_post(
-                "@test", "test", "test", "test",
-                {"url": url, "title": "xss", "kind": "site",
-                 "description": "", "topics": [], "momentumScore": 0, "hypeVerdict": "inflated"},
-                "test", "inflated",
+                "@test",
+                "test",
+                "test",
+                "test",
+                {
+                    "url": url,
+                    "title": "xss",
+                    "kind": "site",
+                    "description": "",
+                    "topics": [],
+                    "momentumScore": 0,
+                    "hypeVerdict": "inflated",
+                },
+                "test",
+                "inflated",
                 {"source": "test", "metric": "mentions", "value": 0, "delta": 0},
                 0,
             )
@@ -131,10 +180,21 @@ class TestUrlValidation:
         url = f"https://github.com/test/safe-{datetime.now(timezone.utc).timestamp()}"
         try:
             post_id = await write_post(
-                "@test", "test", "test", "test",
-                {"url": url, "title": "safe", "kind": "repo",
-                 "description": "", "topics": [], "momentumScore": 50, "hypeVerdict": "emerging"},
-                "test", "emerging",
+                "@test",
+                "test",
+                "test",
+                "test",
+                {
+                    "url": url,
+                    "title": "safe",
+                    "kind": "repo",
+                    "description": "",
+                    "topics": [],
+                    "momentumScore": 50,
+                    "hypeVerdict": "emerging",
+                },
+                "test",
+                "emerging",
                 {"source": "test", "metric": "stars", "value": 100, "delta": 0},
                 50,
             )

@@ -4,6 +4,7 @@ Bright Data's reddit_posts pipeline gives structured JSON (title, upvotes,
 comments, related posts) without the $12k/yr Reddit API commercial gate.
 See docs/reference/source-constraints-and-costs.md.
 """
+
 import asyncio
 import json
 import logging
@@ -27,7 +28,10 @@ async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
     for sub_url in SUBREDDITS[:2]:  # limit to 2 subreddits per run (cost)
         try:
             proc = await asyncio.create_subprocess_exec(
-                "bdata", "pipelines", "reddit_posts", sub_url,
+                "bdata",
+                "pipelines",
+                "reddit_posts",
+                sub_url,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -45,32 +49,36 @@ async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
             title = post.get("title", "")
             url = post.get("url", sub_url)
 
-            candidates.append({
-                "url": url,
-                "title": title[:200],
-                "kind": "thread",
-                "description": post.get("description", "")[:500],
-                "topics": ["reddit", "ai"],
-                "upvotes": upvotes,
-                "num_comments": num_comments,
-                "subreddit": post.get("community_name", ""),
-                "stars": upvotes,  # use upvotes as the "momentum" proxy
-            })
+            candidates.append(
+                {
+                    "url": url,
+                    "title": title[:200],
+                    "kind": "thread",
+                    "description": post.get("description", "")[:500],
+                    "topics": ["reddit", "ai"],
+                    "upvotes": upvotes,
+                    "num_comments": num_comments,
+                    "subreddit": post.get("community_name", ""),
+                    "stars": upvotes,  # use upvotes as the "momentum" proxy
+                }
+            )
 
             # Extract GitHub repos from related posts (hidden gems on Reddit)
             for related in post.get("related_posts", [])[:5]:
                 rel_url = related.get("community_url", "")
                 if "github.com" in rel_url:
-                    candidates.append({
-                        "url": rel_url,
-                        "title": related.get("title", rel_url)[:200],
-                        "kind": "repo",
-                        "description": related.get("title", ""),
-                        "topics": ["reddit-found", "ai"],
-                        "upvotes": int(related.get("num_upvotes", 0) or 0),
-                        "num_comments": int(related.get("num_comments", 0) or 0),
-                        "stars": int(related.get("num_upvotes", 0) or 0),
-                    })
+                    candidates.append(
+                        {
+                            "url": rel_url,
+                            "title": related.get("title", rel_url)[:200],
+                            "kind": "repo",
+                            "description": related.get("title", ""),
+                            "topics": ["reddit-found", "ai"],
+                            "upvotes": int(related.get("num_upvotes", 0) or 0),
+                            "num_comments": int(related.get("num_comments", 0) or 0),
+                            "stars": int(related.get("num_upvotes", 0) or 0),
+                        }
+                    )
         except Exception as e:
             logging.warning("reddit_source fetch failed for %s: %s", sub_url, e)
             continue

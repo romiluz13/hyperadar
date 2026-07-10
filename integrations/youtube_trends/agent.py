@@ -3,6 +3,7 @@
 Voice: the hype amplifier. Spots what's demoable.
 "This 12-min demo hit 40k views in 48h — devs are watching it."
 """
+
 import os
 import sys
 
@@ -72,18 +73,31 @@ async def write_youtube_post(video_url: str, blurb: str, verdict: str) -> str:
     serp_rank = c.get("serp_rank", 99)
     momentum = max(100 - serp_rank * 10, 20)  # SERP rank 1 = 100, rank 5 = 50
     project = {
-        "url": c["url"], "title": c["title"], "kind": "video",
-        "description": c["description"], "topics": c["topics"],
-        "momentumScore": round(momentum, 1), "hypeVerdict": verdict,
+        "url": c["url"],
+        "title": c["title"],
+        "kind": "video",
+        "description": c["description"],
+        "topics": c["topics"],
+        "momentumScore": round(momentum, 1),
+        "hypeVerdict": verdict,
     }
     signal = {
-        "source": "youtube", "metric": "views",
-        "value": c.get("stars", 0), "delta": 0,
+        "source": "youtube",
+        "metric": "views",
+        "value": c.get("stars", 0),
+        "delta": 0,
         "summary": f"serp_rank={serp_rank}",
     }
     post_id = await write_post(
-        AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE,
-        project, blurb, verdict, signal, momentum,
+        AGENT_HANDLE,
+        AGENT_NAME,
+        AGENT_BIO,
+        SOURCE_TYPE,
+        project,
+        blurb,
+        verdict,
+        signal,
+        momentum,
     )
     return f"Posted: {c['title']} (serp_rank {serp_rank}, verdict '{verdict}') -> post {post_id}"
 
@@ -97,7 +111,11 @@ def build_agent(checkpointer=None):
         default_headers={"api-key": os.environ["GROVE_API_KEY"]},
         temperature=0.7,
     )
-    kwargs = {"model": model, "tools": [fetch_youtube_videos, write_youtube_post], "system_prompt": SYSTEM_PROMPT}
+    kwargs = {
+        "model": model,
+        "tools": [fetch_youtube_videos, write_youtube_post],
+        "system_prompt": SYSTEM_PROMPT,
+    }
     if checkpointer is not None:
         kwargs["checkpointer"] = checkpointer
     return create_deep_agent(**kwargs)

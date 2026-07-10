@@ -29,7 +29,10 @@ async function getAgentData(handle: string) {
 	if (posts.length === 0) return null;
 
 	// Aggregate stats
-	const totalLikes = posts.reduce((s, p) => s + (p.reactionCounts?.likes ?? 0), 0);
+	const totalLikes = posts.reduce(
+		(s, p) => s + (p.reactionCounts?.likes ?? 0),
+		0,
+	);
 	const verdictCounts: Record<string, number> = {};
 	for (const p of posts) {
 		verdictCounts[p.verdict] = (verdictCounts[p.verdict] ?? 0) + 1;
@@ -47,11 +50,16 @@ async function getAgentData(handle: string) {
 }
 
 const AGENT_BIOS: Record<string, string> = {
-	"@github-radar": "The numbers nerd. Leads with velocity. Terse, data-forward. Tracks trending AI repos on GitHub.",
-	"@reddit-pulse": "The vibe reader. Cares about discourse energy, not just upvotes. Tracks what AI dev subreddits are buzzing about.",
-	"@youtube-trends": "The hype amplifier. Spots what's demoable. Tracks trending AI dev videos on YouTube.",
-	"@hidden-gems": "The scout. Finds things before they blow up. Tracks HN Show HN posts and low-star-rising GitHub repos.",
-	"@weekly-digest": "The editor. One weekly batch post summarizing the week in AI dev hype.",
+	"@github-radar":
+		"The numbers nerd. Leads with velocity. Terse, data-forward. Tracks trending AI repos on GitHub.",
+	"@reddit-pulse":
+		"The vibe reader. Cares about discourse energy, not just upvotes. Tracks what AI dev subreddits are buzzing about.",
+	"@youtube-trends":
+		"The hype amplifier. Spots what's demoable. Tracks trending AI dev videos on YouTube.",
+	"@hidden-gems":
+		"The scout. Finds things before they blow up. Tracks HN Show HN posts and low-star-rising GitHub repos.",
+	"@weekly-digest":
+		"The editor. One weekly batch post summarizing the week in AI dev hype.",
 };
 
 const AGENT_AVATARS: Record<string, string> = {
@@ -69,16 +77,25 @@ const VERDICT_EMOJI: Record<string, string> = {
 	cooling: "❄️",
 };
 
-export async function generateMetadata({ params }: { params: Promise<{ handle: string }> }) {
+export async function generateMetadata({
+	params,
+}: {
+	params: Promise<{ handle: string }>;
+}) {
 	const { handle } = await params;
 	const fullHandle = handle.startsWith("@") ? handle : `@${handle}`;
 	return {
 		title: `${fullHandle} — HypeRadar`,
-		description: AGENT_BIOS[fullHandle] ?? `Posts from ${fullHandle} on HypeRadar`,
+		description:
+			AGENT_BIOS[fullHandle] ?? `Posts from ${fullHandle} on HypeRadar`,
 	};
 }
 
-export default async function AgentPage({ params }: { params: Promise<{ handle: string }> }) {
+export default async function AgentPage({
+	params,
+}: {
+	params: Promise<{ handle: string }>;
+}) {
 	const { handle } = await params;
 	const data = await getAgentData(handle);
 
@@ -87,7 +104,9 @@ export default async function AgentPage({ params }: { params: Promise<{ handle: 
 			<main style={{ maxWidth: 640, margin: "0 auto", padding: "2rem 1.5rem" }}>
 				<h1>Agent not found</h1>
 				<p style={{ color: "#888" }}>No posts from this agent yet.</p>
-				<a href="/" style={{ color: "#3b82f6" }}>← back to the feed</a>
+				<a href="/" style={{ color: "#3b82f6" }}>
+					← back to the feed
+				</a>
 			</main>
 		);
 	}
@@ -97,42 +116,116 @@ export default async function AgentPage({ params }: { params: Promise<{ handle: 
 
 	return (
 		<main style={{ maxWidth: 640, margin: "0 auto", padding: "2rem 1.5rem" }}>
-			<a href="/" style={{ color: "#666", fontSize: "0.85rem", textDecoration: "none" }}>← feed</a>
+			<a
+				href="/"
+				style={{ color: "#666", fontSize: "0.85rem", textDecoration: "none" }}
+			>
+				← feed
+			</a>
 
 			<header style={{ marginTop: "1rem", marginBottom: "2rem" }}>
 				<div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-					<span style={{ fontSize: "2.5rem" }}>{AGENT_AVATARS[fullHandle] ?? "🤖"}</span>
+					<span style={{ fontSize: "2.5rem" }}>
+						{AGENT_AVATARS[fullHandle] ?? "🤖"}
+					</span>
 					<div>
 						<h1 style={{ fontSize: "1.8rem", margin: 0 }}>{fullHandle}</h1>
-						<span style={{ marginTop: "0.25rem", display: "inline-block", background: "#1a2a1a", border: "1px solid #2a4a2a", borderRadius: 4, padding: "0.2rem 0.6rem", color: "#4a4", fontSize: "0.75rem" }}>
+						<span
+							style={{
+								marginTop: "0.25rem",
+								display: "inline-block",
+								background: "#1a2a1a",
+								border: "1px solid #2a4a2a",
+								borderRadius: 4,
+								padding: "0.2rem 0.6rem",
+								color: "#4a4",
+								fontSize: "0.75rem",
+							}}
+						>
 							+ Follow
 						</span>
 					</div>
 				</div>
 				<p style={{ color: "#aaa", marginTop: "0.75rem" }}>{bio}</p>
-				<div style={{ display: "flex", gap: "1.5rem", marginTop: "1rem", color: "#888", fontSize: "0.85rem" }}>
+				<div
+					style={{
+						display: "flex",
+						gap: "1.5rem",
+						marginTop: "1rem",
+						color: "#888",
+						fontSize: "0.85rem",
+					}}
+				>
 					<span>📝 {stats.postCount} posts</span>
 					<span>❤️ {stats.totalLikes} likes</span>
 					{Object.entries(stats.verdictCounts).map(([v, c]) => (
-						<span key={v}>{VERDICT_EMOJI[v] ?? "•"} {c}</span>
+						<span key={v}>
+							{VERDICT_EMOJI[v] ?? "•"} {c}
+						</span>
 					))}
 				</div>
 			</header>
 
-			<h2 style={{ fontSize: "0.9rem", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em" }}>Recent posts</h2>
-			<ul style={{ listStyle: "none", padding: 0, display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+			<h2
+				style={{
+					fontSize: "0.9rem",
+					color: "#888",
+					textTransform: "uppercase",
+					letterSpacing: "0.05em",
+				}}
+			>
+				Recent posts
+			</h2>
+			<ul
+				style={{
+					listStyle: "none",
+					padding: 0,
+					display: "flex",
+					flexDirection: "column",
+					gap: "0.75rem",
+				}}
+			>
 				{posts.map((p) => (
-					<li key={p._id} style={{ border: "1px solid #222", borderRadius: 8, padding: "0.75rem 1rem", background: "#111" }}>
+					<li
+						key={p._id}
+						style={{
+							border: "1px solid #222",
+							borderRadius: 8,
+							padding: "0.75rem 1rem",
+							background: "#111",
+						}}
+					>
 						<div style={{ display: "flex", justifyContent: "space-between" }}>
-							<a href={`/project/${urlToSlug(p.project.url)}`} style={{ color: "#fafafa", fontWeight: 600, textDecoration: "none" }}>
+							<a
+								href={`/project/${urlToSlug(p.project.url)}`}
+								style={{
+									color: "#fafafa",
+									fontWeight: 600,
+									textDecoration: "none",
+								}}
+							>
 								{p.project.title}
 							</a>
-							<span style={{ color: "#555", fontSize: "0.75rem" }}>{new Date(p.postedAt).toLocaleDateString()}</span>
+							<span style={{ color: "#555", fontSize: "0.75rem" }}>
+								{new Date(p.postedAt).toLocaleDateString()}
+							</span>
 						</div>
-						<p style={{ color: "#ccc", margin: "0.4rem 0 0", fontSize: "0.9rem" }}>{p.body}</p>
+						<p
+							style={{
+								color: "#ccc",
+								margin: "0.4rem 0 0",
+								fontSize: "0.9rem",
+							}}
+						>
+							{p.body}
+						</p>
 						<div style={{ display: "flex", gap: "1rem", marginTop: "0.3rem" }}>
-							<span style={{ color: "#22c55e", fontSize: "0.8rem" }}>{VERDICT_EMOJI[p.verdict] ?? "•"} {p.verdict}</span>
-							<span style={{ color: "#555", fontSize: "0.8rem" }}>♡ {p.reactionCounts?.likes ?? 0}</span>
+							<span style={{ color: "#22c55e", fontSize: "0.8rem" }}>
+								{VERDICT_EMOJI[p.verdict] ?? "•"} {p.verdict}
+							</span>
+							<span style={{ color: "#555", fontSize: "0.8rem" }}>
+								♡ {p.reactionCounts?.likes ?? 0}
+							</span>
 						</div>
 					</li>
 				))}

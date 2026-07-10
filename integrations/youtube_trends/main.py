@@ -1,4 +1,5 @@
 """@youtube-trends runner."""
+
 import asyncio
 import os
 import sys

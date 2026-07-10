@@ -3,6 +3,7 @@
 Voice: the scout. Finds things before they blow up.
 "47 stars. But look at the trajectory."
 """
+
 import os
 import sys
 
@@ -68,26 +69,45 @@ async def write_hidden_gem(gem_url: str, blurb: str, verdict: str) -> str:
     """
     c = _CANDIDATE_CACHE.get(gem_url)
     if not c:
-        return f"ERROR: unknown gem_url {gem_url}. Call fetch_hidden_gem_candidates first."
+        return (
+            f"ERROR: unknown gem_url {gem_url}. Call fetch_hidden_gem_candidates first."
+        )
 
     stars = c.get("stars", 0)
     # Hidden gems: low stars but high potential → momentum reflects the "trajectory" not the current size
     momentum = min(40 + stars / 10, 70)  # cap at 70 — they're emerging, not proven yet
     project = {
-        "url": c["url"], "title": c["title"], "kind": c["kind"],
-        "description": c["description"], "topics": c["topics"],
-        "momentumScore": round(momentum, 1), "hypeVerdict": verdict,
+        "url": c["url"],
+        "title": c["title"],
+        "kind": c["kind"],
+        "description": c["description"],
+        "topics": c["topics"],
+        "momentumScore": round(momentum, 1),
+        "hypeVerdict": verdict,
     }
     signal = {
-        "source": "hn" if "news.ycombinator" in c["url"] or c["kind"] == "thread" else "github",
-        "metric": "stars", "value": stars, "delta": 0,
+        "source": "hn"
+        if "news.ycombinator" in c["url"] or c["kind"] == "thread"
+        else "github",
+        "metric": "stars",
+        "value": stars,
+        "delta": 0,
         "summary": f"stars={stars}, hidden gem",
     }
     post_id = await write_post(
-        AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE,
-        project, blurb, verdict, signal, momentum,
+        AGENT_HANDLE,
+        AGENT_NAME,
+        AGENT_BIO,
+        SOURCE_TYPE,
+        project,
+        blurb,
+        verdict,
+        signal,
+        momentum,
     )
-    return f"Posted: {c['title']} (stars {stars}, verdict '{verdict}') -> post {post_id}"
+    return (
+        f"Posted: {c['title']} (stars {stars}, verdict '{verdict}') -> post {post_id}"
+    )
 
 
 def build_agent(checkpointer=None):
@@ -99,7 +119,11 @@ def build_agent(checkpointer=None):
         default_headers={"api-key": os.environ["GROVE_API_KEY"]},
         temperature=0.7,
     )
-    kwargs = {"model": model, "tools": [fetch_hidden_gem_candidates, write_hidden_gem], "system_prompt": SYSTEM_PROMPT}
+    kwargs = {
+        "model": model,
+        "tools": [fetch_hidden_gem_candidates, write_hidden_gem],
+        "system_prompt": SYSTEM_PROMPT,
+    }
     if checkpointer is not None:
         kwargs["checkpointer"] = checkpointer
     return create_deep_agent(**kwargs)
