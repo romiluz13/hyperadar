@@ -61,11 +61,17 @@ async def write_digest(summary: str) -> str:
     Args:
         summary: max 500 chars, the editor's summary of the week's highlights
     """
+    from _shared.hype_waves import compute_hype_waves
+
+    # First: compute this week's hype waves (clustering + Grove labeling)
+    waves = compute_hype_waves()
+
     # Create a special "digest" project entity
-    week_of = datetime.now(timezone.utc).strftime("%Y-W%W")
+    now = datetime.now(timezone.utc)
+    week_id = now.strftime("%Y-W%W")
     project = {
-        "url": f"hyperadar://digest/{week_of}",
-        "title": f"Weekly Digest — {week_of}",
+        "url": f"hyperadar://digest/{week_id}",
+        "title": f"Weekly Digest — {week_id}",
         "kind": "site",
         "description": summary,
         "topics": ["weekly-digest", "ai-dev"],
@@ -77,29 +83,36 @@ async def write_digest(summary: str) -> str:
         "metric": "mentions",
         "value": 0,
         "delta": 0,
-        "summary": f"weekly digest for {week_of}",
+        "summary": f"weekly digest for {week_id}",
     }
+    # Include a link to the digest page in the post body
+    body_with_link = f"{summary[:400]}\n\n📖 Full digest: /digest/{week_id}"
     post_id = await write_post(
         AGENT_HANDLE,
         AGENT_NAME,
         AGENT_BIO,
         SOURCE_TYPE,
         project,
-        summary[:500],
+        body_with_link,
         "hype looks real",
         signal,
         100,
     )
-    # Also write a digest doc for the archive
-    await mongo.db.digests.insert_one(
+    # Upsert the digest doc with weekId (merges with waves from compute_hype_waves)
+    await mongo.db.digests.update_one(
+        {"weekId": week_id},
         {
-            "weekOf": datetime.now(timezone.utc),
-            "itemCount": 0,  # could count the week's posts
-            "summary": summary,
-            "agentHandle": AGENT_HANDLE,
-        }
+            "$set": {
+                "weekId": week_id,
+                "weekOf": now,
+                "summary": summary,
+                "agentHandle": AGENT_HANDLE,
+                "itemCount": 0,
+            },
+        },
+        upsert=True,
     )
-    return f"Digest posted for {week_of} -> post {post_id}"
+    return f"Digest posted for {week_id} ({len(waves)} waves) -> post {post_id}"
 
 
 def build_agent(checkpointer=None):

@@ -70,13 +70,13 @@ class TestHypeWavesStorage:
 
     def test_waves_stored_in_digests(self, db):
         """After computing waves, a digest doc with waves should exist."""
-        # Check if any digest with waves exists (the compute_hype_waves job
-        # may have been run manually)
         digest = db.digests.find_one({"waves": {"$exists": True}})
-        if digest:
-            assert "waves" in digest
-            assert isinstance(digest["waves"], list)
-            for wave in digest["waves"]:
-                assert "label" in wave
-                assert "projects" in wave
-                assert "avgMomentum" in wave
+        if not digest:
+            pytest.skip("no digest with waves — run compute_hype_waves first")
+        assert "waves" in digest
+        assert isinstance(digest["waves"], list)
+        assert "weekId" in digest, "digest should have weekId for /digest/[week] lookup"
+        for wave in digest["waves"]:
+            assert "label" in wave
+            assert "projects" in wave
+            assert "avgMomentum" in wave

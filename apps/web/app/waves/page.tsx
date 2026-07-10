@@ -95,7 +95,7 @@ export default async function WavesPage() {
 			)}
 
 			<footer style={{ marginTop: "3rem", color: "#444", fontSize: "0.8rem", textAlign: "center" }}>
-				Clustered by MongoDB Atlas Vector Search · Labeled by Grove LLM
+				Clustered by cosine similarity on MongoDB Vector Search embeddings · Labeled by Grove LLM
 			</footer>
 		</main>
 	);

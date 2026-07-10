@@ -12,7 +12,22 @@ type Digest = {
 
 async function getDigest(weekId: string) {
 	const db = await getDb();
-	return await db.collection<Digest>("digests").findOne({ weekId });
+	const digest = await db.collection<Digest>("digests").findOne({ weekId });
+	if (!digest) return null;
+
+	// Fetch the week's top posts by category for the digest sections
+	const weekStart = digest.weekOf ? new Date(digest.weekOf) : new Date();
+	const weekAgo = new Date(weekStart.getTime() - 7 * 24 * 60 * 60 * 1000);
+	const posts = await db.collection("posts").find({
+		postedAt: { $gte: weekAgo, $lte: weekStart },
+	}).sort({ rankScore: -1 }).limit(20).toArray();
+
+	// Categorize by agent + kind
+	const breakouts = posts.filter((p) => p.agentHandle === "@github-radar").slice(0, 3);
+	const hotThreads = posts.filter((p) => p.agentHandle === "@reddit-pulse").slice(0, 3);
+	const hiddenGems = posts.filter((p) => p.agentHandle === "@hidden-gems").slice(0, 3);
+
+	return { ...digest, breakouts, hotThreads, hiddenGems };
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ week: string }> }) {
@@ -75,6 +90,48 @@ export default async function DigestPage({ params }: { params: Promise<{ week: s
 				</>
 			) : (
 				<p style={{ color: "#666" }}>No hype waves computed for this week.</p>
+			)}
+
+			{/* Top breakouts / hot threads / hidden gems */}
+			{(digest.breakouts?.length > 0 || digest.hotThreads?.length > 0 || digest.hiddenGems?.length > 0) && (
+				<div style={{ marginTop: "2rem", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+					{digest.breakouts && digest.breakouts.length > 0 && (
+						<section>
+							<h2 style={{ fontSize: "0.9rem", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em" }}>🔥 Top breakouts</h2>
+							<ul style={{ listStyle: "none", padding: 0, marginTop: "0.5rem", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+								{digest.breakouts.map((p) => (
+									<li key={String(p._id)} style={{ color: "#aaa", fontSize: "0.85rem", padding: "0.3rem 0" }}>
+										{p.project.title} — {p.body.slice(0, 80)}
+									</li>
+								))}
+							</ul>
+						</section>
+					)}
+					{digest.hotThreads && digest.hotThreads.length > 0 && (
+						<section>
+							<h2 style={{ fontSize: "0.9rem", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em" }}>💬 Hot threads</h2>
+							<ul style={{ listStyle: "none", padding: 0, marginTop: "0.5rem", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+								{digest.hotThreads.map((p) => (
+									<li key={String(p._id)} style={{ color: "#aaa", fontSize: "0.85rem", padding: "0.3rem 0" }}>
+										{p.project.title} — {p.body.slice(0, 80)}
+									</li>
+								))}
+							</ul>
+						</section>
+					)}
+					{digest.hiddenGems && digest.hiddenGems.length > 0 && (
+						<section>
+							<h2 style={{ fontSize: "0.9rem", color: "#888", textTransform: "uppercase", letterSpacing: "0.05em" }}>🔍 Hidden gems</h2>
+							<ul style={{ listStyle: "none", padding: 0, marginTop: "0.5rem", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+								{digest.hiddenGems.map((p) => (
+									<li key={String(p._id)} style={{ color: "#aaa", fontSize: "0.85rem", padding: "0.3rem 0" }}>
+										{p.project.title} — {p.body.slice(0, 80)}
+									</li>
+								))}
+							</ul>
+						</section>
+					)}
+				</div>
 			)}
 		</main>
 	);
