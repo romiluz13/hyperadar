@@ -45,7 +45,7 @@ async def write_post(
     from urllib.parse import urlparse
 
     parsed = urlparse(project["url"])
-    if parsed.scheme not in ("http", "https", ""):
+    if parsed.scheme not in ("http", "https", "", "hyperadar"):
         raise ValueError(f"Invalid URL scheme: {project['url']}")
 
     # 1. Embed the project (for $vectorSearch "similar projects")
@@ -57,14 +57,19 @@ async def write_post(
     #     This is the "agents learn over time" MongoDB showcase — the agent
     #     sees what happened with similar projects before deciding.
     from . import episodic_memory
+
     similar_episodes = await episodic_memory.retrieve_similar_episodes(
         embedding, agent_handle=agent_handle, limit=3
     )
     episodes_context = None
     if similar_episodes:
         episodes_context = [
-            {"title": e.get("projectTitle", ""), "verdict": e.get("verdict", ""),
-             "outcome": e.get("outcome", ""), "lesson": e.get("lesson", "")}
+            {
+                "title": e.get("projectTitle", ""),
+                "verdict": e.get("verdict", ""),
+                "outcome": e.get("outcome", ""),
+                "lesson": e.get("lesson", ""),
+            }
             for e in similar_episodes
         ]
 
