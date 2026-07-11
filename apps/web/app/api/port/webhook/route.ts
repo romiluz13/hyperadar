@@ -58,22 +58,45 @@ async function reportRunStatus(
 	}
 }
 
-/** Verify the Port HMAC-SHA256 signature. Returns true if valid. */
-function verifySignature(rawBody: string, signature: string | null): boolean {
+/** Verify the Port HMAC-SHA256 signature.
+ * Port format: x-port-signature = "v1,{base64_hmac}"
+ * Signed string: "{x-port-timestamp}.{raw_body}"
+ * Also checks the timestamp is within 5 minutes to prevent replay attacks.
+ */
+function verifySignature(
+	rawBody: string,
+	signature: string | null,
+	timestamp: string | null,
+): boolean {
 	const secret = process.env.PORT_WEBHOOK_SECRET;
 	if (!secret) {
 		console.error("PORT_WEBHOOK_SECRET not set — rejecting webhook");
 		return false;
 	}
-	if (!signature) return false;
-	const expected = crypto
+	if (!signature || !timestamp) return false;
+
+	// Check timestamp is within 5 minutes (replay attack prevention)
+	const ts = Number.parseInt(timestamp, 10);
+	if (Number.isNaN(ts)) return false;
+	const now = Math.floor(Date.now() / 1000);
+	if (Math.abs(now - ts) > 300) return false;
+
+	// Port signature format: "v1,{base64_hmac}"
+	const match = signature.match(/^v1,(.+)$/);
+	if (!match) return false;
+	const receivedSig = match[1];
+
+	// Signed string: "{timestamp}.{body}"
+	const signedString = `${timestamp}.${rawBody}`;
+	const expectedSig = crypto
 		.createHmac("sha256", secret)
-		.update(rawBody)
-		.digest("hex");
+		.update(signedString)
+		.digest("base64");
+
 	try {
 		return crypto.timingSafeEqual(
-			Buffer.from(signature),
-			Buffer.from(expected),
+			Buffer.from(receivedSig),
+			Buffer.from(expectedSig),
 		);
 	} catch {
 		return false;
@@ -84,8 +107,9 @@ export async function POST(req: NextRequest) {
 	// Read raw body for signature verification
 	const rawBody = await req.text();
 	const signature = req.headers.get("x-port-signature");
+	const timestamp = req.headers.get("x-port-timestamp");
 
-	if (!verifySignature(rawBody, signature)) {
+	if (!verifySignature(rawBody, signature, timestamp)) {
 		return NextResponse.json({ error: "invalid signature" }, { status: 401 });
 	}
 
