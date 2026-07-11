@@ -4,6 +4,7 @@ Sets asyncio_mode=auto so async test methods work without @pytest.mark.asyncio.
 Adds the integrations/ dir to sys.path so `from _shared import ...` works.
 Provides a shared `db` fixture.
 """
+
 import os
 import sys
 from pathlib import Path

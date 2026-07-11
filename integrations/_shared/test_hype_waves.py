@@ -3,6 +3,7 @@
 Tests the clustering seam: projects with similar embeddings group together,
 Grove labels clusters, results store in digests.
 """
+
 import os
 import sys
 
@@ -36,8 +37,16 @@ class TestClusterProjects:
         """Two projects with near-identical embeddings should be in one cluster."""
         emb = [0.9, 0.1, 0.0] * 128  # 384-dim
         projects = [
-            {"title": "agent-a", "url": "https://github.com/a/agent-a", "embedding": emb},
-            {"title": "agent-b", "url": "https://github.com/b/agent-b", "embedding": emb},
+            {
+                "title": "agent-a",
+                "url": "https://github.com/a/agent-a",
+                "embedding": emb,
+            },
+            {
+                "title": "agent-b",
+                "url": "https://github.com/b/agent-b",
+                "embedding": emb,
+            },
         ]
         clusters = cluster_projects(projects, threshold=0.7)
         assert len(clusters) == 1, "similar projects should be in one cluster"
@@ -46,8 +55,16 @@ class TestClusterProjects:
     def test_dissimilar_projects_separate(self):
         """Two projects with orthogonal embeddings should be in separate clusters."""
         projects = [
-            {"title": "agent", "url": "https://github.com/a/agent", "embedding": [1.0] + [0.0] * 383},
-            {"title": "database", "url": "https://github.com/b/db", "embedding": [0.0] * 383 + [1.0]},
+            {
+                "title": "agent",
+                "url": "https://github.com/a/agent",
+                "embedding": [1.0] + [0.0] * 383,
+            },
+            {
+                "title": "database",
+                "url": "https://github.com/b/db",
+                "embedding": [0.0] * 383 + [1.0],
+            },
         ]
         clusters = cluster_projects(projects, threshold=0.7)
         assert len(clusters) == 2, "dissimilar projects should be in separate clusters"
@@ -58,7 +75,11 @@ class TestClusterProjects:
     def test_projects_without_embeddings_skipped(self):
         projects = [
             {"title": "no-emb", "url": "https://github.com/a/no-emb"},  # no embedding
-            {"title": "has-emb", "url": "https://github.com/b/has-emb", "embedding": [0.5] * 384},
+            {
+                "title": "has-emb",
+                "url": "https://github.com/b/has-emb",
+                "embedding": [0.5] * 384,
+            },
         ]
         clusters = cluster_projects(projects, threshold=0.7)
         assert len(clusters) == 1
