@@ -137,6 +137,10 @@ def main():
     # 7. embeddings_audit
     ensure_collection(db, "embeddings_audit")
 
+    # 8. episodes (episodic memory — T8)
+    ensure_collection(db, "episodes")
+    ensure_index(db.episodes, "projectUrl", name="project_url")
+
     # 8. Atlas Vector Search index on projects.embedding (384-dim, all-MiniLM-L6-v2)
     #    Production swap: Atlas auto-embedding (Voyage AI) — same query, different generation.
     try:

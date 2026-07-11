@@ -21,8 +21,9 @@ def pytest_configure(config):
     config.option.asyncio_mode = "auto"
 
 
-@pytest.fixture()
+@pytest.fixture(scope="session")
 def db():
-    """Shared MongoDB fixture for all integration tests."""
+    """Shared MongoDB fixture for all integration tests (session-scoped for
+    compatibility with async tests)."""
     client = pymongo.MongoClient(os.environ["MONGODB_URI"])
     return client[os.environ.get("MONGODB_DB", "hyperadar")]

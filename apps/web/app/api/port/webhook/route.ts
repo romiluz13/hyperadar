@@ -35,7 +35,11 @@ async function getPortToken(): Promise<string> {
 	}
 }
 
-async function reportRunStatus(runId: string, status: "SUCCESS" | "FAILURE", summary: string) {
+async function reportRunStatus(
+	runId: string,
+	status: "SUCCESS" | "FAILURE",
+	summary: string,
+) {
 	// Swallow errors — the action already succeeded/failed locally.
 	// Don't let Port API failures cause a 500 after successful MongoDB ops.
 	try {
@@ -43,7 +47,10 @@ async function reportRunStatus(runId: string, status: "SUCCESS" | "FAILURE", sum
 		if (!token) return;
 		await fetch(`${PORT_BASE}/actions/runs/${runId}`, {
 			method: "PATCH",
-			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+			headers: {
+				Authorization: `Bearer ${token}`,
+				"Content-Type": "application/json",
+			},
 			body: JSON.stringify({ status, summary }),
 		});
 	} catch (err) {
@@ -59,9 +66,15 @@ function verifySignature(rawBody: string, signature: string | null): boolean {
 		return false;
 	}
 	if (!signature) return false;
-	const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+	const expected = crypto
+		.createHmac("sha256", secret)
+		.update(rawBody)
+		.digest("hex");
 	try {
-		return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+		return crypto.timingSafeEqual(
+			Buffer.from(signature),
+			Buffer.from(expected),
+		);
 	} catch {
 		return false;
 	}
@@ -88,7 +101,10 @@ export async function POST(req: NextRequest) {
 		const entity = body?.entity;
 
 		if (!actionIdentifier || !runId) {
-			return NextResponse.json({ error: "missing action or runId" }, { status: 400 });
+			return NextResponse.json(
+				{ error: "missing action or runId" },
+				{ status: 400 },
+			);
 		}
 
 		// Validate runId is alphanumeric (prevent path injection into Port API URL)
@@ -103,13 +119,22 @@ export async function POST(req: NextRequest) {
 			case "run_agent_now": {
 				const handle = inputs.agent_handle;
 				if (typeof handle !== "string" || !handle.trim()) {
-					await reportRunStatus(runId, "FAILURE", "Missing or invalid agent_handle");
-					return NextResponse.json({ error: "missing agent_handle" }, { status: 400 });
+					await reportRunStatus(
+						runId,
+						"FAILURE",
+						"Missing or invalid agent_handle",
+					);
+					return NextResponse.json(
+						{ error: "missing agent_handle" },
+						{ status: 400 },
+					);
 				}
-				await db.collection("agents").updateOne(
-					{ handle: handle },
-					{ $set: { lastRunAt: new Date(), triggeredBy: "port-action" } },
-				);
+				await db
+					.collection("agents")
+					.updateOne(
+						{ handle: handle },
+						{ $set: { lastRunAt: new Date(), triggeredBy: "port-action" } },
+					);
 				summary = `Agent ${handle} run triggered via Port.`;
 				break;
 			}
@@ -118,12 +143,22 @@ export async function POST(req: NextRequest) {
 				const url = inputs.project_url;
 				if (typeof url !== "string" || !url.trim()) {
 					await reportRunStatus(runId, "FAILURE", "Missing project_url");
-					return NextResponse.json({ error: "missing project_url" }, { status: 400 });
+					return NextResponse.json(
+						{ error: "missing project_url" },
+						{ status: 400 },
+					);
 				}
 				await db.collection("projects").updateOne(
 					{ url },
 					{
-						$set: { url, title: url.split("/").pop() || url, kind: "repo", topics: [], momentumScore: 0, lastSeenAt: new Date() },
+						$set: {
+							url,
+							title: url.split("/").pop() || url,
+							kind: "repo",
+							topics: [],
+							momentumScore: 0,
+							lastSeenAt: new Date(),
+						},
 						$setOnInsert: { firstSeenAt: new Date() },
 					},
 					{ upsert: true },
@@ -134,14 +169,27 @@ export async function POST(req: NextRequest) {
 
 			case "boost_post": {
 				const entityId = entity?.identifier;
-				if (!entityId || typeof entityId !== "string" || !isValidObjectId(entityId)) {
-					await reportRunStatus(runId, "FAILURE", "Missing or invalid entity identifier");
-					return NextResponse.json({ error: "invalid entity id" }, { status: 400 });
+				if (
+					!entityId ||
+					typeof entityId !== "string" ||
+					!isValidObjectId(entityId)
+				) {
+					await reportRunStatus(
+						runId,
+						"FAILURE",
+						"Missing or invalid entity identifier",
+					);
+					return NextResponse.json(
+						{ error: "invalid entity id" },
+						{ status: 400 },
+					);
 				}
-				await db.collection("posts").updateOne(
-					{ _id: toObjectId(entityId) },
-					{ $set: { rankScore: 100, boosted: true } },
-				);
+				await db
+					.collection("posts")
+					.updateOne(
+						{ _id: toObjectId(entityId) },
+						{ $set: { rankScore: 100, boosted: true } },
+					);
 				summary = `Post ${entityId} boosted to rankScore 100.`;
 				break;
 			}
@@ -150,13 +198,15 @@ export async function POST(req: NextRequest) {
 				const entityId = entity?.identifier;
 				if (!entityId || typeof entityId !== "string") {
 					await reportRunStatus(runId, "FAILURE", "Missing entity identifier");
-					return NextResponse.json({ error: "missing entity" }, { status: 400 });
+					return NextResponse.json(
+						{ error: "missing entity" },
+						{ status: 400 },
+					);
 				}
 				const handle = `@${entityId}`;
-				await db.collection("agents").updateOne(
-					{ handle },
-					{ $set: { status: "muted" } },
-				);
+				await db
+					.collection("agents")
+					.updateOne({ handle }, { $set: { status: "muted" } });
 				summary = `Agent ${handle} muted.`;
 				break;
 			}
@@ -165,13 +215,15 @@ export async function POST(req: NextRequest) {
 				const entityId = entity?.identifier;
 				if (!entityId || typeof entityId !== "string") {
 					await reportRunStatus(runId, "FAILURE", "Missing entity identifier");
-					return NextResponse.json({ error: "missing entity" }, { status: 400 });
+					return NextResponse.json(
+						{ error: "missing entity" },
+						{ status: 400 },
+					);
 				}
 				const handle = `@${entityId}`;
-				await db.collection("agents").updateOne(
-					{ handle },
-					{ $set: { status: "retired" } },
-				);
+				await db
+					.collection("agents")
+					.updateOne({ handle }, { $set: { status: "retired" } });
 				summary = `Agent ${handle} retired.`;
 				break;
 			}
@@ -182,8 +234,15 @@ export async function POST(req: NextRequest) {
 			}
 
 			default:
-				await reportRunStatus(runId, "FAILURE", `Unknown action: ${actionIdentifier}`);
-				return NextResponse.json({ error: `unknown action: ${actionIdentifier}` }, { status: 400 });
+				await reportRunStatus(
+					runId,
+					"FAILURE",
+					`Unknown action: ${actionIdentifier}`,
+				);
+				return NextResponse.json(
+					{ error: `unknown action: ${actionIdentifier}` },
+					{ status: 400 },
+				);
 		}
 
 		await reportRunStatus(runId, "SUCCESS", summary || "Action completed.");
@@ -191,7 +250,11 @@ export async function POST(req: NextRequest) {
 	} catch (err) {
 		console.error("Port webhook error:", err);
 		if (runId) {
-			await reportRunStatus(runId, "FAILURE", `Internal error: ${err instanceof Error ? err.message : "unknown"}`);
+			await reportRunStatus(
+				runId,
+				"FAILURE",
+				`Internal error: ${err instanceof Error ? err.message : "unknown"}`,
+			);
 		}
 		return NextResponse.json({ error: "internal error" }, { status: 500 });
 	}

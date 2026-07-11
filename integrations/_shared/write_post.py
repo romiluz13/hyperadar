@@ -53,6 +53,21 @@ async def write_post(
         project["title"], project.get("description", ""), project.get("topics", [])
     )
 
+    # 1b. Episodic memory: retrieve similar past episodes as few-shot context.
+    #     This is the "agents learn over time" MongoDB showcase — the agent
+    #     sees what happened with similar projects before deciding.
+    from . import episodic_memory
+    similar_episodes = await episodic_memory.retrieve_similar_episodes(
+        embedding, agent_handle=agent_handle, limit=3
+    )
+    episodes_context = None
+    if similar_episodes:
+        episodes_context = [
+            {"title": e.get("projectTitle", ""), "verdict": e.get("verdict", ""),
+             "outcome": e.get("outcome", ""), "lesson": e.get("lesson", "")}
+            for e in similar_episodes
+        ]
+
     # 2. Upsert project to MongoDB (source of truth) with embedding
     project_doc = {
         "url": project["url"],
@@ -113,6 +128,8 @@ async def write_post(
             "summary", f"{signal.get('metric', 'mentions')}={signal.get('value', 0)}"
         ),
     }
+    if episodes_context:
+        post_doc["episodesContext"] = episodes_context
     post_id = await mongo.insert_post(post_doc)
 
     # 5. Upsert Port entities (catalog twin with relations)

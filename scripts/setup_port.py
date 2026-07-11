@@ -7,6 +7,7 @@ Usage:
     set -a && source .env && set +a
     uv run --with pymongo python scripts/setup_port.py
 """
+
 import json
 import os
 import urllib.error
@@ -24,7 +25,9 @@ def _get_token() -> str:
         return _token
     body = json.dumps({"clientId": _client_id, "clientSecret": _client_secret}).encode()
     req = urllib.request.Request(
-        f"{BASE}/auth/access_token", data=body, method="POST",
+        f"{BASE}/auth/access_token",
+        data=body,
+        method="POST",
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -39,8 +42,13 @@ def _get_token() -> str:
 def _req(method: str, path: str, body: dict | None = None) -> dict:
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(
-        f"{BASE}{path}", data=data, method=method,
-        headers={"Authorization": f"Bearer {_get_token()}", "Content-Type": "application/json"},
+        f"{BASE}{path}",
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {_get_token()}",
+            "Content-Type": "application/json",
+        },
     )
     try:
         with urllib.request.urlopen(req) as r:
@@ -68,7 +76,13 @@ ACTIONS = [
                         "type": "string",
                         "title": "Agent to run",
                         "description": "Agent handle to run",
-                        "enum": ["@github-radar", "@reddit-pulse", "@youtube-trends", "@hidden-gems", "@weekly-digest"],
+                        "enum": [
+                            "@github-radar",
+                            "@reddit-pulse",
+                            "@youtube-trends",
+                            "@hidden-gems",
+                            "@weekly-digest",
+                        ],
                     },
                 },
                 "required": ["agent_handle"],
@@ -76,7 +90,8 @@ ACTIONS = [
         },
         "invocationMethod": {
             "type": "WEBHOOK",
-            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000") + "/api/port/webhook",
+            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
+            + "/api/port/webhook",
         },
     },
     {
@@ -100,7 +115,8 @@ ACTIONS = [
         },
         "invocationMethod": {
             "type": "WEBHOOK",
-            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000") + "/api/port/webhook",
+            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
+            + "/api/port/webhook",
         },
     },
     {
@@ -115,7 +131,8 @@ ACTIONS = [
         },
         "invocationMethod": {
             "type": "WEBHOOK",
-            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000") + "/api/port/webhook",
+            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
+            + "/api/port/webhook",
         },
     },
     {
@@ -130,7 +147,8 @@ ACTIONS = [
         },
         "invocationMethod": {
             "type": "WEBHOOK",
-            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000") + "/api/port/webhook",
+            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
+            + "/api/port/webhook",
         },
     },
     {
@@ -145,7 +163,8 @@ ACTIONS = [
         },
         "invocationMethod": {
             "type": "WEBHOOK",
-            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000") + "/api/port/webhook",
+            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
+            + "/api/port/webhook",
         },
     },
     {
@@ -159,7 +178,8 @@ ACTIONS = [
         },
         "invocationMethod": {
             "type": "WEBHOOK",
-            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000") + "/api/port/webhook",
+            "url": os.environ.get("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
+            + "/api/port/webhook",
         },
     },
 ]
@@ -182,17 +202,23 @@ SCORECARDS = [
                 "identifier": "has_verdict",
                 "title": "Has a verdict",
                 "level": "Silver",
-                "query": {"combinator": "and", "conditions": [
-                    {"property": "$verdict", "operator": "isNotEmpty"},
-                ]},
+                "query": {
+                    "combinator": "and",
+                    "conditions": [
+                        {"property": "$verdict", "operator": "isNotEmpty"},
+                    ],
+                },
             },
             {
                 "identifier": "has_blurb",
                 "title": "Has a blurb",
                 "level": "Gold",
-                "query": {"combinator": "and", "conditions": [
-                    {"property": "$body", "operator": "isNotEmpty"},
-                ]},
+                "query": {
+                    "combinator": "and",
+                    "conditions": [
+                        {"property": "$body", "operator": "isNotEmpty"},
+                    ],
+                },
             },
         ],
     },
@@ -210,17 +236,23 @@ SCORECARDS = [
                 "identifier": "has_run",
                 "title": "Has run at least once",
                 "level": "Warning",
-                "query": {"combinator": "and", "conditions": [
-                    {"property": "$runCount", "operator": ">=", "value": 1},
-                ]},
+                "query": {
+                    "combinator": "and",
+                    "conditions": [
+                        {"property": "$runCount", "operator": ">=", "value": 1},
+                    ],
+                },
             },
             {
                 "identifier": "is_active",
                 "title": "Agent is active",
                 "level": "Healthy",
-                "query": {"combinator": "and", "conditions": [
-                    {"property": "$status", "operator": "=", "value": "active"},
-                ]},
+                "query": {
+                    "combinator": "and",
+                    "conditions": [
+                        {"property": "$status", "operator": "=", "value": "active"},
+                    ],
+                },
             },
         ],
     },
@@ -238,17 +270,23 @@ SCORECARDS = [
                 "identifier": "has_verdict",
                 "title": "Has a verdict",
                 "level": "Emerging",
-                "query": {"combinator": "and", "conditions": [
-                    {"property": "$hypeVerdict", "operator": "isNotEmpty"},
-                ]},
+                "query": {
+                    "combinator": "and",
+                    "conditions": [
+                        {"property": "$hypeVerdict", "operator": "isNotEmpty"},
+                    ],
+                },
             },
             {
                 "identifier": "high_momentum",
                 "title": "Momentum >= 70",
                 "level": "Confirmed",
-                "query": {"combinator": "and", "conditions": [
-                    {"property": "$momentumScore", "operator": ">=", "value": 70},
-                ]},
+                "query": {
+                    "combinator": "and",
+                    "conditions": [
+                        {"property": "$momentumScore", "operator": ">=", "value": 70},
+                    ],
+                },
             },
         ],
     },

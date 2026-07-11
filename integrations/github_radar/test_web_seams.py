@@ -9,21 +9,10 @@ Tests the MongoDB seams that power the web layer:
 Run:  uv run --with pymongo pytest test_web_seams.py -v
 """
 
-import os
 from datetime import datetime, timezone
 
 import pytest
 from bson import ObjectId
-
-
-@pytest.fixture()
-def db():
-    import pymongo
-    from dotenv import load_dotenv
-
-    load_dotenv()
-    client = pymongo.MongoClient(os.environ["MONGODB_URI"])
-    return client[os.environ.get("MONGODB_DB", "hyperadar")]
 
 
 def _make_post(db, momentum=50.0):

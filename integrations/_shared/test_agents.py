@@ -17,16 +17,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _shared.write_post import write_post  # noqa: E402
 
 
-@pytest.fixture()
-def db():
-    import pymongo
-    from dotenv import load_dotenv
-
-    load_dotenv()
-    client = pymongo.MongoClient(os.environ["MONGODB_URI"])
-    return client[os.environ.get("MONGODB_DB", "hyperadar")]
-
-
 def _cleanup(db, url):
     db.posts.delete_many({"project.url": url})
     db.projects.delete_many({"url": url})
