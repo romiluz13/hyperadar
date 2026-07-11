@@ -9,6 +9,7 @@ Uses MongoDB Atlas Vector Search for semantic episode retrieval (the same
 projects_vector_index pattern, on a dedicated episodes collection).
 This is the "agents learn" MongoDB showcase.
 """
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -103,8 +104,8 @@ async def retrieve_similar_episodes(
         results = await db.episodes.aggregate(pipeline).to_list(length=limit)
         if results:
             return results
-    except Exception:
-        pass  # index not ready — fall back to recent
+    except Exception as e:
+        logging.warning("episodes vector search failed, falling back to recent: %s", e)
 
     # Fallback: return most recent episodes (no semantic search)
     cursor = db.episodes.find(

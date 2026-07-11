@@ -141,7 +141,7 @@ def main():
     ensure_collection(db, "episodes")
     ensure_index(db.episodes, "projectUrl", name="project_url")
 
-    # 8. Atlas Vector Search index on projects.embedding (384-dim, all-MiniLM-L6-v2)
+    # 9. Atlas Vector Search index on projects.embedding (384-dim, all-MiniLM-L6-v2)
     #    Production swap: Atlas auto-embedding (Voyage AI) — same query, different generation.
     try:
         model = SearchIndexModel(
@@ -166,6 +166,31 @@ def main():
             print("  projects_vector_index exists ✓")
         else:
             print(f"  ⚠ vector index: {e}")
+
+    # 10. Atlas Vector Search index on episodes.embedding (episodic memory — T8)
+    try:
+        episodes_model = SearchIndexModel(
+            name="episodes_vector_index",
+            type="vectorSearch",
+            definition={
+                "fields": [
+                    {
+                        "type": "vector",
+                        "path": "embedding",
+                        "numDimensions": 384,
+                        "similarity": "cosine",
+                    },
+                    {"type": "filter", "path": "agentHandle"},
+                ]
+            },
+        )
+        db.episodes.create_search_index(model=episodes_model)
+        print("✓ vector search index created (episodes_vector_index)")
+    except OperationFailure as e:
+        if "already exists" in str(e):
+            print("  episodes_vector_index exists ✓")
+        else:
+            print(f"  ⚠ episodes vector index: {e}")
 
     print("\n=== Collections ===")
     for col in sorted(db.list_collection_names()):
