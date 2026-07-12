@@ -57,7 +57,10 @@ async def run_once() -> dict:
     )
     ok = posts_today > 0
     if not ok:
-        print(f"WARNING: {AGENT_HANDLE} produced 0 posts — possible source failure", file=sys.stderr)
+        print(
+            f"WARNING: {AGENT_HANDLE} produced 0 posts — possible source failure",
+            file=sys.stderr,
+        )
     return {"thread_id": thread_id, "posts_today": posts_today, "ok": ok}
 
 

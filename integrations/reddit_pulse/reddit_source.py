@@ -33,7 +33,9 @@ async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
     for query in SEARCH_QUERIES[:2]:  # 2 queries per run
         try:
             proc = await asyncio.create_subprocess_exec(
-                "bdata", "search", query,
+                "bdata",
+                "search",
+                query,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

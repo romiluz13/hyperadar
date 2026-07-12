@@ -53,7 +53,18 @@ async def write_post(
         project["title"], project.get("description", ""), project.get("topics", [])
     )
 
-    # 1b. Episodic memory: retrieve similar past episodes as few-shot context.
+    # 1b. Dedup guard: skip if this agent already posted about this project today.
+    from datetime import datetime, timezone
+    start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    existing = await mongo.db.posts.find_one({
+        "agentHandle": agent_handle,
+        "project.url": project["url"],
+        "postedAt": {"$gte": start_of_day},
+    })
+    if existing:
+        return str(existing["_id"])  # already posted today, return existing post id
+
+    # 1c. Episodic memory: retrieve similar past episodes as few-shot context.
     #     This is the "agents learn over time" MongoDB showcase — the agent
     #     sees what happened with similar projects before deciding.
     from . import episodic_memory
