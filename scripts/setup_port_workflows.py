@@ -122,7 +122,8 @@ def build_run_agent_workflow(installation_id: str) -> dict:
                         "repo": "hyperadar",
                         "workflow": "run-hyperadar-agent.yml",
                         "workflowInputs": {
-                            "agent": "{{ .outputs.trigger.agent }}"
+                            "agent": "{{ .outputs.trigger.agent }}",
+                            "port_node_run_id": "{{ .workflowNodeRun.identifier }}",
                         },
                         "reportWorkflowStatus": True,
                     },

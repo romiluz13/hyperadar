@@ -60,7 +60,10 @@ class RunAgentWorkflowTests(unittest.TestCase):
                 "org": "romiluz13",
                 "repo": "hyperadar",
                 "workflow": "run-hyperadar-agent.yml",
-                "workflowInputs": {"agent": "{{ .outputs.trigger.agent }}"},
+                "workflowInputs": {
+                    "agent": "{{ .outputs.trigger.agent }}",
+                    "port_node_run_id": "{{ .workflowNodeRun.identifier }}",
+                },
                 "reportWorkflowStatus": True,
             },
         )
@@ -166,6 +169,11 @@ class RunAgentWorkflowTests(unittest.TestCase):
             self.assertIn(f"- {agent}", contents)
         self.assertIn("run: uv run python main.py", contents)
         self.assertNotIn("uv run --frozen", contents)
+        self.assertIn("port_node_run_id:", contents)
+        self.assertIn("if: always() && inputs.port_node_run_id != ''", contents)
+        self.assertIn(
+            "/v1/workflows/nodes/runs/{node_run_id}", contents
+        )
         self.assertIn("BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}", contents)
         self.assertIn("@brightdata/cli@0.3.2", contents)
         self.assertIn("yt-dlp==2026.07.04", contents)
