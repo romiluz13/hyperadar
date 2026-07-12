@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # launchd uses a minimal PATH — restore the full one
-export PATH="/Users/rom.iluz/.local/share/mise/shims:/Users/rom.iluz/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="/Users/rom.iluz/.local/share/mise/shims:/Users/rom.iluz/.local/share/mise/installs/node/24/bin:/Users/rom.iluz/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 REPO_DIR="/Users/rom.iluz/Dev/hyperadar"
 LOG_DIR="$REPO_DIR/integrations/runs"
