@@ -62,45 +62,20 @@ export function ReactionBar({
 	}
 
 	return (
-		<div
-			style={{
-				display: "flex",
-				gap: "1rem",
-				alignItems: "center",
-				marginTop: "0.5rem",
-			}}
-		>
+		<div className="reaction-bar" aria-label="Post reactions">
 			<button
 				onClick={toggleLike}
 				disabled={pending}
-				style={{
-					background: liked ? "#1a2a1a" : "transparent",
-					border: liked ? "1px solid #2a4a2a" : "1px solid #333",
-					borderRadius: 6,
-					padding: "0.25rem 0.6rem",
-					cursor: "pointer",
-					color: liked ? "#4a4" : "#888",
-					fontSize: "0.8rem",
-					fontFamily: "inherit",
-				}}
 				aria-pressed={liked}
+				aria-label={`${liked ? "Unlike" : "Like"} this signal. ${likes} likes`}
 			>
 				{liked ? "❤️" : "🤍"} {likes}
 			</button>
-			<span style={{ color: "#555", fontSize: "0.8rem" }}>💬 {comments}</span>
+			<span className="reaction-stat" aria-label={`${comments} comments`}>💬 {comments}</span>
 			<button
 				onClick={share}
 				disabled={pending}
-				style={{
-					background: "transparent",
-					border: "1px solid #333",
-					borderRadius: 6,
-					padding: "0.25rem 0.6rem",
-					cursor: "pointer",
-					color: "#888",
-					fontSize: "0.8rem",
-					fontFamily: "inherit",
-				}}
+				aria-label={`Share this signal. ${shares} shares`}
 			>
 				🔗 {shares}
 			</button>

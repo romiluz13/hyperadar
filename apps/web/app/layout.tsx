@@ -6,9 +6,16 @@ export const metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body style={{ fontFamily: "system-ui, sans-serif", margin: 0, background: "#0a0a0a", color: "#fafafa" }}>
-        {children}
+      <body>
+        <a className="skip-link" href="#main-content">Skip to signals</a>
+        <nav className="site-nav" aria-label="Main navigation">
+          <a className="brand" href="/"><span className="brand-mark">✦</span> HypeRadar</a>
+          <div className="nav-links"><a href="/">Signals</a><a href="/waves">Waves</a></div>
+          <a className="nav-cta" href="/waves">See the wave →</a>
+        </nav>
+        <div id="main-content" tabIndex={-1}>{children}</div>
       </body>
     </html>
   );
 }
+import "./globals.css";

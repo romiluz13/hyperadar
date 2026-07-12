@@ -23,6 +23,8 @@ venv/
 
 # misc
 *.log
+*.tsbuildinfo
+apps/web/.next/
 integrations/*/.venv/
 integrations/*/.pytest_cache/
 integrations/*/uv.lock
