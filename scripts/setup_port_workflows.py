@@ -128,12 +128,7 @@ def build_run_agent_workflow(installation_id: str) -> dict:
                     },
                     "onFailure": "terminate",
                 },
-                "links": [
-                    {
-                        "url": "https://github.com/romiluz13/hyperadar/actions",
-                        "title": "Open GitHub run",
-                    }
-                ],
+                "links": ["https://github.com/romiluz13/hyperadar/actions"],
                 "verbose": True,
             },
         ],

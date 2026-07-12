@@ -65,6 +65,10 @@ class RunAgentWorkflowTests(unittest.TestCase):
             },
         )
         self.assertEqual(
+            dispatch["links"],
+            ["https://github.com/romiluz13/hyperadar/actions"],
+        )
+        self.assertEqual(
             workflow["connections"],
             [
                 {
@@ -160,7 +164,8 @@ class RunAgentWorkflowTests(unittest.TestCase):
             "weekly-digest",
         ):
             self.assertIn(f"- {agent}", contents)
-        self.assertIn("uv run --frozen python main.py", contents)
+        self.assertIn("run: uv run python main.py", contents)
+        self.assertNotIn("uv run --frozen", contents)
         self.assertIn("BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}", contents)
         self.assertIn("@brightdata/cli@0.3.2", contents)
         self.assertIn("yt-dlp==2026.07.04", contents)
