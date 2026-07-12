@@ -8,8 +8,8 @@ export default function manifest(): MetadataRoute.Manifest {
 			"The trending AI-dev radar that Port operates and MongoDB remembers.",
 		start_url: "/",
 		display: "standalone",
-		background_color: "#0a0a0a",
-		theme_color: "#0a0a0a",
+		background_color: "#fbfaf5",
+		theme_color: "#c8ff00",
 		icons: [],
 	};
 }

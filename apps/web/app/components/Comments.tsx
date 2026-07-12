@@ -1,8 +1,13 @@
 "use client";
 
-import { useState, useEffect, useTransition } from "react";
+import { useEffect, useId, useState, useTransition } from "react";
 
 type Comment = { userName: string; text: string; createdAt: string };
+
+const dateFormatter = new Intl.DateTimeFormat("en", {
+	month: "short",
+	day: "numeric",
+});
 
 export function Comments({
 	postId,
@@ -11,163 +16,152 @@ export function Comments({
 	postId: string;
 	initialComments: number;
 }) {
+	const threadId = useId();
 	const [comments, setComments] = useState<Comment[]>([]);
 	const [open, setOpen] = useState(false);
 	const [text, setText] = useState("");
 	const [name, setName] = useState("");
 	const [count, setCount] = useState(initialComments);
+	const [error, setError] = useState("");
+	const [loading, setLoading] = useState(false);
 	const [pending, startTransition] = useTransition();
 
 	useEffect(() => {
 		if (!open) return;
-		fetch(`/api/reactions/comments?postId=${postId}`)
-			.then((r) => r.json())
-			.then((d) => setComments(d.comments ?? []))
-			.catch(() => {});
+		const controller = new AbortController();
+		let active = true;
+		setError("");
+		setLoading(true);
+		fetch(`/api/reactions/comments?postId=${postId}`, {
+			signal: controller.signal,
+		})
+			.then((response) => {
+				if (!response.ok) throw new Error("Comment request failed");
+				return response.json();
+			})
+			.then((data) => {
+				if (active) setComments(data.comments ?? []);
+			})
+			.catch((fetchError: unknown) => {
+				if (
+					fetchError instanceof DOMException &&
+					fetchError.name === "AbortError"
+				) {
+					return;
+				}
+				if (active) {
+					setError("Comments could not load. Close this thread and try again.");
+				}
+			})
+			.finally(() => {
+				if (active) setLoading(false);
+			});
+		return () => {
+			active = false;
+			controller.abort();
+		};
 	}, [open, postId]);
 
-	function submit(e: React.FormEvent) {
-		e.preventDefault();
+	function submit(event: React.FormEvent) {
+		event.preventDefault();
 		if (!text.trim()) return;
+		setError("");
 		startTransition(async () => {
-			const res = await fetch("/api/reactions/comments", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ postId, text, userName: name }),
-			});
-			if (res.ok) {
-				setComments((cs) => [
-					...cs,
+			try {
+				const response = await fetch("/api/reactions/comments", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ postId, text, userName: name }),
+				});
+				if (!response.ok) throw new Error("Comment submission failed");
+				setComments((current) => [
+					...current,
 					{
-						userName: name || "anonymous",
+						userName: name.trim() || "anonymous",
 						text: text.trim(),
 						createdAt: new Date().toISOString(),
 					},
 				]);
-				setCount((c) => c + 1);
+				setCount((current) => current + 1);
 				setText("");
+			} catch {
+				setError("Your comment was not posted. Check the text and try again.");
 			}
 		});
 	}
 
 	return (
-		<div style={{ marginTop: "0.5rem" }}>
+		<div className="comments">
 			<button
-				onClick={() => setOpen((o) => !o)}
-				style={{
-					background: "transparent",
-					border: "none",
-					color: "#666",
-					cursor: "pointer",
-					fontSize: "0.8rem",
-					fontFamily: "inherit",
-					padding: 0,
-				}}
+				className="comment-toggle"
+				type="button"
+				onClick={() => setOpen((current) => !current)}
+				aria-expanded={open}
+				aria-controls={threadId}
 			>
-				💬 {count} {open ? "−" : "+"}
+				<span aria-hidden="true">◌</span> {count} {open ? "Close" : "Discuss"}
 			</button>
-			{open && (
+
+			{open ? (
 				<div
-					style={{
-						marginTop: "0.5rem",
-						borderTop: "1px solid #222",
-						paddingTop: "0.5rem",
-					}}
+					className="comment-thread"
+					id={threadId}
+					aria-busy={loading}
 				>
-					{comments.length === 0 ? (
-						<p
-							style={{
-								color: "#555",
-								fontSize: "0.8rem",
-								margin: "0 0 0.5rem",
-							}}
-						>
-							No comments yet — start the debate.
-						</p>
+					{loading ? (
+						<p className="comment-empty">Loading conversation…</p>
+					) : comments.length === 0 ? (
+						<p className="comment-empty">No comments yet. Start the debate.</p>
 					) : (
-						<ul
-							style={{
-								listStyle: "none",
-								padding: 0,
-								margin: "0 0 0.5rem",
-								display: "flex",
-								flexDirection: "column",
-								gap: "0.4rem",
-							}}
-						>
-							{comments.map((c, i) => (
-								<li key={i} style={{ fontSize: "0.8rem", color: "#aaa" }}>
-									<strong style={{ color: "#888" }}>{c.userName}</strong>{" "}
-									<span style={{ color: "#555" }}>
-										{new Date(c.createdAt).toLocaleDateString()}
-									</span>
-									<br />
-									{c.text}
+						<ul className="comment-list">
+							{comments.map((comment, index) => (
+								<li key={`${comment.createdAt}-${index}`}>
+									<div className="comment-byline">
+										<strong>{comment.userName}</strong>
+										<time dateTime={comment.createdAt}>
+											{dateFormatter.format(new Date(comment.createdAt))}
+										</time>
+									</div>
+									<p>{comment.text}</p>
 								</li>
 							))}
 						</ul>
 					)}
-					<form
-						onSubmit={submit}
-						style={{
-							display: "flex",
-							flexDirection: "column",
-							gap: "0.4rem",
-							marginTop: "0.5rem",
-						}}
-					>
+
+					<form className="comment-form" onSubmit={submit}>
+						<label htmlFor={`${threadId}-name`}>Name (optional)</label>
 						<input
+							id={`${threadId}-name`}
+							name="display-name"
 							value={name}
-							onChange={(e) => setName(e.target.value)}
-							placeholder="your name (optional)"
+							onChange={(event) => setName(event.target.value)}
+							placeholder="Ada…"
 							maxLength={50}
-							style={{
-								background: "#0a0a0a",
-								border: "1px solid #333",
-								borderRadius: 4,
-								padding: "0.35rem 0.5rem",
-								color: "#ccc",
-								fontSize: "0.8rem",
-								fontFamily: "inherit",
-							}}
+							autoComplete="off"
+							spellCheck={false}
 						/>
+
+						<label htmlFor={`${threadId}-comment`}>Your take</label>
 						<textarea
+							id={`${threadId}-comment`}
+							name="comment"
 							value={text}
-							onChange={(e) => setText(e.target.value)}
-							placeholder="is the hype real?"
+							onChange={(event) => setText(event.target.value)}
+							placeholder="What evidence changes the verdict?…"
 							maxLength={500}
-							rows={2}
-							style={{
-								background: "#0a0a0a",
-								border: "1px solid #333",
-								borderRadius: 4,
-								padding: "0.35rem 0.5rem",
-								color: "#ccc",
-								fontSize: "0.8rem",
-								fontFamily: "inherit",
-								resize: "vertical",
-							}}
+							rows={3}
 						/>
-						<button
-							type="submit"
-							disabled={pending || !text.trim()}
-							style={{
-								alignSelf: "flex-start",
-								background: "#1a2a1a",
-								border: "1px solid #2a4a2a",
-								borderRadius: 4,
-								padding: "0.3rem 0.8rem",
-								color: "#4a4",
-								cursor: "pointer",
-								fontSize: "0.8rem",
-								fontFamily: "inherit",
-							}}
-						>
-							{pending ? "posting..." : "comment"}
+
+						<button type="submit" disabled={pending || !text.trim()}>
+							{pending ? "Posting…" : "Post comment"}
 						</button>
 					</form>
+
+					<p className="form-error" aria-live="polite">
+						{error}
+					</p>
 				</div>
-			)}
+			) : null}
 		</div>
 	);
 }

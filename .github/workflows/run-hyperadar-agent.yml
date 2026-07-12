@@ -1,0 +1,103 @@
+name: Run HypeRadar Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: Agent creator to run
+        required: true
+        type: choice
+        options:
+          - github-radar
+          - reddit-pulse
+          - youtube-trends
+          - hidden-gems
+          - weekly-digest
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hyperadar-${{ inputs.agent }}
+  cancel-in-progress: false
+
+jobs:
+  run-agent:
+    name: Run ${{ inputs.agent }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out HypeRadar
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Resolve agent directory
+        id: agent
+        shell: bash
+        env:
+          AGENT_INPUT: ${{ inputs.agent }}
+        run: |
+          case "$AGENT_INPUT" in
+            github-radar) directory=github_radar ;;
+            reddit-pulse) directory=reddit_pulse ;;
+            youtube-trends) directory=youtube_trends ;;
+            hidden-gems) directory=hidden_gems ;;
+            weekly-digest) directory=weekly_digest ;;
+            *) echo "Unknown agent"; exit 2 ;;
+          esac
+          echo "directory=$directory" >> "$GITHUB_OUTPUT"
+
+      - name: Validate common secrets
+        shell: bash
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          PORT_CLIENT_ID: ${{ secrets.PORT_CLIENT_ID }}
+          PORT_CLIENT_SECRET: ${{ secrets.PORT_CLIENT_SECRET }}
+          GROVE_API_KEY: ${{ secrets.GROVE_API_KEY }}
+          GROVE_BASE_URL: ${{ secrets.GROVE_BASE_URL }}
+          GROVE_MODEL: ${{ secrets.GROVE_MODEL }}
+        run: |
+          for name in MONGODB_URI PORT_CLIENT_ID PORT_CLIENT_SECRET GROVE_API_KEY GROVE_BASE_URL GROVE_MODEL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not configured"
+              exit 1
+            fi
+          done
+
+      - name: Install Reddit source CLI
+        if: inputs.agent == 'reddit-pulse'
+        run: npm install --global @brightdata/cli@0.3.2
+
+      - name: Validate Reddit source secret
+        if: inputs.agent == 'reddit-pulse'
+        env:
+          BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
+        run: |
+          if [ -z "$BRIGHTDATA_API_KEY" ]; then
+            echo "::error::BRIGHTDATA_API_KEY is not configured"
+            exit 1
+          fi
+
+      - name: Install YouTube source CLI
+        if: inputs.agent == 'youtube-trends'
+        run: uv tool install yt-dlp==2026.07.04
+
+      - name: Run agent
+        working-directory: integrations/${{ steps.agent.outputs.directory }}
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          MONGODB_DB: hyperadar
+          PORT_CLIENT_ID: ${{ secrets.PORT_CLIENT_ID }}
+          PORT_CLIENT_SECRET: ${{ secrets.PORT_CLIENT_SECRET }}
+          GROVE_API_KEY: ${{ secrets.GROVE_API_KEY }}
+          GROVE_BASE_URL: ${{ secrets.GROVE_BASE_URL }}
+          GROVE_MODEL: ${{ secrets.GROVE_MODEL }}
+          BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.HYPERADAR_GITHUB_TOKEN || github.token }}
+        run: uv run --frozen python main.py

@@ -194,12 +194,6 @@ def _slug(s: str) -> str:
     For GitHub URLs, produces owner-repo (matching the web slug in lib/slug.ts
     and mongo.py) so the Port entity, MongoDB doc, and web route all share one key.
     """
-    from urllib.parse import urlparse
+    from .slug import slug_for_url
 
-    parsed = urlparse(s)
-    parts = [p for p in parsed.path.split("/") if p]
-    if parsed.hostname == "github.com" and len(parts) >= 2:
-        return f"{parts[0]}-{parts[1]}".lower()[:60]
-    # Fallback: alphanumeric + hyphen
-    keep = [c if c.isalnum() else "-" for c in s]
-    return "".join(keep).strip("-")[:60] or "entity"
+    return slug_for_url(s)[:120] or "entity"

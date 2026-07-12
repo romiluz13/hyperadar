@@ -45,20 +45,13 @@ def _now() -> datetime:
 
 async def upsert_project(project: dict, embedding: list[float] | None = None) -> dict:
     """Upsert a project doc (source of truth for rich data + vector). Returns it."""
-    from urllib.parse import urlparse
+    from .slug import slug_for_url
 
     now = _now()
     url = project["url"]
-    # SEO-friendly slug: github.com/Owner/Repo -> owner-repo (lowercased for URL stability)
-    parsed = urlparse(url)
-    parts = [p for p in parsed.path.split("/") if p]
-    if parsed.hostname == "github.com" and len(parts) >= 2:
-        slug = f"{parts[0]}-{parts[1]}".lower()
-    else:
-        slug = (parts[-1] if parts else parsed.hostname or url).lower()
     doc = {
         **project,
-        "slug": slug,
+        "slug": slug_for_url(url),
         "lastSeenAt": now,
     }
     if embedding is not None:

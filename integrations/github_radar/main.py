@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()  # load repo-root .env
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import mongo  # noqa: E402
 import port_client  # noqa: E402

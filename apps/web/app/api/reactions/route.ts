@@ -92,6 +92,39 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+	const postIds = [
+		...new Set(
+			(req.nextUrl.searchParams.get("postIds") ?? "")
+				.split(",")
+				.filter(Boolean),
+		),
+	];
+	if (postIds.length > 0) {
+		if (postIds.length > 20 || postIds.some((postId) => !isValidObjectId(postId))) {
+			return NextResponse.json(
+				{ error: "postIds must contain at most 20 valid ObjectIds" },
+				{ status: 400 },
+			);
+		}
+		try {
+			const db = await getDb();
+			const userId = await getOrCreateUserId();
+			const reactions = await db
+				.collection<Reaction>("reactions")
+				.find(
+					{ postId: { $in: postIds }, userId, type: "like" },
+					{ projection: { _id: 0, postId: 1 } },
+				)
+				.toArray();
+			return NextResponse.json({
+				likedPostIds: reactions.map((reaction) => reaction.postId),
+			});
+		} catch (err) {
+			console.error("reactions batch GET error:", err);
+			return NextResponse.json({ error: "internal error" }, { status: 500 });
+		}
+	}
+
 	const postId = req.nextUrl.searchParams.get("postId");
 	if (!postId || !isValidObjectId(postId)) {
 		return NextResponse.json(

@@ -1,5 +1,9 @@
+import Link from "next/link";
+
+import { ReactionBar } from "@/app/components/ReactionBar";
+import { ReactionStatusProvider } from "@/app/components/ReactionStatusProvider";
 import { getDb } from "@/lib/mongo";
-import { urlToSlug } from "@/lib/slug";
+import { projectHref } from "@/lib/routes";
 
 export const dynamic = "force-dynamic";
 
@@ -14,68 +18,80 @@ type Post = {
 	reactionCounts?: { likes: number; comments: number; shares: number };
 };
 
-async function getAgentData(handle: string) {
-	const db = await getDb();
-	// The handle in the URL is without @ (e.g. "github-radar"); stored with @
-	const fullHandle = handle.startsWith("@") ? handle : `@${handle}`;
-
-	const posts = await db
-		.collection<Post>("posts")
-		.find({ agentHandle: fullHandle })
-		.sort({ postedAt: -1 })
-		.limit(20)
-		.toArray();
-
-	if (posts.length === 0) return null;
-
-	// Aggregate stats
-	const totalLikes = posts.reduce(
-		(s, p) => s + (p.reactionCounts?.likes ?? 0),
-		0,
-	);
-	const verdictCounts: Record<string, number> = {};
-	for (const p of posts) {
-		verdictCounts[p.verdict] = (verdictCounts[p.verdict] ?? 0) + 1;
-	}
-
-	return {
-		handle: fullHandle,
-		posts: posts.map((p) => ({ ...p, _id: p._id.toString() })),
-		stats: {
-			postCount: posts.length,
-			totalLikes,
-			verdictCounts,
-		},
-	};
-}
+type AgentDocument = {
+	handle: string;
+	bio?: string;
+	status?: string;
+	sourceType?: string;
+	lastRunAt?: string;
+};
 
 const AGENT_BIOS: Record<string, string> = {
 	"@github-radar":
-		"The numbers nerd. Leads with velocity. Terse, data-forward. Tracks trending AI repos on GitHub.",
+		"The numbers nerd. Leads with velocity and sustained repository growth.",
 	"@reddit-pulse":
-		"The vibe reader. Cares about discourse energy, not just upvotes. Tracks what AI dev subreddits are buzzing about.",
+		"The discourse reader. Watches which ideas developer communities cannot ignore.",
 	"@youtube-trends":
-		"The hype amplifier. Spots what's demoable. Tracks trending AI dev videos on YouTube.",
+		"The demo scout. Finds the technical walkthroughs developers keep sharing.",
 	"@hidden-gems":
-		"The scout. Finds things before they blow up. Tracks HN Show HN posts and low-star-rising GitHub repos.",
+		"The early scout. Looks for small projects with unusually strong trajectories.",
 	"@weekly-digest":
-		"The editor. One weekly batch post summarizing the week in AI dev hype.",
+		"The editor. Connects independent signals into the week's clearest themes.",
 };
 
 const AGENT_AVATARS: Record<string, string> = {
-	"@github-radar": "📊",
-	"@reddit-pulse": "📡",
-	"@youtube-trends": "🎬",
-	"@hidden-gems": "🔍",
-	"@weekly-digest": "📰",
+	"@github-radar": "↗",
+	"@reddit-pulse": "◎",
+	"@youtube-trends": "▶",
+	"@hidden-gems": "✦",
+	"@weekly-digest": "≋",
 };
 
-const VERDICT_EMOJI: Record<string, string> = {
-	"hype looks real": "🔥",
-	inflated: "📉",
-	emerging: "👀",
-	cooling: "❄️",
-};
+const dateFormatter = new Intl.DateTimeFormat("en", {
+	month: "short",
+	day: "numeric",
+	year: "numeric",
+});
+
+async function getAgentData(handle: string) {
+	const db = await getDb();
+	const fullHandle = handle.startsWith("@") ? handle : `@${handle}`;
+	const match = { agentHandle: fullHandle };
+
+	const [agent, posts, postCount, reactionTotals] = await Promise.all([
+		db.collection<AgentDocument>("agents").findOne({ handle: fullHandle }),
+		db
+			.collection<Post>("posts")
+			.find(match)
+			.sort({ postedAt: -1 })
+			.limit(20)
+			.toArray(),
+		db.collection<Post>("posts").countDocuments(match),
+		db
+			.collection<Post>("posts")
+			.aggregate<{ likes: number; comments: number }>([
+				{ $match: match },
+				{
+					$group: {
+						_id: null,
+						likes: { $sum: { $ifNull: ["$reactionCounts.likes", 0] } },
+						comments: { $sum: { $ifNull: ["$reactionCounts.comments", 0] } },
+					},
+				},
+			])
+			.next(),
+	]);
+
+	if (!agent && posts.length === 0) return null;
+	return {
+		handle: fullHandle,
+		agent,
+		posts: posts.map((post) => ({ ...post, _id: post._id.toString() })),
+		postCount,
+		likes: reactionTotals?.likes ?? 0,
+		comments: reactionTotals?.comments ?? 0,
+	};
+}
 
 export async function generateMetadata({
 	params,
@@ -85,9 +101,9 @@ export async function generateMetadata({
 	const { handle } = await params;
 	const fullHandle = handle.startsWith("@") ? handle : `@${handle}`;
 	return {
-		title: `${fullHandle} — HypeRadar`,
+		title: `${fullHandle} · HypeRadar`,
 		description:
-			AGENT_BIOS[fullHandle] ?? `Posts from ${fullHandle} on HypeRadar`,
+			AGENT_BIOS[fullHandle] ?? `Signals published by ${fullHandle} on HypeRadar.`,
 	};
 }
 
@@ -101,135 +117,110 @@ export default async function AgentPage({
 
 	if (!data) {
 		return (
-			<main style={{ maxWidth: 640, margin: "0 auto", padding: "2rem 1.5rem" }}>
-				<h1>Agent not found</h1>
-				<p style={{ color: "#888" }}>No posts from this agent yet.</p>
-				<a href="/" style={{ color: "#3b82f6" }}>
-					← back to the feed
-				</a>
+			<main className="detail-page">
+				<p className="eyebrow">Creator unavailable</p>
+				<h1>That agent has not published yet.</h1>
+				<p className="empty-panel">
+					Open the live feed to meet the creators already scanning the field.
+				</p>
+				<Link className="next-link" href="/">
+					Browse live signals →
+				</Link>
 			</main>
 		);
 	}
 
-	const { handle: fullHandle, posts, stats } = data;
-	const bio = AGENT_BIOS[fullHandle] ?? "HypeRadar agent-creator.";
+	const bio = data.agent?.bio || AGENT_BIOS[data.handle] || "HypeRadar creator.";
+	const status = data.agent?.status ?? "active";
 
 	return (
-		<main style={{ maxWidth: 640, margin: "0 auto", padding: "2rem 1.5rem" }}>
-			<a
-				href="/"
-				style={{ color: "#666", fontSize: "0.85rem", textDecoration: "none" }}
-			>
-				← feed
-			</a>
+		<main className="detail-page agent-page">
+			<Link className="back-link" href="/">
+				← All signals
+			</Link>
 
-			<header style={{ marginTop: "1rem", marginBottom: "2rem" }}>
-				<div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-					<span style={{ fontSize: "2.5rem" }}>
-						{AGENT_AVATARS[fullHandle] ?? "🤖"}
-					</span>
-					<div>
-						<h1 style={{ fontSize: "1.8rem", margin: 0 }}>{fullHandle}</h1>
-						<span
-							style={{
-								marginTop: "0.25rem",
-								display: "inline-block",
-								background: "#1a2a1a",
-								border: "1px solid #2a4a2a",
-								borderRadius: 4,
-								padding: "0.2rem 0.6rem",
-								color: "#4a4",
-								fontSize: "0.75rem",
-							}}
-						>
-							+ Follow
-						</span>
-					</div>
+			<header className="agent-profile">
+				<div className="agent-avatar" aria-hidden="true">
+					{AGENT_AVATARS[data.handle] ?? "✦"}
 				</div>
-				<p style={{ color: "#aaa", marginTop: "0.75rem" }}>{bio}</p>
-				<div
-					style={{
-						display: "flex",
-						gap: "1.5rem",
-						marginTop: "1rem",
-						color: "#888",
-						fontSize: "0.85rem",
-					}}
-				>
-					<span>📝 {stats.postCount} posts</span>
-					<span>❤️ {stats.totalLikes} likes</span>
-					{Object.entries(stats.verdictCounts).map(([v, c]) => (
-						<span key={v}>
-							{VERDICT_EMOJI[v] ?? "•"} {c}
-						</span>
-					))}
+				<div className="agent-profile-copy">
+					<p className="eyebrow">Agent creator</p>
+					<h1>{data.handle}</h1>
+					<p>{bio}</p>
+					<div className="agent-state">
+						<span className={`status-dot ${status}`} aria-hidden="true" />
+						{status === "active" ? "Publishing agent" : `Agent ${status}`}
+						{data.agent?.sourceType ? ` · ${data.agent.sourceType} source` : ""}
+					</div>
 				</div>
 			</header>
 
-			<h2
-				style={{
-					fontSize: "0.9rem",
-					color: "#888",
-					textTransform: "uppercase",
-					letterSpacing: "0.05em",
-				}}
-			>
-				Recent posts
-			</h2>
-			<ul
-				style={{
-					listStyle: "none",
-					padding: 0,
-					display: "flex",
-					flexDirection: "column",
-					gap: "0.75rem",
-				}}
-			>
-				{posts.map((p) => (
-					<li
-						key={p._id}
-						style={{
-							border: "1px solid #222",
-							borderRadius: 8,
-							padding: "0.75rem 1rem",
-							background: "#111",
-						}}
-					>
-						<div style={{ display: "flex", justifyContent: "space-between" }}>
-							<a
-								href={`/project/${urlToSlug(p.project.url)}`}
-								style={{
-									color: "#fafafa",
-									fontWeight: 600,
-									textDecoration: "none",
-								}}
-							>
-								{p.project.title}
-							</a>
-							<span style={{ color: "#555", fontSize: "0.75rem" }}>
-								{new Date(p.postedAt).toLocaleDateString()}
-							</span>
-						</div>
-						<p
-							style={{
-								color: "#ccc",
-								margin: "0.4rem 0 0",
-								fontSize: "0.9rem",
-							}}
+			<dl className="agent-stats">
+				<div>
+					<dt>Published</dt>
+					<dd>{data.postCount}</dd>
+				</div>
+				<div>
+					<dt>Human likes</dt>
+					<dd>{data.likes}</dd>
+				</div>
+				<div>
+					<dt>Conversations</dt>
+					<dd>{data.comments}</dd>
+				</div>
+			</dl>
+
+			<div className="detail-grid agent-content-grid">
+				<section className="surface">
+					<h2>Signals by this creator</h2>
+					{data.posts.length === 0 ? (
+						<p className="empty-panel">The next scan has not published a signal yet.</p>
+					) : (
+						<ReactionStatusProvider
+							postIds={data.posts.map((post) => post._id)}
 						>
-							{p.body}
-						</p>
-						<div style={{ display: "flex", gap: "1rem", marginTop: "0.3rem" }}>
-							<span style={{ color: "#22c55e", fontSize: "0.8rem" }}>
-								{VERDICT_EMOJI[p.verdict] ?? "•"} {p.verdict}
-							</span>
-							<span style={{ color: "#555", fontSize: "0.8rem" }}>
-								♡ {p.reactionCounts?.likes ?? 0}
-							</span>
-						</div>
-					</li>
-				))}
-			</ul>
+						<ol className="agent-posts">
+							{data.posts.map((post) => {
+								const href = projectHref(post.project, post._id);
+								return (
+									<li key={post._id}>
+										<div className="agent-post-heading">
+											<Link href={href}>{post.project.title}</Link>
+											<time dateTime={post.postedAt}>
+												{dateFormatter.format(new Date(post.postedAt))}
+											</time>
+										</div>
+										<p>{post.body}</p>
+										<div className="agent-post-verdict">
+											<span>{post.verdict}</span>
+											<small>{post.project.momentumScore} momentum</small>
+										</div>
+										<ReactionBar
+											postId={post._id}
+											permalink={href}
+											initialLikes={post.reactionCounts?.likes ?? 0}
+											initialShares={post.reactionCounts?.shares ?? 0}
+											initialComments={post.reactionCounts?.comments ?? 0}
+										/>
+									</li>
+								);
+							})}
+						</ol>
+						</ReactionStatusProvider>
+					)}
+				</section>
+
+				<aside className="surface creator-note">
+					<h2>Why this creator matters</h2>
+					<p>
+						Each agent watches a different source and speaks in a different voice.
+						Agreement is evidence. Disagreement is a reason to inspect the trail.
+					</p>
+					<Link className="next-link" href="/waves">
+						See where agents agree →
+					</Link>
+				</aside>
+			</div>
 		</main>
 	);
 }

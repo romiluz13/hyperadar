@@ -1,3 +1,5 @@
-export default {
-  // Next.js config — add MongoDB Atlas edge runtime opts here as needed
-};
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {};
+
+export default nextConfig;

@@ -1,23 +1,35 @@
+import Link from "next/link";
+
 import { getDb } from "@/lib/mongo";
-import { urlToSlug } from "@/lib/slug";
+import { projectHref } from "@/lib/routes";
 
 export const dynamic = "force-dynamic";
+
+type DigestProject = {
+	title: string;
+	url: string;
+	slug?: string;
+	momentumScore: number;
+};
 
 type Digest = {
 	weekId: string;
 	weekOf: string;
 	waves?: {
 		label: string;
-		projects: {
-			title: string;
-			url: string;
-			slug: string;
-			momentumScore: number;
-		}[];
+		projects: DigestProject[];
 		avgMomentum: number;
 		count: number;
 	}[];
 	summary?: string;
+};
+
+type Post = {
+	_id: unknown;
+	agentHandle: string;
+	body: string;
+	postedAt: Date;
+	project: { title: string; url: string };
 };
 
 async function getDigest(weekId: string) {
@@ -25,30 +37,21 @@ async function getDigest(weekId: string) {
 	const digest = await db.collection<Digest>("digests").findOne({ weekId });
 	if (!digest) return null;
 
-	// Fetch the week's top posts by category for the digest sections
 	const weekStart = digest.weekOf ? new Date(digest.weekOf) : new Date();
 	const weekAgo = new Date(weekStart.getTime() - 7 * 24 * 60 * 60 * 1000);
 	const posts = await db
-		.collection("posts")
-		.find({
-			postedAt: { $gte: weekAgo, $lte: weekStart },
-		})
+		.collection<Post>("posts")
+		.find({ postedAt: { $gte: weekAgo, $lte: weekStart } })
 		.sort({ rankScore: -1 })
 		.limit(20)
 		.toArray();
 
-	// Categorize by agent + kind
-	const breakouts = posts
-		.filter((p) => p.agentHandle === "@github-radar")
-		.slice(0, 3);
-	const hotThreads = posts
-		.filter((p) => p.agentHandle === "@reddit-pulse")
-		.slice(0, 3);
-	const hiddenGems = posts
-		.filter((p) => p.agentHandle === "@hidden-gems")
-		.slice(0, 3);
-
-	return { ...digest, breakouts, hotThreads, hiddenGems };
+	return {
+		...digest,
+		breakouts: posts.filter((post) => post.agentHandle === "@github-radar").slice(0, 3),
+		hotThreads: posts.filter((post) => post.agentHandle === "@reddit-pulse").slice(0, 3),
+		hiddenGems: posts.filter((post) => post.agentHandle === "@hidden-gems").slice(0, 3),
+	};
 }
 
 export async function generateMetadata({
@@ -58,9 +61,22 @@ export async function generateMetadata({
 }) {
 	const { week } = await params;
 	return {
-		title: `Weekly Digest ${week} — HypeRadar`,
-		description: `HypeRadar weekly digest for ${week}`,
+		title: `Weekly Digest ${week} · HypeRadar`,
+		description: `The agent-curated AI developer signal for ${week}.`,
 	};
+}
+
+function DigestPostList({ posts }: { posts: Post[] }) {
+	return (
+		<ul className="digest-post-list">
+			{posts.map((post) => (
+				<li key={String(post._id)}>
+					<Link href={projectHref(post.project)}>{post.project.title}</Link>
+					<p>{post.body}</p>
+				</li>
+			))}
+		</ul>
+	);
 }
 
 export default async function DigestPage({
@@ -73,227 +89,124 @@ export default async function DigestPage({
 
 	if (!digest) {
 		return (
-			<main style={{ maxWidth: 640, margin: "0 auto", padding: "2rem 1.5rem" }}>
-				<h1>Digest not found</h1>
-				<p style={{ color: "#888" }}>No digest for {week}.</p>
-				<a href="/" style={{ color: "#3b82f6" }}>
-					← back to the feed
-				</a>
+			<main className="detail-page">
+				<p className="eyebrow">Digest unavailable</p>
+				<h1>No edition for {week}.</h1>
+				<p className="empty-panel">
+					The live feed still has today&apos;s strongest individual signals.
+				</p>
+				<Link className="next-link" href="/">
+					Browse live signals →
+				</Link>
 			</main>
 		);
 	}
 
-	return (
-		<main style={{ maxWidth: 800, margin: "0 auto", padding: "2rem 1.5rem" }}>
-			<a
-				href="/"
-				style={{ color: "#666", fontSize: "0.85rem", textDecoration: "none" }}
-			>
-				← feed
-			</a>
+	const confirmedWaves = digest.waves?.filter((wave) => wave.count > 1) ?? [];
+	const formingSignals = digest.waves?.filter((wave) => wave.count === 1) ?? [];
 
-			<header style={{ marginTop: "1rem", marginBottom: "2rem" }}>
-				<h1 style={{ fontSize: "2rem", margin: 0 }}>
-					📰 Weekly Digest — {digest.weekId}
-				</h1>
-				{digest.summary && (
-					<p style={{ color: "#aaa", marginTop: "0.75rem", fontSize: "1rem" }}>
-						{digest.summary}
-					</p>
-				)}
+	return (
+		<main className="detail-page digest-page">
+			<Link className="back-link" href="/">
+				← All signals
+			</Link>
+
+			<header className="detail-header digest-header">
+				<p className="eyebrow">The weekly edit · {digest.weekId}</p>
+				<h1>This week, before consensus.</h1>
+				{digest.summary ? <p>{digest.summary}</p> : null}
 			</header>
 
-			{digest.waves && digest.waves.length > 0 ? (
-				<>
-					<h2
-						style={{
-							fontSize: "0.9rem",
-							color: "#888",
-							textTransform: "uppercase",
-							letterSpacing: "0.05em",
-						}}
-					>
-						Hype waves this week
-					</h2>
-					<div
-						style={{
-							display: "flex",
-							flexDirection: "column",
-							gap: "1rem",
-							marginTop: "0.5rem",
-						}}
-					>
-						{digest.waves.map((wave, i) => (
-							<div
-								key={`${wave.label}-${i}`}
-								style={{
-									border: "1px solid #222",
-									borderRadius: 8,
-									padding: "0.75rem 1rem",
-									background: "#111",
-								}}
-							>
-								<div
-									style={{ display: "flex", justifyContent: "space-between" }}
-								>
-									<span style={{ color: "#fafafa", fontWeight: 600 }}>
-										🌊 {wave.label}
-									</span>
-									<span style={{ color: "#22c55e", fontSize: "0.85rem" }}>
-										avg {wave.avgMomentum}
-									</span>
-								</div>
-								<ul
-									style={{ listStyle: "none", padding: 0, marginTop: "0.5rem" }}
-								>
-									{wave.projects.map((p) => (
-										<li key={p.url}>
-											<a
-												href={`/project/${p.slug || urlToSlug(p.url)}`}
-												style={{
-													color: "#888",
-													textDecoration: "none",
-													fontSize: "0.85rem",
-												}}
-											>
-												{p.title} →
-											</a>
-										</li>
-									))}
-								</ul>
+			<div className="detail-grid digest-grid">
+				<div>
+					<section className="surface">
+						<h2>Shared waves</h2>
+						{confirmedWaves.length === 0 ? (
+							<p className="empty-panel">
+								No multi-project wave cleared the bar this week. The forming
+								signals below are still worth watching.
+							</p>
+						) : (
+							<div className="digest-waves">
+								{confirmedWaves.map((wave) => (
+									<article className="digest-wave" key={wave.label}>
+										<div>
+											<p className="eyebrow">{wave.count} signals converging</p>
+											<h3>{wave.label}</h3>
+										</div>
+										<strong>{wave.avgMomentum.toFixed(1)}</strong>
+										<ul>
+											{wave.projects.map((project) => (
+												<li key={project.url}>
+													<Link href={projectHref(project)}>
+														{project.title}
+														<span>{project.momentumScore}</span>
+													</Link>
+												</li>
+											))}
+										</ul>
+									</article>
+								))}
 							</div>
-						))}
-					</div>
-				</>
-			) : (
-				<p style={{ color: "#666" }}>No hype waves computed for this week.</p>
-			)}
+						)}
+					</section>
 
-			{/* Top breakouts / hot threads / hidden gems */}
-			{(digest.breakouts?.length > 0 ||
-				digest.hotThreads?.length > 0 ||
-				digest.hiddenGems?.length > 0) && (
-				<div
-					style={{
-						marginTop: "2rem",
-						display: "flex",
-						flexDirection: "column",
-						gap: "1.5rem",
-					}}
-				>
-					{digest.breakouts && digest.breakouts.length > 0 && (
-						<section>
-							<h2
-								style={{
-									fontSize: "0.9rem",
-									color: "#888",
-									textTransform: "uppercase",
-									letterSpacing: "0.05em",
-								}}
-							>
-								🔥 Top breakouts
-							</h2>
-							<ul
-								style={{
-									listStyle: "none",
-									padding: 0,
-									marginTop: "0.5rem",
-									display: "flex",
-									flexDirection: "column",
-									gap: "0.4rem",
-								}}
-							>
-								{digest.breakouts.map((p) => (
-									<li
-										key={String(p._id)}
-										style={{
-											color: "#aaa",
-											fontSize: "0.85rem",
-											padding: "0.3rem 0",
-										}}
-									>
-										{p.project.title} — {p.body.slice(0, 80)}
-									</li>
-								))}
-							</ul>
+					{digest.breakouts.length > 0 ? (
+						<section className="surface digest-section">
+							<p className="eyebrow">Repository velocity</p>
+							<h2>Breakouts</h2>
+							<DigestPostList posts={digest.breakouts} />
 						</section>
-					)}
-					{digest.hotThreads && digest.hotThreads.length > 0 && (
-						<section>
-							<h2
-								style={{
-									fontSize: "0.9rem",
-									color: "#888",
-									textTransform: "uppercase",
-									letterSpacing: "0.05em",
-								}}
-							>
-								💬 Hot threads
-							</h2>
-							<ul
-								style={{
-									listStyle: "none",
-									padding: 0,
-									marginTop: "0.5rem",
-									display: "flex",
-									flexDirection: "column",
-									gap: "0.4rem",
-								}}
-							>
-								{digest.hotThreads.map((p) => (
-									<li
-										key={String(p._id)}
-										style={{
-											color: "#aaa",
-											fontSize: "0.85rem",
-											padding: "0.3rem 0",
-										}}
-									>
-										{p.project.title} — {p.body.slice(0, 80)}
-									</li>
-								))}
-							</ul>
+					) : null}
+
+					{digest.hotThreads.length > 0 ? (
+						<section className="surface digest-section">
+							<p className="eyebrow">Developer discourse</p>
+							<h2>Hot threads</h2>
+							<DigestPostList posts={digest.hotThreads} />
 						</section>
-					)}
-					{digest.hiddenGems && digest.hiddenGems.length > 0 && (
-						<section>
-							<h2
-								style={{
-									fontSize: "0.9rem",
-									color: "#888",
-									textTransform: "uppercase",
-									letterSpacing: "0.05em",
-								}}
-							>
-								🔍 Hidden gems
-							</h2>
-							<ul
-								style={{
-									listStyle: "none",
-									padding: 0,
-									marginTop: "0.5rem",
-									display: "flex",
-									flexDirection: "column",
-									gap: "0.4rem",
-								}}
-							>
-								{digest.hiddenGems.map((p) => (
-									<li
-										key={String(p._id)}
-										style={{
-											color: "#aaa",
-											fontSize: "0.85rem",
-											padding: "0.3rem 0",
-										}}
-									>
-										{p.project.title} — {p.body.slice(0, 80)}
-									</li>
-								))}
-							</ul>
+					) : null}
+
+					{digest.hiddenGems.length > 0 ? (
+						<section className="surface digest-section">
+							<p className="eyebrow">Early motion</p>
+							<h2>Hidden gems</h2>
+							<DigestPostList posts={digest.hiddenGems} />
 						</section>
-					)}
+					) : null}
 				</div>
-			)}
+
+				<aside>
+					<section className="surface digest-aside">
+						<h2>Read it in 60 seconds</h2>
+						<ol>
+							<li>Open the strongest shared wave.</li>
+							<li>Check the evidence behind its top project.</li>
+							<li>Follow the creator whose judgment you trust.</li>
+						</ol>
+						<Link className="next-link" href="/waves">
+							Explore every wave →
+						</Link>
+					</section>
+
+					{formingSignals.length > 0 ? (
+						<section className="surface forming-signals">
+							<h2>Still forming</h2>
+							<p>
+								One project is moving, but independent confirmation has not arrived.
+							</p>
+							<ul>
+								{formingSignals.slice(0, 8).map((wave) => (
+									<li key={wave.label}>
+										<Link href={projectHref(wave.projects[0])}>{wave.label}</Link>
+										<span>{wave.avgMomentum.toFixed(1)}</span>
+									</li>
+								))}
+							</ul>
+						</section>
+					) : null}
+				</aside>
+			</div>
 		</main>
 	);
 }

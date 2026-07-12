@@ -1,9 +1,14 @@
 "use client";
 
-import { useState, useEffect, useTransition } from "react";
+import Link from "next/link";
+import { useEffect, useState, useTransition } from "react";
+
+import { useLikedPostStatus } from "@/app/components/ReactionStatusProvider";
+import { absoluteShareUrl } from "@/lib/share";
 
 type Props = {
 	postId: string;
+	permalink: string;
 	initialLikes: number;
 	initialShares: number;
 	initialComments: number;
@@ -11,6 +16,7 @@ type Props = {
 
 export function ReactionBar({
 	postId,
+	permalink,
 	initialLikes,
 	initialShares,
 	initialComments,
@@ -18,67 +24,93 @@ export function ReactionBar({
 	const [liked, setLiked] = useState(false);
 	const [likes, setLikes] = useState(initialLikes);
 	const [shares, setShares] = useState(initialShares);
-	const [comments] = useState(initialComments);
+	const [feedback, setFeedback] = useState("");
 	const [pending, startTransition] = useTransition();
+	const storedLiked = useLikedPostStatus(postId);
 
 	useEffect(() => {
-		// Check if already liked
-		fetch(`/api/reactions?postId=${postId}`)
-			.then((r) => r.json())
-			.then((d) => {
-				if (d.liked) setLiked(true);
-			})
-			.catch(() => {});
-	}, [postId]);
+		if (storedLiked !== null) setLiked(storedLiked);
+	}, [storedLiked]);
 
 	function toggleLike() {
+		setFeedback("");
 		startTransition(async () => {
-			const res = await fetch("/api/reactions", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ postId, type: "like" }),
-			});
-			const d = await res.json();
-			if (d.liked !== undefined) {
-				setLiked(d.liked);
-				setLikes(d.counts.likes);
+			try {
+				const response = await fetch("/api/reactions", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ postId, type: "like" }),
+				});
+				if (!response.ok) throw new Error("Like request failed");
+				const data = await response.json();
+				setLiked(Boolean(data.liked));
+				setLikes(data.counts.likes);
+			} catch {
+				setFeedback("Could not save your reaction. Try again.");
 			}
 		});
 	}
 
 	function share() {
+		setFeedback("");
 		startTransition(async () => {
-			await fetch("/api/reactions", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ postId, type: "share" }),
-			});
-			setShares((s) => s + 1);
-			// copy link to clipboard
-			if (typeof navigator !== "undefined" && navigator.clipboard) {
-				navigator.clipboard.writeText(window.location.href).catch(() => {});
+			try {
+				if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+				await navigator.clipboard.writeText(
+					absoluteShareUrl(permalink, window.location.origin),
+				);
+			} catch {
+				setFeedback("Could not copy the link. Open the signal and try again.");
+				return;
+			}
+
+			try {
+				const response = await fetch("/api/reactions", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ postId, type: "share" }),
+				});
+				if (!response.ok) throw new Error("Share request failed");
+				const data = await response.json();
+				setShares(data.counts.shares);
+				setFeedback("Link copied.");
+			} catch {
+				setFeedback("Link copied. The public share count could not update.");
 			}
 		});
 	}
 
 	return (
-		<div className="reaction-bar" aria-label="Post reactions">
-			<button
-				onClick={toggleLike}
-				disabled={pending}
-				aria-pressed={liked}
-				aria-label={`${liked ? "Unlike" : "Like"} this signal. ${likes} likes`}
-			>
-				{liked ? "❤️" : "🤍"} {likes}
-			</button>
-			<span className="reaction-stat" aria-label={`${comments} comments`}>💬 {comments}</span>
-			<button
-				onClick={share}
-				disabled={pending}
-				aria-label={`Share this signal. ${shares} shares`}
-			>
-				🔗 {shares}
-			</button>
+		<div className="reaction-group">
+			<div className="reaction-bar" aria-label="Post reactions">
+				<button
+					type="button"
+					onClick={toggleLike}
+					disabled={pending}
+					aria-pressed={liked}
+					aria-label={`${liked ? "Unlike" : "Like"} this signal. ${likes} likes`}
+				>
+					<span aria-hidden="true">{liked ? "♥" : "♡"}</span> {likes}
+				</button>
+				<Link
+					className="reaction-stat"
+					href={`${permalink}#conversation`}
+					aria-label={`Open ${initialComments} comments`}
+				>
+					<span aria-hidden="true">◌</span> {initialComments}
+				</Link>
+				<button
+					type="button"
+					onClick={share}
+					disabled={pending}
+					aria-label={`Copy a link to this signal. ${shares} shares`}
+				>
+					<span aria-hidden="true">↗</span> {shares}
+				</button>
+			</div>
+			<p className="reaction-feedback" aria-live="polite">
+				{feedback}
+			</p>
 		</div>
 	);
 }
