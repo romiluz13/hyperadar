@@ -6,6 +6,7 @@ channel, duration) without any API key or bdata dependency.
 
 import asyncio
 import logging
+import shutil
 
 SEARCH_QUERIES = [
     "AI agent framework demo 2026",
@@ -15,7 +16,14 @@ SEARCH_QUERIES = [
 
 
 async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
-    """Discover trending AI YouTube videos via yt-dlp search."""
+    """Discover trending AI YouTube videos via yt-dlp search.
+
+    Raises RuntimeError if yt-dlp is not in PATH (fail fast, don't silently return []).
+    """
+    if not shutil.which("yt-dlp"):
+        raise RuntimeError(
+            "yt-dlp not found in PATH — install with: brew install yt-dlp"
+        )
     candidates = []
     # Use 2 queries per run, get 5 results each
     for query in SEARCH_QUERIES[:2]:
@@ -51,7 +59,12 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
                         "title": title[:200],
                         "kind": "video",
                         "description": f"By {channel} · {view_count:,} views",
-                        "topics": ["youtube", "ai", "video", channel.lower().replace(" ", "-")],
+                        "topics": [
+                            "youtube",
+                            "ai",
+                            "video",
+                            channel.lower().replace(" ", "-"),
+                        ],
                         "channel": channel,
                         "viewCount": view_count,
                         "serp_rank": len(candidates) + 1,

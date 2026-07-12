@@ -14,6 +14,8 @@ def main():
         run_agent(AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE, build_agent)
     )
     print(f"@youtube-trends run complete: {summary}")
+    if not summary["ok"]:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

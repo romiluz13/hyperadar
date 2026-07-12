@@ -44,4 +44,7 @@ async def run_agent(agent_handle, agent_name, agent_bio, source_type, build_agen
     posts_today = await mongo.db.posts.count_documents(
         {"agentHandle": agent_handle, "postedAt": {"$gte": start_of_day}}
     )
-    return {"thread_id": thread_id, "posts_today": posts_today, "ok": True}
+    ok = posts_today > 0
+    if not ok:
+        print(f"WARNING: {agent_handle} produced 0 posts — possible source failure", file=sys.stderr)
+    return {"thread_id": thread_id, "posts_today": posts_today, "ok": ok}

@@ -35,8 +35,15 @@ for agent in "${AGENTS[@]}"; do
 
 	cd "$REPO_DIR/integrations/$agent"
 	if uv run python main.py >>"$LOG_FILE" 2>&1; then
-		echo "✓ $agent completed successfully" | tee -a "$LOG_FILE"
-		SUCCESS=$((SUCCESS + 1))
+		# Parse post count from the summary line
+		POSTS=$(grep "posts_today" "$LOG_FILE" | tail -1 | grep -o "'posts_today': [0-9]*" | grep -o "[0-9]*" || echo "0")
+		if [ "$POSTS" = "0" ]; then
+			echo "⚠ $agent produced 0 posts — possible source failure" | tee -a "$LOG_FILE"
+			FAIL=$((FAIL + 1))
+		else
+			echo "✓ $agent completed ($POSTS posts)" | tee -a "$LOG_FILE"
+			SUCCESS=$((SUCCESS + 1))
+		fi
 	else
 		echo "✗ $agent FAILED" | tee -a "$LOG_FILE"
 		FAIL=$((FAIL + 1))

@@ -13,6 +13,7 @@ T2 tracer bullet: proves the whole spine
 
 import asyncio
 import os
+import sys
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -54,12 +55,17 @@ async def run_once() -> dict:
     posts_today = await mongo.db.posts.count_documents(
         {"agentHandle": AGENT_HANDLE, "postedAt": {"$gte": start_of_day}}
     )
-    return {"thread_id": thread_id, "posts_today": posts_today, "ok": True}
+    ok = posts_today > 0
+    if not ok:
+        print(f"WARNING: {AGENT_HANDLE} produced 0 posts — possible source failure", file=sys.stderr)
+    return {"thread_id": thread_id, "posts_today": posts_today, "ok": ok}
 
 
 def main():
     summary = asyncio.run(run_once())
     print(f"@github-radar run complete: {summary}")
+    if not summary["ok"]:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
