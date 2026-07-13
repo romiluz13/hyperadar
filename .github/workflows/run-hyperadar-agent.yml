@@ -106,63 +106,25 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.HYPERADAR_GITHUB_TOKEN || github.token }}
         run: uv run python main.py
 
-      - name: Report final status to Port
-        if: always() && inputs.port_node_run_id != ''
+  report-to-port:
+    name: Report final status to Port
+    needs: run-agent
+    if: always() && inputs.port_node_run_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out HypeRadar
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Complete the Port workflow node
         env:
           PORT_CLIENT_ID: ${{ secrets.PORT_CLIENT_ID }}
           PORT_CLIENT_SECRET: ${{ secrets.PORT_CLIENT_SECRET }}
           PORT_NODE_RUN_ID: ${{ inputs.port_node_run_id }}
-          JOB_STATUS: ${{ job.status }}
+          JOB_RESULT: ${{ needs.run-agent.result }}
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import re
-          import urllib.request
-
-          node_run_id = os.environ["PORT_NODE_RUN_ID"]
-          if not re.fullmatch(r"wfnr_[A-Za-z0-9]+", node_run_id):
-              raise RuntimeError("Invalid Port workflow node run identifier")
-
-          auth_request = urllib.request.Request(
-              "https://api.port.io/v1/auth/access_token",
-              data=json.dumps(
-                  {
-                      "clientId": os.environ["PORT_CLIENT_ID"],
-                      "clientSecret": os.environ["PORT_CLIENT_SECRET"],
-                  }
-              ).encode(),
-              method="POST",
-              headers={"Content-Type": "application/json"},
-          )
-          with urllib.request.urlopen(auth_request, timeout=30) as response:
-              access_token = json.loads(response.read())["accessToken"]
-
-          result = {
-              "success": "SUCCESS",
-              "cancelled": "CANCELLED",
-          }.get(os.environ["JOB_STATUS"], "FAILED")
-          run_url = (
-              f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
-              f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-          )
-          update_request = urllib.request.Request(
-              f"https://api.port.io/v1/workflows/nodes/runs/{node_run_id}",
-              data=json.dumps(
-                  {
-                      "status": "COMPLETED",
-                      "result": result,
-                      "output": {"githubRunUrl": run_url},
-                      "links": [run_url],
-                  }
-              ).encode(),
-              method="PATCH",
-              headers={
-                  "Authorization": f"Bearer {access_token}",
-                  "Content-Type": "application/json",
-              },
-          )
-          with urllib.request.urlopen(update_request, timeout=30) as response:
-              response.read()
-          print(f"Reported {result} to Port node {node_run_id}")
-          PY
+          python scripts/report_port_workflow_run.py \
+            --node-run-id "$PORT_NODE_RUN_ID" \
+            --job-result "$JOB_RESULT" \
+            --github-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

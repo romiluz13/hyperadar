@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 
+from report_port_workflow_run import report_workflow_node
 from setup_port_workflows import build_run_agent_workflow, provision_workflow
 
 
@@ -64,7 +65,7 @@ class RunAgentWorkflowTests(unittest.TestCase):
                     "agent": "{{ .outputs.trigger.agent }}",
                     "port_node_run_id": "{{ .workflowNodeRun.identifier }}",
                 },
-                "reportWorkflowStatus": True,
+                "reportWorkflowStatus": False,
             },
         )
         self.assertEqual(
@@ -170,10 +171,12 @@ class RunAgentWorkflowTests(unittest.TestCase):
         self.assertIn("run: uv run python main.py", contents)
         self.assertNotIn("uv run --frozen", contents)
         self.assertIn("port_node_run_id:", contents)
+        self.assertIn("report-to-port:", contents)
+        self.assertIn("needs: run-agent", contents)
         self.assertIn("if: always() && inputs.port_node_run_id != ''", contents)
-        self.assertIn(
-            "/v1/workflows/nodes/runs/{node_run_id}", contents
-        )
+        self.assertIn("JOB_RESULT: ${{ needs.run-agent.result }}", contents)
+        self.assertIn("python scripts/report_port_workflow_run.py", contents)
+        self.assertNotIn("JOB_STATUS: ${{ job.status }}", contents)
         self.assertIn("BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}", contents)
         self.assertIn("@brightdata/cli@0.3.2", contents)
         self.assertIn("yt-dlp==2026.07.04", contents)
@@ -182,6 +185,69 @@ class RunAgentWorkflowTests(unittest.TestCase):
         )
         self.assertIn("timeout-minutes: 30", contents)
         self.assertNotIn("pull_request_target", contents)
+
+
+class ReportWorkflowNodeTests(unittest.TestCase):
+    def test_reports_each_github_job_result_to_the_port_node(self):
+        run_url = "https://github.com/romiluz13/hyperadar/actions/runs/123"
+
+        for job_result, port_result in (
+            ("success", "SUCCESS"),
+            ("failure", "FAILED"),
+            ("cancelled", "CANCELLED"),
+            ("skipped", "CANCELLED"),
+        ):
+            with self.subTest(job_result=job_result):
+                client = FakePortClient([(200, {"ok": True})])
+
+                outcome = report_workflow_node(
+                    client,
+                    "wfnr_1234567890abcdef",
+                    job_result,
+                    run_url,
+                )
+
+                self.assertEqual(outcome, port_result)
+                self.assertEqual(
+                    client.calls,
+                    [
+                        (
+                            "PATCH",
+                            "/workflows/nodes/runs/wfnr_1234567890abcdef",
+                            {
+                                "status": "COMPLETED",
+                                "result": port_result,
+                                "output": {"githubRunUrl": run_url},
+                                "links": [run_url],
+                            },
+                            None,
+                        )
+                    ],
+                )
+
+    def test_rejects_an_untrusted_node_run_identifier(self):
+        client = FakePortClient([])
+
+        with self.assertRaisesRegex(ValueError, "node run identifier"):
+            report_workflow_node(
+                client,
+                "../../actions",
+                "success",
+                "https://github.com/romiluz13/hyperadar/actions/runs/123",
+            )
+
+        self.assertEqual(client.calls, [])
+
+    def test_surfaces_a_port_update_failure(self):
+        client = FakePortClient([(500, {"message": "temporary failure"})])
+
+        with self.assertRaisesRegex(RuntimeError, "temporary failure"):
+            report_workflow_node(
+                client,
+                "wfnr_1234567890abcdef",
+                "failure",
+                "https://github.com/romiluz13/hyperadar/actions/runs/123",
+            )
 
 
 if __name__ == "__main__":

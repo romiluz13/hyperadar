@@ -125,7 +125,7 @@ def build_run_agent_workflow(installation_id: str) -> dict:
                             "agent": "{{ .outputs.trigger.agent }}",
                             "port_node_run_id": "{{ .workflowNodeRun.identifier }}",
                         },
-                        "reportWorkflowStatus": True,
+                        "reportWorkflowStatus": False,
                     },
                     "onFailure": "terminate",
                 },
