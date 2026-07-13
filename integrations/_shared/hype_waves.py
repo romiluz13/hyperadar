@@ -32,6 +32,17 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def _distinct_agent_handles(
+    cluster: list[dict], agents_by_project: dict[str, set[str]]
+) -> list[str]:
+    handles = {
+        handle
+        for project in cluster
+        for handle in agents_by_project.get(project["url"], set())
+    }
+    return sorted(handles)
+
+
 def cluster_projects(projects: list[dict], threshold: float = 0.7) -> list[list[dict]]:
     """Group projects by embedding similarity (greedy clustering).
 
@@ -118,11 +129,22 @@ def compute_hype_waves() -> list[dict]:
         return []
 
     clusters = cluster_projects(projects, threshold=0.65)
+    project_urls = [project["url"] for project in projects]
+    agents_by_project: dict[str, set[str]] = {}
+    for post in db.posts.find(
+        {"project.url": {"$in": project_urls}},
+        {"_id": 0, "agentHandle": 1, "project.url": 1},
+    ):
+        project_url = post.get("project", {}).get("url")
+        agent_handle = post.get("agentHandle")
+        if project_url and agent_handle:
+            agents_by_project.setdefault(project_url, set()).add(agent_handle)
 
     waves = []
     for cluster in clusters:
         label = label_cluster(cluster)
         avg_momentum = sum(p.get("momentumScore", 0) for p in cluster) / len(cluster)
+        agent_handles = _distinct_agent_handles(cluster, agents_by_project)
         waves.append(
             {
                 "label": label,
@@ -138,6 +160,8 @@ def compute_hype_waves() -> list[dict]:
                 ],
                 "avgMomentum": round(avg_momentum, 1),
                 "count": len(cluster),
+                "agentHandles": agent_handles,
+                "agentCount": len(agent_handles),
             }
         )
 

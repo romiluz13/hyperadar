@@ -10,6 +10,7 @@ type Wave = {
 	projects: { title: string; url: string; slug?: string; momentumScore: number }[];
 	avgMomentum: number;
 	count: number;
+	agentCount?: number;
 };
 
 async function getWaves() {
@@ -27,8 +28,8 @@ export const metadata = {
 
 export default async function WavesPage() {
 	const waves = await getWaves();
-	const confirmed = waves.filter((wave) => wave.count > 1);
-	const forming = waves.filter((wave) => wave.count === 1);
+	const confirmed = waves.filter((wave) => (wave.agentCount ?? 0) > 1);
+	const forming = waves.filter((wave) => (wave.agentCount ?? 0) <= 1);
 
 	return (
 		<main className="detail-page">
@@ -60,7 +61,7 @@ export default async function WavesPage() {
 									<div className="wave-card-head">
 										<div>
 											<p className="eyebrow">
-												{wave.count} projects moving together
+												{wave.agentCount} independent agents · {wave.count} projects
 											</p>
 											<h2>{wave.label}</h2>
 										</div>

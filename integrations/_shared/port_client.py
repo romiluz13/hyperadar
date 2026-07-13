@@ -21,6 +21,13 @@ _client_secret = os.environ["PORT_CLIENT_SECRET"]
 _cached_token: str | None = None
 
 
+def require_success(result: dict, operation: str) -> dict:
+    if result.get("ok") is True:
+        return result
+    message = result.get("message") or result.get("error") or "unknown Port error"
+    raise RuntimeError(f"Port {operation} failed: {message}")
+
+
 def _token() -> str:
     global _cached_token
     if _cached_token:

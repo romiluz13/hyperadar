@@ -130,17 +130,28 @@ async def write_hype_post(repo_url: str, blurb: str, verdict: str) -> str:
     post_id = await mongo.insert_post(post_doc)
 
     # 2. Port: upsert agent + project + post entities (catalog twin)
-    port_client.upsert_agent(AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE)
-    port_client.upsert_project(
-        c["url"],
-        c["title"],
-        c["kind"],
-        c["description"],
-        c["topics"],
-        m["momentumScore"],
-        verdict,
+    port_client.require_success(
+        port_client.upsert_agent(AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE),
+        f"agent sync for {AGENT_HANDLE}",
     )
-    port_client.upsert_post(post_id, AGENT_HANDLE, c["url"], blurb, verdict, rank_score)
+    port_client.require_success(
+        port_client.upsert_project(
+            c["url"],
+            c["title"],
+            c["kind"],
+            c["description"],
+            c["topics"],
+            m["momentumScore"],
+            verdict,
+        ),
+        f"project sync for {c['url']}",
+    )
+    port_client.require_success(
+        port_client.upsert_post(
+            post_id, AGENT_HANDLE, c["url"], blurb, verdict, rank_score
+        ),
+        f"post sync for {post_id}",
+    )
 
     return f"Posted: {c['title']} (momentum {m['momentumScore']}, verdict '{verdict}') -> post {post_id}"
 

@@ -68,7 +68,6 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
                         "channel": channel,
                         "viewCount": view_count,
                         "serp_rank": len(candidates) + 1,
-                        "stars": min(view_count // 1000, 100),  # rough momentum proxy
                     }
                 )
         except Exception as e:

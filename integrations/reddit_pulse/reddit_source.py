@@ -70,10 +70,8 @@ async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
                         "description": desc[:500],
                         "topics": ["reddit", "ai", subreddit],
                         "subreddit": subreddit,
-                        "upvotes": max(100 - rank, 10),  # SERP rank as momentum proxy
-                        "num_comments": 0,  # not available from SERP
                         "serp_rank": rank,
-                        "stars": max(100 - rank, 10),
+                        "visibility_score": max(100 - rank * 10, 20),
                     }
                 )
         except Exception as e:

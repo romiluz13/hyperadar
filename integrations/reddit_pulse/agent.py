@@ -28,13 +28,14 @@ You are @reddit-pulse, an AI dev hype tracker that scans Reddit for trending AI 
 Your voice: the vibe reader. You care about discourse energy, not just upvotes. Like: "r/LocalLLaMA can't shut up about this — 3 front-page threads this week."
 
 Workflow:
-1. Call fetch_reddit_posts to get today's trending Reddit posts with their upvotes + comment counts.
-2. For EACH post that genuinely looks like it's buzzing (upvotes >= 50 OR comments >= 30), call write_reddit_post with:
+1. Call fetch_reddit_posts to get today's most visible Reddit posts from Google results.
+2. Treat search visibility as a discovery proxy, never as Reddit votes or comments.
+3. For EACH highly visible result, call write_reddit_post with:
    - post_url (exact, from the candidate)
    - blurb: ONE line, max 140 chars, in your voice, leading with the vibe
    - verdict: one of "hype looks real", "inflated", "emerging", "cooling"
-3. Skip posts with low engagement — don't post noise.
-4. Post at most the top 3 candidates per run.
+4. Do not invent engagement counts. Say "visible in search" when citing evidence.
+5. Post at most the top 3 candidates per run.
 """
 
 
@@ -43,7 +44,7 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 
 @tool
 async def fetch_reddit_posts() -> str:
-    """Fetch today's trending Reddit AI posts with upvotes + comment counts."""
+    """Fetch today's most visible Reddit AI posts from search results."""
     candidates = await fetch_reddit_candidates(max_results=10)
     if not candidates:
         return "No trending Reddit posts found today."
@@ -53,7 +54,8 @@ async def fetch_reddit_posts() -> str:
     for c in candidates:
         lines.append(
             f"- {c['title']} | {c['url']}\n"
-            f"  upvotes={c['upvotes']} | comments={c['num_comments']} | "
+            f"  Google SERP rank={c['serp_rank']} | "
+            f"visibility proxy={c['visibility_score']}/100 | "
             f"subreddit={c.get('subreddit', '?')}\n"
             f"  desc: {c['description'][:120]}"
         )
@@ -73,7 +75,7 @@ async def write_reddit_post(post_url: str, blurb: str, verdict: str) -> str:
     if not c:
         return f"ERROR: unknown post_url {post_url}. Call fetch_reddit_posts first."
 
-    momentum = min(c["upvotes"] / 10, 100)  # 1000 upvotes = 100
+    momentum = c["visibility_score"]
     project = {
         "url": c["url"],
         "title": c["title"],
@@ -85,10 +87,12 @@ async def write_reddit_post(post_url: str, blurb: str, verdict: str) -> str:
     }
     signal = {
         "source": "reddit",
-        "metric": "upvotes",
-        "value": c["upvotes"],
-        "delta": c["num_comments"],
-        "summary": f"upvotes={c['upvotes']}, comments={c['num_comments']}",
+        "metric": "search visibility",
+        "value": momentum,
+        "delta": 0,
+        "summary": (
+            f"Google SERP rank={c['serp_rank']}; visibility proxy={momentum}/100"
+        ),
     }
     post_id = await write_post(
         AGENT_HANDLE,
@@ -101,7 +105,10 @@ async def write_reddit_post(post_url: str, blurb: str, verdict: str) -> str:
         signal,
         momentum,
     )
-    return f"Posted: {c['title']} (upvotes {c['upvotes']}, verdict '{verdict}') -> post {post_id}"
+    return (
+        f"Posted: {c['title']} (SERP rank {c['serp_rank']}, "
+        f"verdict '{verdict}') -> post {post_id}"
+    )
 
 
 def build_agent(checkpointer=None):

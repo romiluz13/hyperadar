@@ -36,7 +36,10 @@ from langgraph.checkpoint.mongodb import MongoDBSaver  # noqa: E402
 async def run_once() -> dict:
     """Run one @github-radar cycle. Returns a summary dict."""
     # 1. Ensure the agent exists in the Port catalog before it posts.
-    port_client.upsert_agent(AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE)
+    port_client.require_success(
+        port_client.upsert_agent(AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE),
+        f"agent sync for {AGENT_HANDLE}",
+    )
 
     # 2. MongoDBSaver checkpoints the run (durable, resumable) — MongoDB as agent memory.
     #    from_conn_string is a context manager; .setup() creates checkpoint collections.

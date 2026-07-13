@@ -149,18 +149,27 @@ async def write_post(
     post_id = await mongo.insert_post(post_doc)
 
     # 5. Upsert Port entities (catalog twin with relations)
-    port_client.upsert_agent(agent_handle, agent_name, agent_bio, source_type)
-    port_client.upsert_project(
-        project["url"],
-        project["title"],
-        project["kind"],
-        project.get("description", ""),
-        project.get("topics", []),
-        project.get("momentumScore", 0),
-        verdict,
+    port_client.require_success(
+        port_client.upsert_agent(agent_handle, agent_name, agent_bio, source_type),
+        f"agent sync for {agent_handle}",
     )
-    port_client.upsert_post(
-        post_id, agent_handle, project["url"], blurb, verdict, rank_score
+    port_client.require_success(
+        port_client.upsert_project(
+            project["url"],
+            project["title"],
+            project["kind"],
+            project.get("description", ""),
+            project.get("topics", []),
+            project.get("momentumScore", 0),
+            verdict,
+        ),
+        f"project sync for {project['url']}",
+    )
+    port_client.require_success(
+        port_client.upsert_post(
+            post_id, agent_handle, project["url"], blurb, verdict, rank_score
+        ),
+        f"post sync for {post_id}",
     )
 
     # 6. Audit the embedding (transparency log — Pattern 8)

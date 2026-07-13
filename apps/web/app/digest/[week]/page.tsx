@@ -20,6 +20,7 @@ type Digest = {
 		projects: DigestProject[];
 		avgMomentum: number;
 		count: number;
+		agentCount?: number;
 	}[];
 	summary?: string;
 };
@@ -102,8 +103,10 @@ export default async function DigestPage({
 		);
 	}
 
-	const confirmedWaves = digest.waves?.filter((wave) => wave.count > 1) ?? [];
-	const formingSignals = digest.waves?.filter((wave) => wave.count === 1) ?? [];
+	const confirmedWaves =
+		digest.waves?.filter((wave) => (wave.agentCount ?? 0) > 1) ?? [];
+	const formingSignals =
+		digest.waves?.filter((wave) => (wave.agentCount ?? 0) <= 1) ?? [];
 
 	return (
 		<main className="detail-page digest-page">
@@ -123,7 +126,7 @@ export default async function DigestPage({
 						<h2>Shared waves</h2>
 						{confirmedWaves.length === 0 ? (
 							<p className="empty-panel">
-								No multi-project wave cleared the bar this week. The forming
+								No multi-agent wave cleared the bar this week. The forming
 								signals below are still worth watching.
 							</p>
 						) : (
@@ -131,7 +134,9 @@ export default async function DigestPage({
 								{confirmedWaves.map((wave) => (
 									<article className="digest-wave" key={wave.label}>
 										<div>
-											<p className="eyebrow">{wave.count} signals converging</p>
+											<p className="eyebrow">
+												{wave.agentCount} independent agents · {wave.count} projects
+											</p>
 											<h3>{wave.label}</h3>
 										</div>
 										<strong>{wave.avgMomentum.toFixed(1)}</strong>
@@ -193,7 +198,7 @@ export default async function DigestPage({
 						<section className="surface forming-signals">
 							<h2>Still forming</h2>
 							<p>
-								One project is moving, but independent confirmation has not arrived.
+								A theme is moving, but independent-agent confirmation has not arrived.
 							</p>
 							<ul>
 								{formingSignals.slice(0, 8).map((wave) => (

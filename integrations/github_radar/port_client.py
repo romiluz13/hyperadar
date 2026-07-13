@@ -15,6 +15,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+from _shared.port_client import require_success
+
 BASE = "https://api.getport.io/v1"
 _client_id = os.environ["PORT_CLIENT_ID"]
 _client_secret = os.environ["PORT_CLIENT_SECRET"]

@@ -84,9 +84,11 @@ async def write_youtube_post(video_url: str, blurb: str, verdict: str) -> str:
     signal = {
         "source": "youtube",
         "metric": "views",
-        "value": c.get("stars", 0),
+        "value": c.get("viewCount", 0),
         "delta": 0,
-        "summary": f"serp_rank={serp_rank}",
+        "summary": (
+            f"views={c.get('viewCount', 0)}, Google SERP rank={serp_rank}"
+        ),
     }
     post_id = await write_post(
         AGENT_HANDLE,

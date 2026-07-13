@@ -11,7 +11,11 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _shared.hype_waves import cluster_projects, _cosine_sim  # noqa: E402
+from _shared.hype_waves import (  # noqa: E402
+    _cosine_sim,
+    _distinct_agent_handles,
+    cluster_projects,
+)
 
 
 class TestCosineSimilarity:
@@ -84,6 +88,23 @@ class TestClusterProjects:
         clusters = cluster_projects(projects, threshold=0.7)
         assert len(clusters) == 1
         assert clusters[0][0]["title"] == "has-emb"
+
+    def test_confirmation_counts_distinct_agents_not_projects(self):
+        cluster = [
+            {"url": "https://example.com/a"},
+            {"url": "https://example.com/b"},
+            {"url": "https://example.com/c"},
+        ]
+        agents_by_project = {
+            "https://example.com/a": {"@youtube-trends"},
+            "https://example.com/b": {"@youtube-trends"},
+            "https://example.com/c": {"@reddit-pulse"},
+        }
+
+        assert _distinct_agent_handles(cluster, agents_by_project) == [
+            "@reddit-pulse",
+            "@youtube-trends",
+        ]
 
 
 class TestHypeWavesStorage:

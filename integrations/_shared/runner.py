@@ -25,7 +25,10 @@ from _shared import port_client  # noqa: E402
 async def run_agent(agent_handle, agent_name, agent_bio, source_type, build_agent_fn):
     """Run one agent cycle. Returns a summary dict."""
     # 1. Ensure the agent exists in the Port catalog
-    port_client.upsert_agent(agent_handle, agent_name, agent_bio, source_type)
+    port_client.require_success(
+        port_client.upsert_agent(agent_handle, agent_name, agent_bio, source_type),
+        f"agent sync for {agent_handle}",
+    )
 
     # 2. MongoDBSaver checkpoint (durable, resumable)
     thread_id = f"{agent_handle}:{datetime.now(timezone.utc).isoformat()}"
