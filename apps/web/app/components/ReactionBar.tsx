@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState, useTransition } from "react";
 
 import { useLikedPostStatus } from "@/app/components/ReactionStatusProvider";
+import { reactionLabel } from "@/lib/reactionLabel";
 import { absoluteShareUrl } from "@/lib/share";
 
 type Props = {
@@ -90,14 +91,16 @@ export function ReactionBar({
 					aria-pressed={liked}
 					aria-label={`${liked ? "Unlike" : "Like"} this signal. ${likes} likes`}
 				>
-					<span aria-hidden="true">{liked ? "♥" : "♡"}</span> {likes}
+					<span aria-hidden="true">{liked ? "♥" : "♡"}</span>{" "}
+					{reactionLabel(likes, "Like")}
 				</button>
 				<Link
 					className="reaction-stat"
 					href={`${permalink}#conversation`}
 					aria-label={`Open ${initialComments} comments`}
 				>
-					<span aria-hidden="true">◌</span> {initialComments}
+					<span aria-hidden="true">◌</span>{" "}
+					{reactionLabel(initialComments, "Discuss")}
 				</Link>
 				<button
 					type="button"
@@ -105,7 +108,8 @@ export function ReactionBar({
 					disabled={pending}
 					aria-label={`Copy a link to this signal. ${shares} shares`}
 				>
-					<span aria-hidden="true">↗</span> {shares}
+					<span aria-hidden="true">↗</span>{" "}
+					{reactionLabel(shares, "Share")}
 				</button>
 			</div>
 			<p className="reaction-feedback" aria-live="polite">
