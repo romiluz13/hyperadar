@@ -8,8 +8,7 @@ dependencies = [
   "langchain-openai",
   "langgraph",
   "langgraph-checkpoint-mongodb",
-  "motor",
-  "pymongo",
+  "pymongo>=4.16",
   "python-dotenv",
   "sentence-transformers",
 ]

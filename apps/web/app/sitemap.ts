@@ -1,6 +1,8 @@
 import type { MetadataRoute } from "next";
 
+import { AGENT_CATALOG } from "@/lib/agentCatalog";
 import { getDb } from "@/lib/mongo";
+import { PUBLIC_DIGEST_FILTER, PUBLIC_POST_FILTER } from "@/lib/publication";
 import { projectHref } from "@/lib/routes";
 
 export const dynamic = "force-dynamic";
@@ -15,21 +17,31 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 		const db = await getDb();
 		const [projects, digests] = await Promise.all([
 			db
-				.collection<{ url: string; lastSeenAt?: Date }>("projects")
-				.find({}, { projection: { _id: 0, url: 1, lastSeenAt: 1 } })
-				.sort({ lastSeenAt: -1 })
+				.collection("posts")
+				.aggregate<{ _id: string; lastSeenAt: Date }>([
+					{ $match: PUBLIC_POST_FILTER },
+					{
+						$group: {
+							_id: "$project.url",
+							lastSeenAt: { $max: "$postedAt" },
+						},
+					},
+					{ $sort: { lastSeenAt: -1 } },
+				])
 				.limit(500)
 				.toArray(),
 			db
 				.collection<{ weekId: string; computedAt?: Date }>("digests")
-				.find({}, { projection: { _id: 0, weekId: 1, computedAt: 1 } })
+				.find(PUBLIC_DIGEST_FILTER, {
+					projection: { _id: 0, weekId: 1, computedAt: 1 },
+				})
 				.sort({ computedAt: -1 })
 				.limit(52)
 				.toArray(),
 		]);
 		discoveryRoutes = [
 			...projects.map((project) => ({
-				url: `${baseUrl}${projectHref(project)}`,
+				url: `${baseUrl}${projectHref({ url: project._id })}`,
 				lastModified: project.lastSeenAt ?? now,
 				changeFrequency: "daily" as const,
 				priority: 0.7,
@@ -58,14 +70,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 			changeFrequency: "weekly",
 			priority: 0.8,
 		},
-		...[
-			"@github-radar",
-			"@reddit-pulse",
-			"@youtube-trends",
-			"@hidden-gems",
-			"@weekly-digest",
-		].map((handle) => ({
-			url: `${baseUrl}/agent/${handle.replace("@", "")}`,
+		...AGENT_CATALOG.map((agent) => ({
+			url: `${baseUrl}/agent/${agent.handle.replace("@", "")}`,
 			lastModified: now,
 			changeFrequency: "daily" as const,
 			priority: 0.6,

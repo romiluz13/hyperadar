@@ -1,7 +1,7 @@
-"""Hidden gems source — HN API (free) + GitHub Search for low-star-rising repos.
+"""Hidden gems source — HN API + GitHub Search for recent low-star repos.
 
 @hidden-gems finds things BEFORE they blow up: HN Show HN posts linking to
-novel repos, and GitHub repos with low stars but high recent activity.
+novel repos, and recently created low-star repos sorted by recent updates.
 """
 
 import os
@@ -15,6 +15,23 @@ _headers = (
     if _github_token
     else {}
 )
+
+
+def normalize_hn_story(story: dict, story_id: int) -> dict:
+    """Keep Hacker News evidence labeled as Hacker News evidence."""
+    url = story.get("url", "")
+    title = story.get("title", "")
+    return {
+        "url": url or f"https://news.ycombinator.com/item?id={story_id}",
+        "title": title[:200],
+        "kind": "repo" if "github.com" in url else "thread",
+        "description": title,
+        "topics": ["hn", "hidden-gem", "ai"],
+        "discovery_source": "hacker_news",
+        "evidence_url": f"https://news.ycombinator.com/item?id={story_id}",
+        "hn_points": story.get("score", 0),
+        "hn_comments": story.get("descendants", 0),
+    }
 
 
 async def fetch_hn_candidates(max_results: int = 5) -> list[dict]:
@@ -39,26 +56,14 @@ async def fetch_hn_candidates(max_results: int = 5) -> list[dict]:
                 continue
             url = story.get("url", "")
             title = story.get("title", "")
-            score = story.get("score", 0)
             # Look for GitHub links or Show HN posts
             if "github.com" in url or title.startswith("Show HN"):
-                candidates.append(
-                    {
-                        "url": url or f"https://news.ycombinator.com/item?id={sid}",
-                        "title": title[:200],
-                        "kind": "repo" if "github.com" in url else "thread",
-                        "description": title,
-                        "topics": ["hn", "hidden-gem", "ai"],
-                        "upvotes": score,
-                        "num_comments": story.get("descendants", 0),
-                        "stars": score,  # HN score as momentum proxy
-                    }
-                )
+                candidates.append(normalize_hn_story(story, sid))
     return candidates
 
 
 async def fetch_low_star_github_candidates(max_results: int = 5) -> list[dict]:
-    """GitHub repos with low stars but high recent activity — the scouts' gold."""
+    """Recently created, recently updated GitHub repos with 50–500 stars."""
     since = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y-%m-%d")
     params = {
         "q": f"created:>{since} stars:50..500 topic:ai sort:updated",
@@ -84,7 +89,9 @@ async def fetch_low_star_github_candidates(max_results: int = 5) -> list[dict]:
                 "kind": "repo",
                 "description": it.get("description") or "",
                 "topics": it.get("topics") or [],
-                "stars": it.get("stargazers_count", 0),
+                "discovery_source": "github",
+                "evidence_url": it["html_url"],
+                "github_stars": it.get("stargazers_count", 0),
                 "created_at": it.get("created_at"),
                 "owner": it["owner"]["login"],
                 "repo": it["name"],

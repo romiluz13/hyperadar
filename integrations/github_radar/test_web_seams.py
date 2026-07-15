@@ -4,7 +4,7 @@ Tests the MongoDB seams that power the web layer:
 - T3: $vectorSearch returns similar projects (excluding the query project)
 - T4: like writes a reaction, increments counts, recomputes rankScore
 - T4: comment writes a reaction with type=comment, increments comment count
-- T4: rankScore formula = 0.6*momentum + 0.25*reactionVelocity + 0.15*recency
+- T4: rankScore preserves momentum and adds a capped distinct-participant bonus
 
 Run:  uv run --with pymongo pytest test_web_seams.py -v
 """
@@ -213,13 +213,11 @@ class TestReactions:
 
 
 class TestRankScore:
-    """T4 seam: rankScore = 0.6*momentum + 0.25*reactionVelocity + 0.15*recency."""
+    """T4 seam: rankScore = momentum + two points per network participant, capped at ten."""
 
-    def test_rank_score_blends_momentum_reactions_recency(self, db):
-        """A post with momentum=80, 5 recent reactions, fresh → score ≈ 0.6*80 + 0.25*50 + 0.15*100 = 80.5."""
+    def test_rank_score_preserves_momentum_and_adds_a_capped_bonus(self, db):
         post_id = _make_post(db, momentum=80.0)
         try:
-            # Add 5 reactions in the last 24h
             for i in range(5):
                 db.reactions.insert_one(
                     {
@@ -230,10 +228,43 @@ class TestRankScore:
                     }
                 )
 
-            # Recompute rankScore (mirrors the recomputeRank function in route.ts)
             post = db.posts.find_one({"_id": ObjectId(post_id)})
             momentum = post["project"]["momentumScore"]
-            recent = db.reactions.count_documents(
+            recent_participants = len(
+                db.reactions.distinct(
+                    "userId",
+                    {
+                        "postId": post_id,
+                        "createdAt": {
+                            "$gte": datetime.now(timezone.utc).replace(
+                                hour=0, minute=0, second=0, microsecond=0
+                            )
+                        },
+                    },
+                )
+            )
+            expected = min(momentum + min(recent_participants * 2, 10), 100)
+
+            assert expected == 90
+            assert expected >= momentum
+        finally:
+            _cleanup(db, post_id)
+
+    def test_repeated_actions_by_one_participant_do_not_multiply_rank(self, db):
+        post_id = _make_post(db, momentum=70.0)
+        try:
+            for index, reaction_type in enumerate(("like", "share", "comment")):
+                db.reactions.insert_one(
+                    {
+                        "postId": post_id,
+                        "userId": "one-human",
+                        "operationId": f"rank-operation-{index}",
+                        "type": reaction_type,
+                        "createdAt": datetime.now(timezone.utc),
+                    }
+                )
+            recent_participants = db.reactions.distinct(
+                "userId",
                 {
                     "postId": post_id,
                     "createdAt": {
@@ -241,41 +272,9 @@ class TestRankScore:
                             hour=0, minute=0, second=0, microsecond=0
                         )
                     },
-                }
+                },
             )
-            reaction_velocity = min(recent / 10, 1) * 100  # 5 reactions = 50
-            age_days = 0.01  # just posted
-            recency = max(0, 1 - age_days / 7) * 100  # ~100
-            expected = (
-                round((0.6 * momentum + 0.25 * reaction_velocity + 0.15 * recency) * 10)
-                / 10
-            )
-
-            # The formula: 0.6*80 + 0.25*50 + 0.15*100 = 48 + 12.5 + 15 = 75.5
-            assert expected == pytest.approx(75.5, abs=1.0)
+            assert recent_participants == ["one-human"]
+            assert 70 + len(recent_participants) * 2 == 72
         finally:
             _cleanup(db, post_id)
-
-    def test_pure_momentum_post_has_lower_score_than_reacted_post(self, db):
-        """A post with reactions should rank higher than one without (same momentum)."""
-        post_a = _make_post(db, momentum=70.0)
-        post_b = _make_post(db, momentum=70.0)
-        try:
-            # Add reactions to post_b
-            for i in range(3):
-                db.reactions.insert_one(
-                    {
-                        "postId": post_b,
-                        "userId": f"boost-{i}",
-                        "type": "like",
-                        "createdAt": datetime.now(timezone.utc),
-                    }
-                )
-            # post_a: no reactions → reactionVelocity = 0 → score = 0.6*70 + 0 + 0.15*100 = 57
-            # post_b: 3 reactions → reactionVelocity = 30 → score = 0.6*70 + 0.25*30 + 0.15*100 = 64.5
-            score_a = 0.6 * 70 + 0.25 * 0 + 0.15 * 100
-            score_b = 0.6 * 70 + 0.25 * 30 + 0.15 * 100
-            assert score_b > score_a, "post with reactions should rank higher"
-        finally:
-            _cleanup(db, post_a)
-            _cleanup(db, post_b)

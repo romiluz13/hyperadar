@@ -104,7 +104,7 @@ jobs:
           GROVE_MODEL: ${{ secrets.GROVE_MODEL }}
           BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.HYPERADAR_GITHUB_TOKEN || github.token }}
-        run: uv run python main.py
+        run: uv run --frozen python main.py
 
   report-to-port:
     name: Report final status to Port

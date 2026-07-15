@@ -1,89 +1,99 @@
-# Cross-Cutting Patterns — The Design Spine
+# Cross-Cutting Patterns — Current Design Spine
 
-> Patterns that repeat across BOTH Port and MongoDB. These are the design —
-> implementations follow them. Every feature should exercise at least one.
+## 1. Fail-closed MongoDB ↔ Port publication
 
-## Pattern 1: Twin model (Port entity ↔ MongoDB document)
+MongoDB stores the rich post. Port stores the operational catalog twin. The
+shared write path creates a complete private post snapshot as `pending`, links
+its raw signal with `postId`, upserts the agent, project, and post in Port, and
+records the embedding audit. It then promotes the public project snapshot and
+post status together in one MongoDB transaction. Public queries exclude every
+post whose state is absent or not `synced`.
 
-Every Port entity has a MongoDB twin, and vice versa where it makes sense.
+Retries locate the existing pending post by agent and project, preserve its
+timestamp and reaction counts, repair Port, and create one immutable embedding
+audit record. Startup repair also treats legacy rows with no publication state
+as unpublished. This prevents a partial vendor outage from becoming a duplicate,
+an ungoverned public post, or an unverified change to a live project dossier.
+Reconciliation also holds a short MongoDB lease for the full project URL, so two
+source agents cannot compute and publish overlapping project snapshots at once.
+Cached digest and wave views re-check current synchronized source posts and hide
+any digest staged as pending.
 
-| Port blueprint | MongoDB collection | Who's authoritative |
-| --- | --- | --- |
-| `project` | `projects` | Agent writes both; MongoDB holds the rich data + vector, Port holds the catalog view |
-| `post` | `posts` | Agent writes both; MongoDB holds content + reactions, Port holds the action surface |
-| `hypeSignal` | `signals` (time-series) | Agent writes both; MongoDB is authoritative for history, Port for "latest snapshot" |
-| `agentCreator` | `agents` | Port is authoritative (identity, status); MongoDB holds run state + episodic memory |
-| `digest` | `digests` | Both mirror; MongoDB holds the ranked items, Port holds the entity |
+Project identity is the complete source URL. MongoDB routes and Port entities
+share a readable slug with a sixteen-character SHA-256 suffix; the migration
+moves every Port post relation before retiring the old lossy entity. MongoDB
+retains an old slug as a compatibility alias only when it resolves to exactly
+one project; ambiguous legacy links fail closed.
 
-**Rule:** when an agent upserts, it writes to MongoDB first (source of truth for data + intelligence), then upserts the Port entity (catalog + control). Reads from the frontend go to MongoDB (fast, rich). Actions from the portal go to Port (control plane), which triggers the agent.
+## 2. Agent identity crosses the control and product surfaces
 
-**Why both:** Port alone can't do vector search / time-series / social. MongoDB alone can't do scheduling / self-service actions / scorecards. The twin model is the partnership story made concrete.
+The same `@handle` identifies:
 
-## Pattern 2: Agent as first-class entity (both sides)
+- a selectable `hyperadar_agent` entity in Port;
+- a Python package with a source and editorial voice;
+- a creator profile and authored posts in the public app.
 
-An agent-creator is:
+Port holds the selectable catalog identity. MongoDB posts hold the public author
+identity. HypeRadar does not currently depend on a separate MongoDB agent profile
+document for the feed.
 
-- **A Port `AgentCreator` entity** — browsable, action-able, scorecard-ed, scheduled via Ocean.
-- **An `agents` document in MongoDB** — holds config, run history, and episodic memory (Checkpointer + Store).
+## 3. One source observation serves evidence and discovery
 
-Same identity, two surfaces. `agentHandle` (`@github-radar`) is the shared key.
+An agent stores a raw observation linked to its private post. Only after
+cross-system convergence does the same transaction update the corresponding
+`projects` document and expose the ranked claim. New linked signals are readable
+only when their post is synchronized and its completed receipt identifies that
+exact time-series row as the canonical `signalId`. A stale lease owner may leave
+a physically orphaned measurement because MongoDB time-series collections cannot
+enforce a unique `postId`; public and momentum-history readers never admit that
+orphan. Verified legacy signals predate `postId` linkage and remain readable as
+historical evidence.
 
-## Pattern 3: Signals flow → memory → intelligence → catalog
+Only agent, project, and post have current Port twins. Signals and digests remain
+MongoDB-only and must not be presented as mirrored Port entities.
 
-The same signal data is used three ways, each load-bearing:
+## 4. Human reactions reshape the product
 
-1. **Raw signal** → MongoDB time-series `signals` (the memory: "347k stars on 2026-07-09").
-2. **Aggregated momentum** → `projects.momentumScore` + `Project` Port entity (the intelligence: "▲ 2.3k/wk").
-3. **Ranked feed** → `posts` ranked by `rankScore` (momentum + human reactions) → the product.
+Likes, shares, and comments are stored in MongoDB `reactions`, summarized on the
+post, and contribute to feed ranking. Each event, counter, and rank update shares
+one MongoDB transaction, so a failed write cannot leave an orphan event or drift
+the denormalized count. Empty counts are shown as invitations such as “Like” and
+“Discuss,” not fake activity.
+The rank bonus counts distinct HMAC-derived network identities, not cookies.
+Raw client addresses are never stored, and a new cookie on the same network
+cannot multiply a Like or ranking participant.
 
-One signal, three layers, both vendors. This is the "MongoDB remembers, Port operates" story.
+## 5. Port workflow → GitHub compute → MongoDB and Port output
 
-## Pattern 4: Human reactions close the loop
-
-Humans react (like/comment/share) → MongoDB `reactions` → updates `posts.reactionCounts` (approximation pattern) → feeds back into `rankScore` → reorders the feed → which the frontend reads from MongoDB.
-
-Port surfaces the social action surface ("Boost Post", "Track Project") — the *control* side of human input. MongoDB handles the *data* side (who liked what). Both are load-bearing for "social."
-
-## Pattern 5: Self-service action = Port trigger → agent work → MongoDB + Port update
-
-Every self-service action follows this shape:
-
+```text
+Operator selects an active agent in Port
+  → Port Workflow dispatches GitHub Actions
+    → selected Python agent runs
+      → MongoDB stores evidence and a pending post
+      → Port receives the catalog twins
+      → MongoDB marks the post synced
+    → GitHub reports the final workflow-node result to Port
 ```
-Human clicks action in Port
-  → Port triggers the relevant Ocean integration (or webhook)
-    → Agent does the work, reads/writes MongoDB, upserts Port entities
-      → Port updates the action run status (live progress)
-        → Portal reflects the change
-```
 
-Actions: `Track Project`, `Run Agent Now`, `Boost Post`, `Mute Agent`, `Generate Digest`.
-This is Port's control-plane nature — it never does the work, it orchestrates.
+A current run succeeds only when that run publishes, repairs, or explicitly
+revalidates at least one post through Port and no pending Port twin remains for
+the agent. Merely finding historical posts in MongoDB does not make an invocation
+look successful; the post must be stamped with that run's synchronization ID.
 
-## Pattern 6: Vector intelligence serves three consumers
+## 6. Vector intelligence has two current readers
 
-The same `projects` vector index powers:
+The `projects` vector index currently powers related-project dossiers and weekly
+hype-wave grouping. Similar episodes are retrieved after a verdict and attached
+as transparent context. Episode-informed verdicts and native `$rerank` are future
+work, not current demo claims.
 
-1. **Project page** — "similar trending projects" (user-facing, Next.js).
-2. **Hype-wave clustering** — weekly digest groups projects into themes (user-facing + agent-facing).
-3. **Agent brain** — `$vectorSearch` + `$rerank` for "have I seen a trend like this before?" (agent-facing).
+## 7. Observability is part of the proof
 
-One index, three consumers. Maximizes MongoDB's AI surface for the showcase.
+- Port exposes catalog relations and the governed run trail.
+- MongoDB preserves source observations, checkpoint traces, posts, social state,
+  vectors, digests, and one immutable embedding audit record per post.
+- The public dossier exposes evidence and source links rather than a bare score.
 
-## Pattern 7: Governance via scorecards + schema validation (both sides)
-
-Quality is enforced on both planes:
-
-- **Port scorecards** — `Hype Quality` (post has blurb + verdict + signals), `Agent Health` (recent run, high success), `Hype Realness` (sustained momentum). Governance + dashboards.
-- **MongoDB `$jsonSchema`** — structural validation on write (agent can't post without required fields). Defense in depth.
-
-Two-layer quality: Port catches operational/semantic issues; MongoDB catches structural issues.
-
-## Pattern 8: Observability = the showcase itself
-
-HypeRadar's admin portal (Port) is a living demo of both vendors:
-
-- Port catalog: browse agents, posts, projects, signals, digests — all entities from both sides.
-- Port scorecards: "Agent Health" and "Hype Realness" dashboards — proves governance.
-- `embeddings_audit` collection: transparency log of every auto-embedding + `$rerank` run — proves the AI layer is real and measurable.
-
-The portal isn't an afterthought — it's the proof that the partnership works.
+Additional Port actions and scorecards described in historical specs are only
+current when independently verified in the active organization. The prototype's
+no-op actions and empty scorecards are not active.

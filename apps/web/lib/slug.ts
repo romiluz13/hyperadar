@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
+
 /** URL <-> slug helpers for project routes. Keeps web slugs and Port identifiers aligned. */
 
-/** Convert a project URL to a SEO-friendly slug. GitHub repos -> owner-repo. */
-export function urlToSlug(url: string): string {
+/** Convert a project URL to its pre-v2 readable slug. */
+export function legacyUrlToSlug(url: string): string {
 	try {
 		const u = new URL(url);
 		const parts = u.pathname.split("/").filter(Boolean);
@@ -39,9 +41,19 @@ export function urlToSlug(url: string): string {
 	}
 }
 
+/** Keep readable routes while making every full URL identity collision-resistant. */
+export function urlToSlug(url: string): string {
+	const base = legacyUrlToSlug(url) || "project";
+	const suffix = createHash("sha256").update(url).digest("hex").slice(0, 16);
+	return `${base.slice(0, 103).replace(/-$/, "")}-${suffix}`;
+}
+
 export function legacySlugCandidates(slug: string): string[] {
 	const parts = slug.split("-").filter(Boolean);
 	const candidates = new Set<string>();
+	if (/^(?:[0-9a-f]{8}|[0-9a-f]{16})$/.test(parts.at(-1) ?? "")) {
+		candidates.add(parts.slice(0, -1).join("-"));
+	}
 	for (let index = 0; index < parts.length; index += 1) {
 		candidates.add(parts.slice(index).join("-"));
 		candidates.add(parts[index]);
@@ -51,7 +63,8 @@ export function legacySlugCandidates(slug: string): string[] {
 }
 
 export function legacyUrlPatterns(slug: string): RegExp[] {
-	const youtube = slug.match(/^youtube-([a-z0-9-]+)$/);
+	const legacySlug = slug.replace(/-(?:[0-9a-f]{8}|[0-9a-f]{16})$/, "");
+	const youtube = legacySlug.match(/^youtube-([a-z0-9-]+)$/);
 	if (youtube) {
 		const id = escapeRegex(youtube[1]);
 		return [
@@ -60,7 +73,7 @@ export function legacyUrlPatterns(slug: string): RegExp[] {
 		];
 	}
 
-	const reddit = slug.match(/^reddit-.+-([a-z0-9]+)$/);
+	const reddit = legacySlug.match(/^reddit-.+-([a-z0-9]+)$/);
 	if (reddit) {
 		return [
 			new RegExp(
@@ -83,7 +96,7 @@ function escapeRegex(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Reverse: slug -> likely project URL. For GitHub owner-repo slugs. */
+/** Legacy best effort only; collision-resistant project slugs are not reversible. */
 export function slugToUrl(slug: string): string {
 	const parts = slug.split("-");
 	if (parts.length >= 2) {

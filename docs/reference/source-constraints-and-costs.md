@@ -1,45 +1,55 @@
-# Source Constraints & Cost Model
+# Source Constraints and Run Budget
 
-> Verified 2026-07-09. These constraints are load-bearing for the agent-creator design.
+> Current code paths and known operational gates. Prices and quotas can change;
+> verify them before presenting a cost forecast.
 
-## GitHub trending — NO official API
+## Current source adapters
 
-- No `/trending` endpoint. Anonymous scraping returns `404`/`429` after 1-3 requests. Authenticated scraping risks account flagging.
-- **Solution:** use aggregators (OSSInsight, Trendshift) for discovery; GitHub REST API (5k req/h with token) for repo details (stars, topics, README).
-- Repo details endpoint: `GET /repos/{owner}/{repo}` — cheap, 1 req each.
+| Agent | Current source path | Per-run boundary |
+| --- | --- | --- |
+| `@github-radar` | GitHub REST search/details | Requires GitHub token for dependable rate limits |
+| `@reddit-pulse` | Two Bright Data `bdata search` queries | Requires CLI plus `BRIGHTDATA_API_KEY` |
+| `@youtube-trends` | Two `yt-dlp` `ytsearch5` queries | Installs the pinned CLI in GitHub Actions |
+| `@hidden-gems` | Top 20 Hacker News stories plus one GitHub repository search | HN is unauthenticated; GitHub token is preferred |
+| `@weekly-digest` | Up to 15 distinct projects from synchronized source-agent posts in the last seven days | No external discovery source |
 
-## Reddit API — bypassed via Bright Data
+The adapters store the metric they actually observed. GitHub's stars/week value
+is a lifetime average since repository creation, not recent velocity; sustained
+growth requires six observations across five weeks. HN points remain HN points.
+YouTube keeps total views plus the position within its specific YouTube search
+query. Reddit keeps Google result rank and labels its visibility score as a
+proxy. None is converted into fake stars, a fabricated Google rank, or
+unobserved Reddit votes/comments.
 
-- Official Reddit API: free tier = non-commercial only (100 QPM, "Responsible Builder" approval); commercial = ~$0.24/1k calls, ~$12k/yr floor. `.json` endpoints now `403`.
-- **Decision for HypeRadar: use Bright Data Reddit scraper (`bdata`)** — ~$1.50/1000 records, ~$0.30/day at our once-daily ~200-record volume. No commercial gate, no approval wait. Rom has `bdata` CLI + the `data-feeds`/`scrape` skills installed.
+The weekly editor may connect themes and name projects, but it cannot introduce
+engagement counts, rates, velocity, or sustained-growth claims. Readers are sent
+to project dossiers for source-labeled measurements. Its rank is the average of
+the included source-project momentum scores; editorial digest projects are
+excluded so the wrapper cannot rank itself.
 
-## YouTube Data API — quota, no paid tier
+## Current execution cadence
 
-- Free: 10k units/day. `search.list` = 100 units (expensive). `videos.list` = 1 unit (cheap).
-- **No paid tier** — can't buy more quota; extension requires manual compliance audit (2-8 weeks).
-- **Solution:** `@youtube-trends` tracks a **seed list of known AI/dev channels** by ID. Use `videos.list` (1 unit) to fetch their recent videos + stats. 10k units/day = ~10k video lookups — plenty for once-daily.
-- Avoid `search.list` entirely. Build/maintain the channel seed list manually (or via a one-time setup).
+The verified production control path is on-demand through the Port Workflow and
+GitHub Actions. Repository scripts may support manual batch runs, but a scheduled
+daily cron is not a current production claim.
 
-## Crons (once daily — cost-conscious)
+GitHub's workflow serializes concurrent runs per selected agent and gives each
+job a 30-minute timeout. Every package runs from its committed `uv.lock` with
+`--frozen`.
 
-| Agent | Cron | Primary source | Calls/day | LLM calls |
-| --- | --- | --- | --- | --- |
-| `@github-radar` | Daily 06:00 | OSSInsight/Trendshift + GitHub API | ~50 | ~20 |
-| `@reddit-pulse` | Daily 07:00 | Bright Data Reddit scraper (`bdata`) | ~200 | ~15 |
-| `@youtube-trends` | Daily 08:00 | YouTube `videos.list` on seed channels | ~100 | ~10 |
-| `@hidden-gems` | Daily 09:00 | HN API + GitHub low-star repos | ~30 | ~10 |
-| `@weekly-digest` | Mon 09:00 | MongoDB reads only | 0 | ~1 |
+## Known gate
 
-## Daily cost drivers
+`BRIGHTDATA_API_KEY` is not configured in the challenge GitHub repository, so the
+Reddit workflow must be described as blocked. The existing canonical Reddit post
+was repaired from directly verified source evidence; that does not prove the
+automated Reddit runner is currently available.
 
-- LLM calls: ~55 blurbs/verdicts/day (agent voices) — main variable cost
-- MongoDB: auto-embedding (~50/day), `$rerank` (~25/day), Atlas tier
-- Port: Ocean integration runs (5/day + 1 weekly)
-- Vercel: compute (frontend reads + Python Sandbox agent runs; free tier covers once-daily cadence)
-- Reddit API: free OR $12k/yr (the one big risk)
+## Cost discipline
 
-**Once-daily crons keep variable costs low.** Bright Data Reddit (~$0.30/day) is the only material external cost. LLM calls go through **Grove** (MongoDB gateway, no external cost). MongoDB Atlas (staff access) + Port (partnership) + Vercel (free tier covers once-daily agents) are effectively free for this project.
-
-## Framing the cadence
-
-Once-daily isn't a limitation — it's the product's rhythm. "HypeRadar drops daily — the radar refreshes every morning." Hype isn't minute-by-minute; a daily drop feels like an event (morning radar) and fits a "this week in AI dev" mental model. Lean into it in the UX.
+- Bound discovery result counts before calling the model.
+- Use MongoDB reads only for the weekly digest input.
+- Keep agent runs operator-triggered until source quality and cost are measured.
+- Treat LLM, Bright Data, Atlas, Port, GitHub Actions, and Vercel prices as live
+  external facts; refresh them before recording exact numbers.
+- A source failure must fail the run instead of silently publishing empty or
+  synthetic evidence.

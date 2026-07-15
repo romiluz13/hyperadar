@@ -1,7 +1,7 @@
 """T5 per-agent tests: each agent's source → write path with mocked sources.
 
 Tests that each agent-creator can fetch candidates (mocked) and write a post
-to MongoDB + Port via the shared write_post function.
+through the shared persistence path. Port calls are isolated from the live catalog.
 """
 
 import os
@@ -17,10 +17,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _shared.write_post import write_post  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolate_port_catalog(monkeypatch):
+    from _shared import port_client
+
+    monkeypatch.setattr(port_client, "upsert_agent", lambda *_args: {"ok": True})
+    monkeypatch.setattr(port_client, "upsert_project", lambda *_args: {"ok": True})
+    monkeypatch.setattr(port_client, "upsert_post", lambda *_args: {"ok": True})
+
+
 def _cleanup(db, url):
     db.posts.delete_many({"project.url": url})
     db.projects.delete_many({"url": url})
     db.signals.delete_many({"projectId": url})
+    db.signal_receipts.delete_many({"signal.projectId": url})
+    db.embeddings_audit.delete_many({"projectId": url})
 
 
 class TestRedditPulse:
@@ -43,14 +54,14 @@ class TestRedditPulse:
                     "momentumScore": 65.0,
                     "hypeVerdict": "hype looks real",
                 },
-                "r/test can't shut up about this — 50 upvotes in 2h.",
+                "Google search surfaced this Reddit result at position 4; 60/100 is a visibility proxy, not engagement.",
                 "hype looks real",
                 {
                     "source": "reddit",
-                    "metric": "upvotes",
-                    "value": 50,
-                    "delta": 12,
-                    "summary": "upvotes=50, comments=12",
+                    "metric": "search visibility",
+                    "value": 60,
+                    "delta": 0,
+                    "summary": "Google SERP rank=4; visibility proxy=60/100",
                 },
                 65.0,
             )
@@ -82,14 +93,14 @@ class TestYouTubeTrends:
                     "momentumScore": 80.0,
                     "hypeVerdict": "hype looks real",
                 },
-                "This 12-min demo hit 40k views in 48h.",
+                "40k YouTube views observed. This 12-minute agent demo is worth inspecting.",
                 "hype looks real",
                 {
                     "source": "youtube",
                     "metric": "views",
                     "value": 40000,
                     "delta": 0,
-                    "summary": "serp_rank=1",
+                    "summary": "YouTube views=40000; search position=1 for a named query",
                 },
                 80.0,
             )
@@ -116,19 +127,19 @@ class TestHiddenGems:
                     "url": url,
                     "title": "test/hidden-gem",
                     "kind": "repo",
-                    "description": "47 stars but rising",
+                    "description": "47 GitHub stars in a recent-repository search",
                     "topics": ["hn", "hidden-gem"],
                     "momentumScore": 45.0,
                     "hypeVerdict": "emerging",
                 },
-                "47 stars. But look at the trajectory.",
+                "47 GitHub stars observed; growth trajectory was not measured.",
                 "emerging",
                 {
                     "source": "hn",
-                    "metric": "stars",
+                    "metric": "github_stars",
                     "value": 47,
                     "delta": 0,
-                    "summary": "stars=47, hidden gem",
+                    "summary": "GitHub stars=47; discovered in recent-repository search",
                 },
                 45.0,
             )
@@ -173,7 +184,7 @@ class TestUrlValidation:
                 "@test",
                 "test",
                 "test",
-                "test",
+                "web",
                 {
                     "url": url,
                     "title": "safe",

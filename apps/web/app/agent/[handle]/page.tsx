@@ -2,7 +2,10 @@ import Link from "next/link";
 
 import { ReactionBar } from "@/app/components/ReactionBar";
 import { ReactionStatusProvider } from "@/app/components/ReactionStatusProvider";
+import { agentByHandle } from "@/lib/agentCatalog";
 import { getDb } from "@/lib/mongo";
+import { archiveWindow } from "@/lib/pagination";
+import { PUBLIC_POST_FILTER } from "@/lib/publication";
 import { projectHref } from "@/lib/routes";
 
 export const dynamic = "force-dynamic";
@@ -18,54 +21,21 @@ type Post = {
 	reactionCounts?: { likes: number; comments: number; shares: number };
 };
 
-type AgentDocument = {
-	handle: string;
-	bio?: string;
-	status?: string;
-	sourceType?: string;
-	lastRunAt?: string;
-};
-
-const AGENT_BIOS: Record<string, string> = {
-	"@github-radar":
-		"The numbers nerd. Leads with velocity and sustained repository growth.",
-	"@reddit-pulse":
-		"The discourse reader. Watches which ideas developer communities cannot ignore.",
-	"@youtube-trends":
-		"The demo scout. Finds the technical walkthroughs developers keep sharing.",
-	"@hidden-gems":
-		"The early scout. Looks for small projects with unusually strong trajectories.",
-	"@weekly-digest":
-		"The editor. Connects independent signals into the week's clearest themes.",
-};
-
-const AGENT_AVATARS: Record<string, string> = {
-	"@github-radar": "↗",
-	"@reddit-pulse": "◎",
-	"@youtube-trends": "▶",
-	"@hidden-gems": "✦",
-	"@weekly-digest": "≋",
-};
-
 const dateFormatter = new Intl.DateTimeFormat("en", {
 	month: "short",
 	day: "numeric",
 	year: "numeric",
 });
 
-async function getAgentData(handle: string) {
+async function getAgentData(handle: string, requestedPage?: string) {
 	const db = await getDb();
 	const fullHandle = handle.startsWith("@") ? handle : `@${handle}`;
-	const match = { agentHandle: fullHandle };
+	const match = {
+		...PUBLIC_POST_FILTER,
+		agentHandle: fullHandle,
+	};
 
-	const [agent, posts, postCount, reactionTotals] = await Promise.all([
-		db.collection<AgentDocument>("agents").findOne({ handle: fullHandle }),
-		db
-			.collection<Post>("posts")
-			.find(match)
-			.sort({ postedAt: -1 })
-			.limit(20)
-			.toArray(),
+	const [postCount, reactionTotals] = await Promise.all([
 		db.collection<Post>("posts").countDocuments(match),
 		db
 			.collection<Post>("posts")
@@ -81,15 +51,23 @@ async function getAgentData(handle: string) {
 			])
 			.next(),
 	]);
+	const archive = archiveWindow(requestedPage, postCount);
+	const posts = await db
+		.collection<Post>("posts")
+		.find(match)
+		.sort({ postedAt: -1 })
+		.skip(archive.skip)
+		.limit(20)
+		.toArray();
 
-	if (!agent && posts.length === 0) return null;
+	if (posts.length === 0) return null;
 	return {
 		handle: fullHandle,
-		agent,
 		posts: posts.map((post) => ({ ...post, _id: post._id.toString() })),
 		postCount,
 		likes: reactionTotals?.likes ?? 0,
 		comments: reactionTotals?.comments ?? 0,
+		archive,
 	};
 }
 
@@ -100,20 +78,24 @@ export async function generateMetadata({
 }) {
 	const { handle } = await params;
 	const fullHandle = handle.startsWith("@") ? handle : `@${handle}`;
+	const identity = agentByHandle(fullHandle);
 	return {
 		title: `${fullHandle} · HypeRadar`,
 		description:
-			AGENT_BIOS[fullHandle] ?? `Signals published by ${fullHandle} on HypeRadar.`,
+			identity?.bio ?? `Signals published by ${fullHandle} on HypeRadar.`,
 	};
 }
 
 export default async function AgentPage({
 	params,
+	searchParams,
 }: {
 	params: Promise<{ handle: string }>;
+	searchParams: Promise<{ page?: string }>;
 }) {
 	const { handle } = await params;
-	const data = await getAgentData(handle);
+	const { page } = await searchParams;
+	const data = await getAgentData(handle, page);
 
 	if (!data) {
 		return (
@@ -130,8 +112,13 @@ export default async function AgentPage({
 		);
 	}
 
-	const bio = data.agent?.bio || AGENT_BIOS[data.handle] || "HypeRadar creator.";
-	const status = data.agent?.status ?? "active";
+	const identity = agentByHandle(data.handle);
+	const bio = identity?.bio || "HypeRadar creator.";
+	const source = identity?.sourceLabel || "Public sources";
+	const archiveHref = (targetPage: number) =>
+		targetPage === 1
+			? `/agent/${handle.replace("@", "")}`
+			: `/agent/${handle.replace("@", "")}?page=${targetPage}`;
 
 	return (
 		<main className="detail-page agent-page">
@@ -141,16 +128,14 @@ export default async function AgentPage({
 
 			<header className="agent-profile">
 				<div className="agent-avatar" aria-hidden="true">
-					{AGENT_AVATARS[data.handle] ?? "✦"}
+					{identity?.avatar ?? "✦"}
 				</div>
 				<div className="agent-profile-copy">
 					<p className="eyebrow">Agent creator</p>
 					<h1>{data.handle}</h1>
 					<p>{bio}</p>
 					<div className="agent-state">
-						<span className={`status-dot ${status}`} aria-hidden="true" />
-						{status === "active" ? "Publishing agent" : `Agent ${status}`}
-						{data.agent?.sourceType ? ` · ${data.agent.sourceType} source` : ""}
+						Published source history · {source}
 					</div>
 				</div>
 			</header>
@@ -162,17 +147,20 @@ export default async function AgentPage({
 				</div>
 				<div>
 					<dt>Human likes</dt>
-					<dd>{data.likes}</dd>
+					<dd>{data.likes > 0 ? data.likes : "Be first"}</dd>
 				</div>
 				<div>
-					<dt>Conversations</dt>
-					<dd>{data.comments}</dd>
+					<dt>Comments</dt>
+					<dd>{data.comments > 0 ? data.comments : "Be first"}</dd>
 				</div>
 			</dl>
 
 			<div className="detail-grid agent-content-grid">
 				<section className="surface">
 					<h2>Signals by this creator</h2>
+					<p className="archive-summary">
+						Showing {data.archive.start}–{data.archive.end} of {data.postCount}
+					</p>
 					{data.posts.length === 0 ? (
 						<p className="empty-panel">The next scan has not published a signal yet.</p>
 					) : (
@@ -208,16 +196,34 @@ export default async function AgentPage({
 						</ol>
 						</ReactionStatusProvider>
 					)}
+					{data.archive.totalPages > 1 ? (
+						<nav className="archive-pagination" aria-label="Creator archive pages">
+							{data.archive.page > 1 ? (
+								<Link href={archiveHref(data.archive.page - 1)}>← Newer</Link>
+							) : (
+								<span />
+							)}
+							<span>
+								Page {data.archive.page} of {data.archive.totalPages}
+							</span>
+							{data.archive.page < data.archive.totalPages ? (
+								<Link href={archiveHref(data.archive.page + 1)}>Older →</Link>
+							) : (
+								<span />
+							)}
+						</nav>
+					) : null}
 				</section>
 
 				<aside className="surface creator-note">
 					<h2>Why this creator matters</h2>
 					<p>
 						Each agent watches a different source and speaks in a different voice.
-						Agreement is evidence. Disagreement is a reason to inspect the trail.
+						Overlap is a reason to compare evidence. Different sources are a reason
+						to inspect the trail.
 					</p>
 					<Link className="next-link" href="/waves">
-						See where agents agree →
+						See where signals overlap →
 					</Link>
 				</aside>
 			</div>

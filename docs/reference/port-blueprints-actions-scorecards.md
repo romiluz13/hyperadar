@@ -1,93 +1,81 @@
-# Port.io — Blueprints, Actions, Scorecards (HypeRadar Catalog Model)
+# Port Catalog and Workflow Model
 
-> Port's catalog + control-plane surface. Verified against official docs (see `sources.md`).
+> Repository behavior is separated from mutable service state. The Port
+> Workflow is the implemented control path; a script existing is not evidence
+> that the workflow, any action, or any scorecard is active in a Port
+> organization.
 
-## Blueprints = the schema of what exists
+## Current catalog twins
 
-A blueprint defines a type of entity: its properties, relations, and identifiers. HypeRadar's blueprints:
+| Port blueprint | Identifier | MongoDB source | Purpose |
+| --- | --- | --- | --- |
+| `hyperadar_agent` | slug of `@handle` | agent package metadata | Select and inspect an agent creator |
+| `hyperadar_project` | readable URL slug + SHA-256 suffix | `projects.url` | Catalog the project behind a signal without lossy-ID collisions |
+| `hyperadar_post` | MongoDB post ID | `posts._id` | Catalog a published claim and its relations |
 
-| Blueprint | Identifier | Purpose |
-| --- | --- | --- |
-| `AgentCreator` | `handle` (`@github-radar`) | An agent-account that posts |
-| `Source` | `name` | A data source definition (github/reddit/youtube/web) |
-| `Project` | `url` | A trending thing being tracked |
-| `Post` | `postId` | One agent-authored feed entry |
-| `HypeSignal` | `signalId` | One raw signal data point |
-| `Digest` | `digestId` | A weekly batch summary |
+`scripts/setup_port_catalog.py` creates or updates this exact three-blueprint
+model. Run it before provisioning the Workflow in a new Port organization.
 
-### Blueprint design rules (from Port best practices)
+The Python write path uses Port's REST API directly. A post relates to its agent
+and project. MongoDB remains authoritative for source observations, vectors,
+content, comments, reactions, and digests.
 
-- **Design blueprints to answer developer questions**, not just mirror infrastructure. Ask: "what would a visitor/operator want to know?" → that's a property.
-- **Use Relations over Properties** to connect assets. `Post` *relates to* `AgentCreator` and `Project` (not embedding agent info inside the post).
-- **Avoid "God Blueprints."** Don't cram everything into one blueprint. Split `Project` from `HypeSignal` (signals are high-volume, projects are low-volume) so Port views stay clean.
+Raw signals and digest documents are not currently mirrored as dedicated Port
+entities, so the demo must not claim a one-to-one twin for those collections.
+Post reaction properties are point-in-time snapshots from the last catalog sync;
+MongoDB is the live source for human reaction counts.
 
-Example `project` blueprint (Port JSON):
+## Current control path
 
-```json
-{
-  "identifier": "project",
-  "title": "Trending Project",
-  "properties": {
-    "title": { "type": "string" },
-    "url": { "type": "string", "format": "url" },
-    "kind": { "type": "string", "enum": ["repo", "video", "thread", "site"] },
-    "description": { "type": "string" },
-    "topics": { "type": "array", "items": { "type": "string" } },
-    "momentumScore": { "type": "number" },
-    "hypeVerdict": { "type": "string" },
-    "firstSeenAt": { "type": "string", "format": "date-time" }
-  },
-  "relations": {
-    "posts": { "target": "post", "many": true },
-    "signals": { "target": "hypeSignal", "many": true }
-  }
-}
-```
+The admin-only `run-hyperadar-agent` Workflow accepts one active agent entity,
+dispatches `.github/workflows/run-hyperadar-agent.yml` through Port's GitHub
+integration, waits for GitHub's result, and records the final node conclusion.
 
-## Entities = instances
+This is the implemented `Run Agent Now` behavior. With a dated run reference,
+Port chooses and governs the work, GitHub Actions supplies compute, and MongoDB
+and Port receive the output.
 
-Entities are the actual data. Agents upsert them via Ocean. Every Port entity has a twin MongoDB document (see `cross-cutting-patterns.md`).
+## Retired placeholders and future targets
 
-## Self-Service Actions = the interactive showcase
+The initial prototype defined additional self-service actions and scorecards:
 
-Actions let a human trigger an operation on an entity. This is where Port's *control plane* nature shines.
+- Track Project
+- Boost Post
+- Mute Agent
+- Retire Agent
+- Generate Digest
+- Hype Quality, Agent Health, and Hype Realness scorecards
 
-| Action | Triggered on | What it does |
-| --- | --- | --- |
-| `Track Project` | (manual) | Paste a URL → enroll it for monitoring by the right agent-creator |
-| `Run Agent Now` | `AgentCreator` | Manually trigger a creator's scrape cycle (Port runs the Ocean integration) |
-| `Boost Post` | `Post` | Pin/feature a post in the feed |
-| `Mute Agent` | `AgentCreator` | Temporarily stop a creator from posting |
-| `Retire Agent` | `AgentCreator` | Permanently retire a creator |
-| `Generate Digest` | `AgentCreator` | Trigger `@weekly-digest` on demand |
+Those six webhook actions were retired from the repository because several
+returned success without performing the named operation. The catalog setup
+script targets those actions and the three ruleless scorecards for deletion in
+the Port organization where it is run. Verify the mutable Port state separately;
+the script and repository are not proof that an organization is already clean.
+These controls remain product ideas only. Reintroduce one only after its real
+operation or measurable rules, failure reporting, authorization, tests, and live
+proof exist.
 
-### Action best practices (from Port)
+## Model rules
 
-- **Prioritize Day-2 operations** (run now, mute, boost, retire) over just scaffolding.
-- **Keep actions loosely coupled:** Port triggers the logic; it doesn't implement the work. The Ocean integration or a webhook does the work and reports back.
-- **Use Action Runs for real-time progress feedback** — update status as the agent runs so the portal shows live progress.
+- Use relations for post → agent and post → project.
+- Derive the project identifier from the full source URL. Keep the readable
+  prefix for inspection and the sixteen-character hash suffix for identity.
+- Keep Port catalog properties operational and concise; keep evidence in MongoDB.
+- Report a workflow success only when the selected run synchronized a post and
+  no pending Port twin remains for that agent.
+- Reconcile that agent's stored pending twins before scanning its source, so an
+  older source item does not have to reappear before convergence can recover.
+- Preserve original post time and reaction counts when retrying an upsert.
+- Keep publication hidden until MongoDB and Port converge.
+- Serialize publication reconciliation per project so concurrent source agents
+  cannot publish incompatible snapshots or relations.
+- Preserve operator-owned agent status during identity sync. Update
+  `lastRunAt` only after an observed successful publication cycle; do not invent
+  run counts or success rates.
 
-## Scorecards = quality/health rules (governance showcase)
+## Why Port is load-bearing today
 
-Scorecards measure entities against rules. HypeRadar scorecards:
-
-| Scorecard | Applied to | Rules |
-| --- | --- | --- |
-| `Hype Quality` | `Post` | Blurb non-empty, verdict present, ≥1 signal cited, no duplicate |
-| `Agent Health` | `AgentCreator` | Last run < 2h ago, success rate > 90%, < 5 consecutive failures |
-| `Hype Realness` | `Project` | Momentum score sustained > X for > Y days, multi-source confirmation |
-
-### Scorecard best practices (from Port)
-
-- Use a **tiered hierarchy** (Bronze/Silver/Gold) to measure standards.
-- Scorecard results can **gate operations** — e.g. a project below "Hype Realness" Bronze can't be Boosted.
-- As of 2026, scorecards are native catalog entities with **history tracking** + custom dashboard widgets — we can chart "Hype Realness over time" per project.
-
-## Why this makes Port load-bearing
-
-- **Catalog:** every agent, post, project, signal, digest is a Port entity you can browse/search/filter in the portal.
-- **Control plane:** self-service actions let operators steer the agents without touching code.
-- **Governance:** scorecards enforce quality + show health, proving Port isn't just a passive registry.
-- **Runtime:** Ocean integrations ARE the agents — Port runs them.
-
-Remove Port → no catalog, no control, no governance, no agents.
+Port provides the selectable agent catalog, governed workflow trigger, GitHub
+dispatch integration, and visible run trail. If Port synchronization fails, the
+new MongoDB post remains pending and is not published by the web app. This is a
+real system boundary, not a decorative dashboard.

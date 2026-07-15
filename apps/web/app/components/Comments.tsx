@@ -1,8 +1,21 @@
 "use client";
 
-import { useEffect, useId, useState, useTransition } from "react";
+import { useEffect, useId, useRef, useState, useTransition } from "react";
 
-type Comment = { userName: string; text: string; createdAt: string };
+import {
+	type CommentOperation,
+	operationForComment,
+} from "@/lib/commentOperation";
+import { commentFailureMessage } from "@/lib/commentResponse";
+
+type Comment = {
+	operationId?: string;
+	userName: string;
+	text: string;
+	createdAt: string;
+};
+
+type CommentLoadState = "idle" | "loading" | "success" | "error";
 
 const dateFormatter = new Intl.DateTimeFormat("en", {
 	month: "short",
@@ -23,15 +36,20 @@ export function Comments({
 	const [name, setName] = useState("");
 	const [count, setCount] = useState(initialComments);
 	const [error, setError] = useState("");
-	const [loading, setLoading] = useState(false);
+	const [loadError, setLoadError] = useState("");
+	const [loadState, setLoadState] = useState<CommentLoadState>("idle");
+	const [retryToken, setRetryToken] = useState(0);
 	const [pending, startTransition] = useTransition();
+	const commentInput = useRef<HTMLTextAreaElement>(null);
+	const pendingOperation = useRef<CommentOperation | null>(null);
+	const commentLabel = count === 1 ? "1 comment" : `${count} comments`;
 
 	useEffect(() => {
 		if (!open) return;
 		const controller = new AbortController();
 		let active = true;
-		setError("");
-		setLoading(true);
+		setLoadError("");
+		setLoadState("loading");
 		fetch(`/api/reactions/comments?postId=${postId}`, {
 			signal: controller.signal,
 		})
@@ -40,7 +58,10 @@ export function Comments({
 				return response.json();
 			})
 			.then((data) => {
-				if (active) setComments(data.comments ?? []);
+				if (active) {
+					setComments(data.comments ?? []);
+					setLoadState("success");
+				}
 			})
 			.catch((fetchError: unknown) => {
 				if (
@@ -50,42 +71,82 @@ export function Comments({
 					return;
 				}
 				if (active) {
-					setError("Comments could not load. Close this thread and try again.");
+					setLoadError("Comments could not load. Your existing thread is unchanged.");
+					setLoadState("error");
 				}
-			})
-			.finally(() => {
-				if (active) setLoading(false);
 			});
 		return () => {
 			active = false;
 			controller.abort();
 		};
-	}, [open, postId]);
+	}, [open, postId, retryToken]);
+
+	function toggleThread() {
+		if (open) {
+			setOpen(false);
+			return;
+		}
+		setLoadState("loading");
+		setOpen(true);
+	}
+
+	function retryLoadingComments() {
+		setLoadState("loading");
+		setRetryToken((current) => current + 1);
+	}
 
 	function submit(event: React.FormEvent) {
 		event.preventDefault();
-		if (!text.trim()) return;
+		if (!text.trim()) {
+			setError("Write your take before posting.");
+			commentInput.current?.focus();
+			return;
+		}
 		setError("");
+		const normalizedText = text.trim();
+		const normalizedName = name.trim().slice(0, 50);
+		const operation = operationForComment(
+			pendingOperation.current,
+			normalizedText,
+			normalizedName,
+		);
+		pendingOperation.current = operation;
 		startTransition(async () => {
+			let responseFailure = "";
 			try {
 				const response = await fetch("/api/reactions/comments", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ postId, text, userName: name }),
+					body: JSON.stringify({
+						postId,
+						text: normalizedText,
+						userName: normalizedName,
+						operationId: operation.operationId,
+					}),
 				});
-				if (!response.ok) throw new Error("Comment submission failed");
-				setComments((current) => [
-					...current,
-					{
-						userName: name.trim() || "anonymous",
-						text: text.trim(),
-						createdAt: new Date().toISOString(),
-					},
-				]);
-				setCount((current) => current + 1);
+				if (!response.ok) {
+					if (response.status === 409) pendingOperation.current = null;
+					responseFailure = commentFailureMessage(
+						response.status,
+						response.headers.get("Retry-After"),
+					);
+					throw new Error("Comment response rejected");
+				}
+				const data = await response.json();
+				setComments((current) =>
+					current.some(
+						(comment) => comment.operationId === operation.operationId,
+					)
+						? current
+						: [...current, data.comment],
+				);
+				setCount(data.counts.comments);
 				setText("");
+				pendingOperation.current = null;
 			} catch {
-				setError("Your comment was not posted. Check the text and try again.");
+				setError(
+					responseFailure || "Comments are unavailable right now. Try again later.",
+				);
 			}
 		});
 	}
@@ -95,22 +156,37 @@ export function Comments({
 			<button
 				className="comment-toggle"
 				type="button"
-				onClick={() => setOpen((current) => !current)}
+				onClick={toggleThread}
 				aria-expanded={open}
 				aria-controls={threadId}
+				aria-label={
+					open ? "Close comments" : count > 0 ? `Open ${commentLabel}` : "Discuss"
+				}
 			>
-				<span aria-hidden="true">◌</span> {count} {open ? "Close" : "Discuss"}
+				<span aria-hidden="true">◌</span>{" "}
+				{open ? "Close comments" : count > 0 ? commentLabel : "Discuss"}
 			</button>
 
 			{open ? (
 				<div
 					className="comment-thread"
 					id={threadId}
-					aria-busy={loading}
+					aria-busy={loadState === "loading"}
 				>
-					{loading ? (
-						<p className="comment-empty">Loading conversation…</p>
-					) : comments.length === 0 ? (
+					<div className="comment-load-status" aria-live="polite">
+						{loadState === "loading" || loadState === "idle" ? (
+							<p className="comment-empty">Loading conversation…</p>
+						) : loadState === "error" ? (
+							<div className="comment-load-error">
+								<p>{loadError}</p>
+								<button type="button" onClick={retryLoadingComments}>
+									Retry loading comments
+								</button>
+							</div>
+						) : null}
+					</div>
+
+					{loadState !== "success" ? null : comments.length === 0 ? (
 						<p className="comment-empty">No comments yet. Start the debate.</p>
 					) : (
 						<ul className="comment-list">
@@ -128,38 +204,47 @@ export function Comments({
 						</ul>
 					)}
 
-					<form className="comment-form" onSubmit={submit}>
-						<label htmlFor={`${threadId}-name`}>Name (optional)</label>
-						<input
-							id={`${threadId}-name`}
-							name="display-name"
-							value={name}
-							onChange={(event) => setName(event.target.value)}
-							placeholder="Ada…"
-							maxLength={50}
-							autoComplete="off"
-							spellCheck={false}
-						/>
+					{loadState === "success" ? (
+						<>
+							<form className="comment-form" onSubmit={submit}>
+								<p className="comment-note">
+									Comments are public. No account needed; name is optional.
+								</p>
+								<label htmlFor={`${threadId}-name`}>Name (optional)</label>
+								<input
+									id={`${threadId}-name`}
+									name="display-name"
+									value={name}
+									onChange={(event) => setName(event.target.value)}
+									placeholder="Ada…"
+									maxLength={50}
+									autoComplete="off"
+									spellCheck={false}
+								/>
 
-						<label htmlFor={`${threadId}-comment`}>Your take</label>
-						<textarea
-							id={`${threadId}-comment`}
-							name="comment"
-							value={text}
-							onChange={(event) => setText(event.target.value)}
-							placeholder="What evidence changes the verdict?…"
-							maxLength={500}
-							rows={3}
-						/>
+								<label htmlFor={`${threadId}-comment`}>Your take</label>
+								<textarea
+									ref={commentInput}
+									id={`${threadId}-comment`}
+									name="comment"
+									value={text}
+									onChange={(event) => setText(event.target.value)}
+									placeholder="What evidence changes the verdict?…"
+									maxLength={500}
+									rows={3}
+									autoComplete="off"
+								/>
 
-						<button type="submit" disabled={pending || !text.trim()}>
-							{pending ? "Posting…" : "Post comment"}
-						</button>
-					</form>
+								<button type="submit" disabled={pending}>
+									{pending ? "Posting…" : "Post comment"}
+								</button>
+							</form>
 
-					<p className="form-error" aria-live="polite">
-						{error}
-					</p>
+							<p className="form-error" aria-live="polite">
+								{error}
+							</p>
+						</>
+					) : null}
 				</div>
 			) : null}
 		</div>

@@ -1,7 +1,6 @@
 """@youtube-trends agent brain — Deep Agents harness.
 
-Voice: the hype amplifier. Spots what's demoable.
-"This 12-min demo hit 40k views in 48h — devs are watching it."
+Voice: the hype amplifier. Spots what's demoable without inventing view velocity.
 """
 
 import os
@@ -13,24 +12,26 @@ from deepagents import create_deep_agent
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 
+from _shared.agent_catalog import agent_identity
+from _shared.evidence_copy import youtube_evidence_copy
 from _shared.write_post import write_post
 from source import fetch_youtube_candidates
 
 AGENT_HANDLE = "@youtube-trends"
-AGENT_NAME = "YouTube Trends"
-AGENT_BIO = "The hype amplifier. Spots what's demoable. Tracks trending AI dev videos on YouTube."
-SOURCE_TYPE = "youtube"
+_IDENTITY = agent_identity(AGENT_HANDLE)
+AGENT_NAME = _IDENTITY["name"]
+AGENT_BIO = _IDENTITY["bio"]
+SOURCE_TYPE = _IDENTITY["source_type"]
 
 SYSTEM_PROMPT = """\
 You are @youtube-trends, an AI dev hype tracker that finds trending AI videos on YouTube.
 
-Your voice: the hype amplifier. You spot what's demoable. Like: "This 12-min demo hit 40k views in 48h — devs are watching it."
+Your voice: the hype amplifier. You spot what's demoable and quote observed total views.
 
 Workflow:
 1. Call fetch_youtube_videos to get today's trending AI YouTube videos from search results.
-2. For EACH video that looks genuinely trending, call write_youtube_post with:
+2. For EACH video that looks worth watching, call write_youtube_post with:
    - video_url (exact, from the candidate)
-   - blurb: ONE line, max 140 chars, in your voice, noting why devs should watch
    - verdict: one of "hype looks real", "inflated", "emerging", "cooling"
 3. Post at most the top 3 videos per run.
 """
@@ -51,27 +52,28 @@ async def fetch_youtube_videos() -> str:
     for c in candidates:
         lines.append(
             f"- {c['title']} | {c['url']}\n"
-            f"  serp_rank={c.get('serp_rank', '?')}\n"
+            f"  YouTube search position={c.get('youtube_search_position', '?')} "
+            f"for query={c.get('search_query', '?')} | views={c.get('viewCount', 0)}\n"
             f"  desc: {c['description'][:120]}"
         )
     return "\n".join(lines)
 
 
 @tool
-async def write_youtube_post(video_url: str, blurb: str, verdict: str) -> str:
+async def write_youtube_post(video_url: str, verdict: str) -> str:
     """Publish a hype post about a trending YouTube video.
 
     Args:
         video_url: exact URL from the candidate listing
-        blurb: one line, max 140 chars, @youtube-trends voice
         verdict: one of "hype looks real", "inflated", "emerging", "cooling"
     """
     c = _CANDIDATE_CACHE.get(video_url)
     if not c:
         return f"ERROR: unknown video_url {video_url}. Call fetch_youtube_videos first."
 
-    serp_rank = c.get("serp_rank", 99)
-    momentum = max(100 - serp_rank * 10, 20)  # SERP rank 1 = 100, rank 5 = 50
+    search_position = c.get("youtube_search_position", 99)
+    blurb = youtube_evidence_copy(c.get("viewCount", 0))
+    momentum = max(100 - search_position * 10, 20)
     project = {
         "url": c["url"],
         "title": c["title"],
@@ -86,8 +88,11 @@ async def write_youtube_post(video_url: str, blurb: str, verdict: str) -> str:
         "metric": "views",
         "value": c.get("viewCount", 0),
         "delta": 0,
+        "evidenceUrl": c["url"],
+        "evidenceLabel": "Open YouTube video",
         "summary": (
-            f"views={c.get('viewCount', 0)}, Google SERP rank={serp_rank}"
+            f"YouTube views={c.get('viewCount', 0)}; search position={search_position} "
+            f"for query '{c.get('search_query', '')}'"
         ),
     }
     post_id = await write_post(
@@ -101,7 +106,10 @@ async def write_youtube_post(video_url: str, blurb: str, verdict: str) -> str:
         signal,
         momentum,
     )
-    return f"Posted: {c['title']} (serp_rank {serp_rank}, verdict '{verdict}') -> post {post_id}"
+    return (
+        f"Posted: {c['title']} (YouTube search position {search_position}, "
+        f"verdict '{verdict}') -> post {post_id}"
+    )
 
 
 def build_agent(checkpointer=None):

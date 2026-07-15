@@ -1,7 +1,14 @@
 import Link from "next/link";
 
+import { uniqueProjectsExcluding } from "@/lib/feed";
 import { getDb } from "@/lib/mongo";
+import {
+	distinctProjectPostsPipeline,
+	publicationWindowMatch,
+} from "@/lib/postQueries";
+import { PUBLIC_DIGEST_FILTER, PUBLIC_POST_FILTER } from "@/lib/publication";
 import { projectHref } from "@/lib/routes";
+import { isMultiAgentTheme, themeAnchor, visibleWaves } from "@/lib/waves";
 
 export const dynamic = "force-dynamic";
 
@@ -35,23 +42,78 @@ type Post = {
 
 async function getDigest(weekId: string) {
 	const db = await getDb();
-	const digest = await db.collection<Digest>("digests").findOne({ weekId });
+	const digest = await db.collection<Digest>("digests").findOne({
+		weekId,
+		...PUBLIC_DIGEST_FILTER,
+	});
 	if (!digest) return null;
-
 	const weekStart = digest.weekOf ? new Date(digest.weekOf) : new Date();
 	const weekAgo = new Date(weekStart.getTime() - 7 * 24 * 60 * 60 * 1000);
-	const posts = await db
-		.collection<Post>("posts")
-		.find({ postedAt: { $gte: weekAgo, $lte: weekStart } })
-		.sort({ rankScore: -1 })
-		.limit(20)
-		.toArray();
+	const projectUrls = [
+		...new Set(
+			(digest.waves ?? []).flatMap((wave) =>
+				wave.projects.map((project) => project.url),
+			),
+		),
+	];
+	const wavePosts =
+		projectUrls.length === 0
+			? []
+			: await db
+					.collection<{ agentHandle: string; project: { url: string } }>("posts")
+					.find(
+						publicationWindowMatch(
+							{
+								...PUBLIC_POST_FILTER,
+								agentHandle: { $ne: "@weekly-digest" },
+								"project.url": { $in: projectUrls },
+							},
+							weekAgo,
+							weekStart,
+						),
+						{ projection: { _id: 0, agentHandle: 1, "project.url": 1 } },
+					)
+					.toArray();
+	const waves = visibleWaves(digest.waves ?? [], wavePosts);
+
+	const categoryPosts = (agentHandle: string) =>
+		db
+			.collection<Post>("posts")
+			.aggregate<Post>(
+				distinctProjectPostsPipeline(
+					{
+						...PUBLIC_POST_FILTER,
+						agentHandle,
+						postedAt: { $gte: weekAgo, $lte: weekStart },
+					},
+					3,
+				),
+			)
+			.toArray();
+	const [breakouts, rawHotThreads, rawHiddenGems] = await Promise.all([
+		categoryPosts("@github-radar"),
+		categoryPosts("@reddit-pulse"),
+		categoryPosts("@hidden-gems"),
+	]);
+	const categorized = new Set(breakouts.map((post) => post.project.url));
+	const hotThreads = uniqueProjectsExcluding(
+		rawHotThreads,
+		categorized,
+		3,
+	);
+	for (const post of hotThreads) categorized.add(post.project.url);
+	const hiddenGems = uniqueProjectsExcluding(
+		rawHiddenGems,
+		categorized,
+		3,
+	);
 
 	return {
 		...digest,
-		breakouts: posts.filter((post) => post.agentHandle === "@github-radar").slice(0, 3),
-		hotThreads: posts.filter((post) => post.agentHandle === "@reddit-pulse").slice(0, 3),
-		hiddenGems: posts.filter((post) => post.agentHandle === "@hidden-gems").slice(0, 3),
+		waves,
+		breakouts,
+		hotThreads,
+		hiddenGems,
 	};
 }
 
@@ -103,10 +165,9 @@ export default async function DigestPage({
 		);
 	}
 
-	const confirmedWaves =
-		digest.waves?.filter((wave) => (wave.agentCount ?? 0) > 1) ?? [];
-	const formingSignals =
-		digest.waves?.filter((wave) => (wave.agentCount ?? 0) <= 1) ?? [];
+	const multiAgentThemes = digest.waves?.filter(isMultiAgentTheme) ?? [];
+	const otherThemes =
+		digest.waves?.filter((wave) => !isMultiAgentTheme(wave)) ?? [];
 
 	return (
 		<main className="detail-page digest-page">
@@ -123,29 +184,37 @@ export default async function DigestPage({
 			<div className="detail-grid digest-grid">
 				<div>
 					<section className="surface">
-						<h2>Shared waves</h2>
-						{confirmedWaves.length === 0 ? (
+						<h2>Shared themes</h2>
+						{multiAgentThemes.length === 0 ? (
 							<p className="empty-panel">
-								No multi-agent wave cleared the bar this week. The forming
-								signals below are still worth watching.
+								No semantic theme contains multiple source agents this week. The
+								other emerging themes below are still worth exploring.
 							</p>
 						) : (
 							<div className="digest-waves">
-								{confirmedWaves.map((wave) => (
+								{multiAgentThemes.map((wave) => (
 									<article className="digest-wave" key={wave.label}>
 										<div>
 											<p className="eyebrow">
-												{wave.agentCount} independent agents · {wave.count} projects
+												{wave.agentCount} source agents · {wave.count} projects
 											</p>
-											<h3>{wave.label}</h3>
+											<h3>
+												<Link href={`/waves?week=${encodeURIComponent(digest.weekId)}#${themeAnchor(wave.label)}`}>
+													{wave.label}
+												</Link>
+											</h3>
 										</div>
-										<strong>{wave.avgMomentum.toFixed(1)}</strong>
+										<strong>
+											Avg momentum {wave.avgMomentum.toFixed(1)} / 100
+										</strong>
 										<ul>
 											{wave.projects.map((project) => (
 												<li key={project.url}>
-													<Link href={projectHref(project)}>
-														{project.title}
-														<span>{project.momentumScore}</span>
+												<Link href={projectHref(project)}>
+													{project.title}
+													<span>
+														Momentum {project.momentumScore} / 100
+													</span>
 													</Link>
 												</li>
 											))}
@@ -158,8 +227,8 @@ export default async function DigestPage({
 
 					{digest.breakouts.length > 0 ? (
 						<section className="surface digest-section">
-							<p className="eyebrow">Repository velocity</p>
-							<h2>Breakouts</h2>
+							<p className="eyebrow">GitHub attention</p>
+							<h2>High-attention repositories</h2>
 							<DigestPostList posts={digest.breakouts} />
 						</section>
 					) : null}
@@ -174,7 +243,7 @@ export default async function DigestPage({
 
 					{digest.hiddenGems.length > 0 ? (
 						<section className="surface digest-section">
-							<p className="eyebrow">Early motion</p>
+							<p className="eyebrow">Early attention</p>
 							<h2>Hidden gems</h2>
 							<DigestPostList posts={digest.hiddenGems} />
 						</section>
@@ -185,7 +254,7 @@ export default async function DigestPage({
 					<section className="surface digest-aside">
 						<h2>Read it in 60 seconds</h2>
 						<ol>
-							<li>Open the strongest shared wave.</li>
+							<li>Open the strongest shared theme.</li>
 							<li>Check the evidence behind its top project.</li>
 							<li>Follow the creator whose judgment you trust.</li>
 						</ol>
@@ -194,17 +263,22 @@ export default async function DigestPage({
 						</Link>
 					</section>
 
-					{formingSignals.length > 0 ? (
+					{otherThemes.length > 0 ? (
 						<section className="surface forming-signals">
-							<h2>Still forming</h2>
+							<h2>Other themes</h2>
 							<p>
-								A theme is moving, but independent-agent confirmation has not arrived.
+								Themes still missing either multiple projects or multiple source agents.
 							</p>
 							<ul>
-								{formingSignals.slice(0, 8).map((wave) => (
+								{otherThemes.slice(0, 8).map((wave) => (
 									<li key={wave.label}>
-										<Link href={projectHref(wave.projects[0])}>{wave.label}</Link>
-										<span>{wave.avgMomentum.toFixed(1)}</span>
+										<div>
+											<strong>{wave.label}</strong>
+											<Link href={projectHref(wave.projects[0])}>
+												Open top project: {wave.projects[0].title}
+											</Link>
+										</div>
+										<span>Avg momentum {wave.avgMomentum.toFixed(1)} / 100</span>
 									</li>
 								))}
 							</ul>

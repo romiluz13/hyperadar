@@ -28,7 +28,7 @@ class PortClient:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request) as response:
+            with urllib.request.urlopen(request, timeout=30) as response:
                 self.token = json.loads(response.read())["accessToken"]
         except (urllib.error.URLError, KeyError, json.JSONDecodeError) as error:
             raise RuntimeError(f"Port authentication failed: {error}") from error
@@ -53,8 +53,9 @@ class PortClient:
             headers=request_headers,
         )
         try:
-            with urllib.request.urlopen(request) as response:
-                return response.status, json.loads(response.read())
+            with urllib.request.urlopen(request, timeout=30) as response:
+                raw = response.read()
+                return response.status, json.loads(raw) if raw else {}
         except urllib.error.HTTPError as error:
             try:
                 body = json.loads(error.read())

@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-13T23:45:00+03:00",
+  "title": "Design System: HypeRadar",
+  "extensions": {
+    "colorMeta": {
+      "graphite-ink": {
+        "role": "neutral",
+        "displayName": "Graphite Ink",
+        "canonical": "#111318",
+        "tonalRamp": ["#111318", "#252830", "#3e424c", "#5d626d", "#7d838d", "#a4a9b1", "#d0d3d7", "#f1f2f2"]
+      },
+      "evidence-paper": {
+        "role": "neutral",
+        "displayName": "Evidence Paper",
+        "canonical": "#fbfaf5",
+        "tonalRamp": ["#24231f", "#45433d", "#66635b", "#8c887e", "#b4b0a6", "#d8d5cc", "#eeece5", "#fbfaf5"]
+      },
+      "signal-lime": {
+        "role": "primary",
+        "displayName": "Signal Lime",
+        "canonical": "#c8ff00",
+        "tonalRamp": ["#1d2500", "#394900", "#556d00", "#739300", "#92bb00", "#b2e400", "#d3ff45", "#efffa9"]
+      },
+      "evidence-blue": {
+        "role": "primary",
+        "displayName": "Evidence Blue",
+        "canonical": "#1857f5",
+        "tonalRamp": ["#071842", "#0b2b79", "#1040b3", "#1857f5", "#4e7cff", "#82a2ff", "#b6c8ff", "#e8edff"]
+      },
+      "caution-orange": {
+        "role": "secondary",
+        "displayName": "Caution Orange",
+        "canonical": "#ff6b32",
+        "tonalRamp": ["#351006", "#6a200d", "#a33216", "#d94620", "#ff6b32", "#ff946f", "#ffbda9", "#ffe9df"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Editorial Display", "purpose": "Page theses and project identity." },
+      "body": { "displayName": "Product Body", "purpose": "Evidence, explanation, and controls." },
+      "label": { "displayName": "Structural Label", "purpose": "Eyebrows, states, and compact metadata." }
+    },
+    "shadows": [
+      { "name": "action-offset", "value": "3px 3px 0 #111318", "purpose": "Priority signal action." },
+      { "name": "evidence-offset", "value": "4px 4px 0 #1857f5", "purpose": "Open conversation or selected evidence." },
+      { "name": "feature-offset", "value": "6px 6px 0 #c8ff00", "purpose": "Creator identity and key verdict." }
+    ],
+    "motion": [
+      { "name": "ease-signal", "value": "cubic-bezier(.25,1,.5,1)", "purpose": "150ms state feedback without choreography." }
+    ],
+    "breakpoints": [
+      { "name": "mobile", "value": "800px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Signal Action",
+      "kind": "button",
+      "refersTo": "action-signal",
+      "description": "Primary lime action with physical offset feedback.",
+      "html": "<button class=\"ds-signal-action\">FIND THE NEXT SIGNAL</button>",
+      "css": ".ds-signal-action{min-height:44px;padding:.7rem 1rem;border:1px solid #111318;border-radius:.35rem;background:#c8ff00;color:#111318;font:900 .82rem ui-sans-serif,sans-serif;box-shadow:3px 3px 0 #111318;transition:transform 150ms cubic-bezier(.25,1,.5,1),box-shadow 150ms cubic-bezier(.25,1,.5,1)}.ds-signal-action:hover{transform:translate(2px,2px);box-shadow:1px 1px 0 #111318}.ds-signal-action:focus-visible{outline:3px solid #1857f5;outline-offset:3px}"
+    },
+    {
+      "name": "Primary Form Action",
+      "kind": "button",
+      "refersTo": "action-primary",
+      "description": "Graphite action used to publish a social response.",
+      "html": "<button class=\"ds-primary-action\">POST COMMENT</button>",
+      "css": ".ds-primary-action{min-height:44px;padding:.75rem 1rem;border:1px solid #111318;background:#111318;color:#c8ff00;font:900 .82rem ui-sans-serif,sans-serif}.ds-primary-action:hover{background:#1857f5}.ds-primary-action:focus-visible{outline:3px solid #1857f5;outline-offset:3px}.ds-primary-action:disabled{opacity:.6;cursor:not-allowed}"
+    },
+    {
+      "name": "Verdict",
+      "kind": "chip",
+      "refersTo": "verdict",
+      "description": "Compact semantic status attached to an agent claim.",
+      "html": "<span class=\"ds-verdict\">HYPE LOOKS REAL</span>",
+      "css": ".ds-verdict{display:inline-flex;padding:.55rem .7rem;background:#c8ff00;color:#111318;font:900 .77rem ui-sans-serif,sans-serif;white-space:nowrap}.ds-verdict:focus-visible{outline:3px solid #1857f5;outline-offset:3px}"
+    },
+    {
+      "name": "Evidence Surface",
+      "kind": "card",
+      "refersTo": "evidence-surface",
+      "description": "Flat, bordered surface for source evidence and conversations.",
+      "html": "<article class=\"ds-evidence\"><strong>Observed signal</strong><p>Source-labeled evidence stays readable and inspectable.</p></article>",
+      "css": ".ds-evidence{padding:1.25rem;border:1px solid #dcded8;background:#fffefa;color:#111318;font-family:ui-sans-serif,sans-serif}.ds-evidence strong{font-weight:900}.ds-evidence p{max-width:62ch;margin:.6rem 0 0;color:#434953;line-height:1.55}.ds-evidence:hover{border-color:#1857f5}"
+    },
+    {
+      "name": "Comment Field",
+      "kind": "input",
+      "description": "Square paper input with a strong evidence-blue focus state.",
+      "html": "<label class=\"ds-field\">COMMENT<textarea>What are you seeing?</textarea></label>",
+      "css": ".ds-field{display:grid;gap:.45rem;color:#111318;font:900 .75rem ui-sans-serif,sans-serif}.ds-field textarea{min-height:96px;padding:.75rem;border:1px solid #68707c;border-radius:0;background:#fbfaf5;color:#111318;font:400 1rem/1.5 ui-sans-serif,sans-serif;resize:vertical}.ds-field textarea:focus-visible{outline:3px solid #1857f5;outline-offset:3px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Living Signal Desk",
+    "overview": "A bright editorial desk receiving credible AI developer signals in real time. Warm paper supports deep reading while graphite, lime, blue, and orange carry distinct structural and semantic roles.",
+    "keyCharacteristics": ["Editorial hierarchy with product-grade interactions", "Intentional semantic color", "Flat structure with meaningful offset shadows", "Responsive evidence-first reading", "Motion limited to state feedback"],
+    "rules": [
+      { "name": "The Semantic Color Rule", "body": "Lime means discovery or confirmation, blue means evidence or navigation, and orange means caution.", "section": "colors" },
+      { "name": "The Two-Voice Rule", "body": "Serif speaks only for page and verdict-level ideas; sans handles product information and controls.", "section": "typography" },
+      { "name": "The Flat-Until-Meaningful Rule", "body": "A shadow must communicate priority or state.", "section": "elevation" }
+    ],
+    "dos": ["Do make every score and verdict lead toward evidence.", "Do preserve off-white reading fields and tinted neutrals.", "Do use blue focus indicators and 44px targets.", "Do respect reduced motion."],
+    "donts": ["Don't create dark AI dashboards made from interchangeable black cards.", "Don't use generic SaaS landing-page grids or decorative glassmorphism.", "Don't use crypto-style neon overload or manipulative urgency.", "Don't publish unsupported growth, velocity, provenance, or multi-agent claims."]
+  }
+}

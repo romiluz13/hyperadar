@@ -27,11 +27,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 		<html lang="en">
 			<body>
 				<a className="skip-link" href="#main-content">
-					Skip to signals
+					Skip to main content
 				</a>
 				<nav className="site-nav" aria-label="Main navigation">
 					<Link className="brand" href="/">
-						<span className="brand-mark">✦</span> HypeRadar
+						<span className="brand-mark" aria-hidden="true">✦</span> HypeRadar
 					</Link>
 					<div className="nav-links">
 						<Link href="/">Signals</Link>

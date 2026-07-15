@@ -8,16 +8,14 @@ dependencies = [
   "langchain-openai",
   "langgraph",
   "langgraph-checkpoint-mongodb",
-  "motor",
-  "pymongo",
+  "pymongo>=4.16",
   "httpx",
   "python-dotenv",
   "sentence-transformers",
 ]
 
 [dependency-groups]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest", "pytest-asyncio", "ruff==0.15.12"]
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-pythonpath = [".."]
+# pytest config lives in integrations/pytest.ini so the shared conftest.py
+# (db fixture, env guard) is loaded for every agent package. See that file.

@@ -4,20 +4,57 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/mongo";
 import { getOrCreateUserId } from "@/lib/auth";
+import {
+	consumeMutationRateLimit,
+	isValidOperationId,
+	mutationNetworkIdentity,
+	mutationRequestError,
+	MutationRateLimitError,
+	reactionRetryAfter,
+} from "@/lib/mutationGuard";
 import { toObjectId, isValidObjectId } from "@/lib/objectId";
+import { publishedPostFilter } from "@/lib/publication";
+import {
+	addShare,
+	getReactionCounts,
+	PostNotFoundError,
+	ReactionConflictError,
+	setLike,
+} from "@/lib/reactionPersistence";
 
 export const dynamic = "force-dynamic";
 
 type Reaction = {
 	postId: string;
 	userId: string;
+	rankIdentity?: string;
 	type: "like" | "share";
 	createdAt: Date;
 };
 
 export async function POST(req: NextRequest) {
-	const body = await req.json();
-	const { postId, type } = body as { postId?: unknown; type?: unknown };
+	const requestError = mutationRequestError(req);
+	if (requestError) {
+		return NextResponse.json(
+			{ error: requestError },
+			{ status: requestError.includes("JSON") ? 415 : 403 },
+		);
+	}
+	let body: unknown;
+	try {
+		body = await req.json();
+	} catch {
+		return NextResponse.json({ error: "valid JSON required" }, { status: 400 });
+	}
+	if (!body || typeof body !== "object" || Array.isArray(body)) {
+		return NextResponse.json({ error: "JSON object required" }, { status: 400 });
+	}
+	const { postId, type, liked, operationId } = body as {
+		postId?: unknown;
+		type?: unknown;
+		liked?: unknown;
+		operationId?: unknown;
+	};
 
 	// Runtime validation — prevent NoSQL injection (objects like {$ne:""} must not pass)
 	if (
@@ -30,62 +67,62 @@ export async function POST(req: NextRequest) {
 			{ status: 400 },
 		);
 	}
+	if (type === "like" && typeof liked !== "boolean") {
+		return NextResponse.json(
+			{ error: "liked boolean required for a like" },
+			{ status: 400 },
+		);
+	}
+	if (type === "share" && !isValidOperationId(operationId)) {
+		return NextResponse.json(
+			{ error: "operationId UUID required for a share" },
+			{ status: 400 },
+		);
+	}
 
 	const userId = await getOrCreateUserId();
+	const rankIdentity = mutationNetworkIdentity(req);
 
 	try {
 		const db = await getDb();
-
+		await consumeMutationRateLimit(
+			db,
+			req,
+			userId,
+			type,
+			type === "share" ? 8 : 30,
+			type === "share" ? 10 * 60_000 : 60_000,
+		);
 		if (type === "like") {
-			// One like per user per post (unique index enforces). Idempotent: if already liked, unlike.
-			const existing = await db
-				.collection<Reaction>("reactions")
-				.findOne({ postId, userId, type: "like" });
-			if (existing) {
-				await db
-					.collection<Reaction>("reactions")
-					.deleteOne({ _id: existing._id });
-				await db
-					.collection("posts")
-					.updateOne(
-						{ _id: toObjectId(postId), "reactionCounts.likes": { $gt: 0 } },
-						{ $inc: { "reactionCounts.likes": -1 } },
-					);
-				await recomputeRank(db, postId);
-				return NextResponse.json({
-					liked: false,
-					counts: await getCounts(db, postId),
-				});
-			}
-			await db
-				.collection<Reaction>("reactions")
-				.insertOne({ postId, userId, type: "like", createdAt: new Date() });
-			await db
-				.collection("posts")
-				.updateOne(
-					{ _id: toObjectId(postId) },
-					{ $inc: { "reactionCounts.likes": 1 } },
-				);
-			await recomputeRank(db, postId);
-			return NextResponse.json({
-				liked: true,
-				counts: await getCounts(db, postId),
-			});
+			return NextResponse.json(
+				await setLike(postId, userId, rankIdentity, liked as boolean),
+			);
 		}
 
-		// share — no dedup (sharing multiple times is fine)
-		await db
-			.collection<Reaction>("reactions")
-			.insertOne({ postId, userId, type: "share", createdAt: new Date() });
-		await db
-			.collection("posts")
-			.updateOne(
-				{ _id: toObjectId(postId) },
-				{ $inc: { "reactionCounts.shares": 1 } },
-			);
-		await recomputeRank(db, postId);
-		return NextResponse.json({ counts: await getCounts(db, postId) });
+		return NextResponse.json({
+			counts: await addShare(
+				postId,
+				userId,
+				rankIdentity,
+				operationId as string,
+			),
+		});
 	} catch (err) {
+		if (err instanceof PostNotFoundError) {
+			return NextResponse.json({ error: "post not found" }, { status: 404 });
+		}
+		if (err instanceof ReactionConflictError) {
+			return NextResponse.json({ error: "operation conflict" }, { status: 409 });
+		}
+		if (err instanceof MutationRateLimitError) {
+			return NextResponse.json(
+				{ error: "too many reactions; try again shortly" },
+				{
+					status: 429,
+					headers: { "Retry-After": String(reactionRetryAfter(type)) },
+				},
+			);
+		}
 		console.error("reactions POST error:", err);
 		return NextResponse.json({ error: "internal error" }, { status: 500 });
 	}
@@ -108,11 +145,27 @@ export async function GET(req: NextRequest) {
 		}
 		try {
 			const db = await getDb();
+			const publishedPosts = await db
+				.collection("posts")
+				.find(
+					publishedPostFilter({ _id: { $in: postIds.map(toObjectId) } }),
+					{ projection: { _id: 1 } },
+				)
+				.toArray();
+			const publishedPostIds = publishedPosts.map((post) => post._id.toString());
+			if (publishedPostIds.length === 0) {
+				return NextResponse.json({ likedPostIds: [] });
+			}
 			const userId = await getOrCreateUserId();
+			const rankIdentity = mutationNetworkIdentity(req);
 			const reactions = await db
 				.collection<Reaction>("reactions")
 				.find(
-					{ postId: { $in: postIds }, userId, type: "like" },
+					{
+						postId: { $in: publishedPostIds },
+						type: "like",
+						$or: [{ userId }, { rankIdentity }],
+					},
 					{ projection: { _id: 0, postId: 1 } },
 				)
 				.toArray();
@@ -134,59 +187,26 @@ export async function GET(req: NextRequest) {
 	}
 	try {
 		const db = await getDb();
+		const publishedPost = await db.collection("posts").findOne(
+			publishedPostFilter({ _id: toObjectId(postId) }),
+			{ projection: { _id: 1 } },
+		);
+		if (!publishedPost) {
+			return NextResponse.json({ error: "post not found" }, { status: 404 });
+		}
 		const userId = await getOrCreateUserId();
+		const rankIdentity = mutationNetworkIdentity(req);
 		const liked = Boolean(
 			await db
 				.collection("reactions")
-				.findOne({ postId, userId, type: "like" }),
+				.findOne({ postId, type: "like", $or: [{ userId }, { rankIdentity }] }),
 		);
-		return NextResponse.json({ liked, counts: await getCounts(db, postId) });
+		return NextResponse.json({
+			liked,
+			counts: await getReactionCounts(postId),
+		});
 	} catch (err) {
 		console.error("reactions GET error:", err);
 		return NextResponse.json({ error: "internal error" }, { status: 500 });
 	}
-}
-
-async function getCounts(
-	db: Awaited<ReturnType<typeof getDb>>,
-	postId: string,
-) {
-	const post = await db
-		.collection("posts")
-		.findOne(
-			{ _id: toObjectId(postId) },
-			{ projection: { reactionCounts: 1 } },
-		);
-	return post?.reactionCounts ?? { likes: 0, comments: 0, shares: 0 };
-}
-
-/** rankScore = 0.6 × momentumScore + 0.25 × reactionVelocity + 0.15 × recency.
- *  reactionVelocity = normalized reactions in the last 24h. recency = age-based 0-1. */
-async function recomputeRank(
-	db: Awaited<ReturnType<typeof getDb>>,
-	postId: string,
-) {
-	const post = await db
-		.collection("posts")
-		.findOne({ _id: toObjectId(postId) });
-	if (!post) return;
-	const momentum = post.project?.momentumScore ?? 0;
-
-	const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-	const recent = await db
-		.collection("reactions")
-		.countDocuments({ postId, createdAt: { $gte: since } });
-	const reactionVelocity = Math.min(recent / 10, 1) * 100;
-
-	const ageDays =
-		(Date.now() - new Date(post.postedAt).getTime()) / (1000 * 60 * 60 * 24);
-	const recency = Math.max(0, 1 - ageDays / 7) * 100;
-
-	const rankScore =
-		Math.round(
-			(0.6 * momentum + 0.25 * reactionVelocity + 0.15 * recency) * 10,
-		) / 10;
-	await db
-		.collection("posts")
-		.updateOne({ _id: post._id }, { $set: { rankScore } });
 }
