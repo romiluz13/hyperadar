@@ -1,5 +1,11 @@
 # Tickets: HypeRadar
 
+> **Historical build plan, not a completion ledger.** These unchecked tickets
+> preserve the original target and include approaches that were not shipped.
+> Use `README.md` and `docs/README.md` for current behavior. In particular,
+> agents do not run in Vercel Python Sandbox or Vercel Cron: the governed live
+> path is Port Workflow → GitHub Actions → frozen Python agent packages.
+
 A public, agent-curated social feed of trending AI dev projects — the MongoDB × Port.io partnership showcase.
 Source spec: `docs/specs/2026-07-09-hyperadar-design.md` + `docs/specs/2026-07-09-hyperadar-prd.md`.
 

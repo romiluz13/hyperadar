@@ -8,8 +8,12 @@ Requires: bdata CLI in PATH (installed via npm, part of Bright Data).
 """
 
 import asyncio
+import json
 import logging
+import os
+import signal
 import shutil
+from urllib.parse import quote_plus
 
 # Search queries targeting AI subreddits
 SEARCH_QUERIES = [
@@ -17,6 +21,37 @@ SEARCH_QUERIES = [
     "site:reddit.com/r/MachineLearning trending AI 2026",
     "site:reddit.com/r/singularity AI breakthrough 2026",
 ]
+SOURCE_COMMAND_TIMEOUT_SECONDS = 120
+SOURCE_COMMAND_CLEANUP_TIMEOUT_SECONDS = 5
+
+
+async def _stop_source_process(proc, communication) -> None:
+    if proc.returncode is None:
+        pid = getattr(proc, "pid", None)
+        if isinstance(pid, int):
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+        else:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(communication),
+            timeout=SOURCE_COMMAND_CLEANUP_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logging.error("bdata process cleanup exceeded its deadline")
+    except Exception as error:
+        logging.error("bdata process cleanup failed: %s", error)
 
 
 async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
@@ -36,23 +71,36 @@ async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
                 "bdata",
                 "search",
                 query,
+                "--json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-            stdout, _ = await proc.communicate()
-            output = stdout.decode()
+            communication = asyncio.create_task(proc.communicate())
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    asyncio.shield(communication),
+                    timeout=SOURCE_COMMAND_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                await _stop_source_process(proc, communication)
+                raise RuntimeError(
+                    f"bdata search timed out after {SOURCE_COMMAND_TIMEOUT_SECONDS} seconds"
+                ) from None
+            except asyncio.CancelledError:
+                await _stop_source_process(proc, communication)
+                raise
+            if proc.returncode:
+                raise RuntimeError(
+                    stderr.decode().strip() or "bdata search returned an error"
+                )
+            payload = json.loads(stdout)
 
-            for line in output.split("\n"):
-                line = line.strip()
-                if not line or not line[0].isdigit():
-                    continue
-                parts = line.split("|")
-                if len(parts) < 3:
-                    continue
-                rank = int(parts[0].strip().split()[0])
-                title = parts[1].strip()
-                url = parts[2].strip()
-                desc = parts[3].strip() if len(parts) > 3 else ""
+            for fallback_rank, result in enumerate(payload.get("organic", []), start=1):
+                rank = int(result.get("rank") or fallback_rank)
+                title = str(result.get("title") or "").strip()
+                url = str(result.get("link") or "").strip()
+                desc = str(result.get("description") or "").strip()
 
                 if "reddit.com/r/" not in url:
                     continue
@@ -72,6 +120,10 @@ async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
                         "subreddit": subreddit,
                         "serp_rank": rank,
                         "visibility_score": max(100 - rank * 10, 20),
+                        "search_query": query,
+                        "evidence_url": (
+                            f"https://www.google.com/search?q={quote_plus(query)}"
+                        ),
                     }
                 )
         except Exception as e:

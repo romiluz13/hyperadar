@@ -1,137 +1,73 @@
-# MongoDB — Search & AI (Vector Search, Auto-Embedding, `$rerank`, Hype-Wave Clustering)
+# MongoDB Search and Vector Intelligence
 
-> Grounded in the `mongodb-search-and-ai` skill + Atlas AI docs (see `sources.md`).
-> This is the **intelligence layer** that makes MongoDB load-bearing for HypeRadar.
+> Current implementation first. Automated embedding, native `$rerank`, lexical
+> feed search, and autocomplete are options, not current product claims.
 
-## Search type decision (from the skill)
+## What runs today
 
-| Need | Search type | Where used |
-| --- | --- | --- |
-| "Find trending projects similar to X" | **Vector Search** | Project page "similar projects" section |
-| "Search the feed for posts about local-first agents" | **Vector Search** (on `posts`) | Feed search bar |
-| "Cluster this week's projects into hype waves" | **Vector Search** + clustering | Weekly digest, radar dashboard |
-| Agent: "have I seen a project like this before?" | **Vector Search** + `$rerank` | Agent trend-detection brain |
-| Autocomplete on project titles | **Atlas Search (lexical)** | Search bar typeahead |
+| Surface | Current mechanism |
+| --- | --- |
+| Project dossier “related signals” | Atlas `$vectorSearch` on `projects.embedding` |
+| Similar episode context | Atlas `$vectorSearch` on `episodes.embedding`, with a recent-episode fallback |
+| Weekly hype waves | In-process cosine clustering over project embeddings, then Grove labels the clusters |
+| Embedding generation | Local `all-MiniLM-L6-v2`, 384 dimensions |
 
-Never use `$regex` or `$text` for these — use Atlas Search / Vector Search (skill anti-pattern).
+The project dossier first restricts candidates to projects that have at least one
+explicitly synchronized post. A project that has not converged with Port cannot leak back into
+the public product through vector similarity.
 
-## Auto-embedding (eliminates external embedding pipelines)
+## Current project vector index
 
-MongoDB Atlas **Automated Embedding** (powered by Voyage AI) generates embeddings on document fields automatically — no external embedding step in the agent code.
-
-Enable on `projects` (embed `description` + `topics`):
-
-## Vector Search index — `projects`
-
-**Implementation (T3):** embeddings generated locally with `sentence-transformers`
-`all-MiniLM-L6-v2` (384 dims) in `integrations/github_radar/embeddings.py`.
-Production swap: Atlas auto-embedding (Voyage AI) — same index + `$vectorSearch`
-query, only the generation step moves to Atlas.
-
-Index created via `scripts/setup_mongodb.py` (reproducible):
+`scripts/setup_mongodb.py` creates:
 
 ```python
 SearchIndexModel(
-    name="projects_vector_index",   # NOTE: this is the actual index name in code
+    name="projects_vector_index",
     type="vectorSearch",
-    definition={"fields": [
-        {"type": "vector", "path": "embedding", "numDimensions": 384, "similarity": "cosine"},
-        {"type": "filter", "path": "url"},   # filter field — required to \$filter in \$vectorSearch
-    ]},
+    definition={
+        "fields": [
+            {
+                "type": "vector",
+                "path": "embedding",
+                "numDimensions": 384,
+                "similarity": "cosine",
+            },
+            {"type": "filter", "path": "url"},
+        ]
+    },
 )
-``````
-
-## Query: "similar trending projects" (project page)
-
-```js
-db.projects.aggregate([
-  {
-    $vectorSearch: {
-      index: "projects_embedding_index",
-      path: "embedding",
-      queryVector: <projectEmbedding>,  // or use $vectorize with auto-embedding
-      numCandidates: 50,
-      limit: 10,
-      filter: { kind: "repo" }          // optional prefilter
-    }
-  },
-  { $project: { title: 1, url: 1, momentumScore: 1, _id: 0 } }
-]);
 ```
 
-## `$rerank` — native reranking aggregation stage
+The page query uses the same `projects_vector_index` name, excludes the current
+URL, and filters to URLs backed by synchronized posts.
 
-`$rerank` (public preview, 2026) uses cross-encoders inside the database to improve retrieval accuracy up to ~30% over plain vector search. **Two-stage retrieval:**
+## Current episode vector index
 
-```js
-db.projects.aggregate([
-  // Stage 1: vector search for candidates
-  {
-    $vectorSearch: {
-      index: "projects_embedding_index",
-      path: "embedding",
-      queryVector: <embed>,
-      numCandidates: 50,
-      limit: 20
-    }
-  },
-  // Stage 2: native rerank with a cross-encoder
-  {
-    $rerank: {
-      input: { $concat: ["$title", " ", "$description", " ", { $arrayToString: "$topics" }] },
-      queryText: "local-first AI agent frameworks",
-      model: "voyage-3-rerank",      // or rerank-2.5
-      limit: 10
-    }
-  }
-]);
-```
+`episodes_vector_index` uses the same 384-dimensional embedding model and adds an
+`agentHandle` filter. Retrieval currently happens inside the shared write path
+after the agent chose its verdict. The retrieved episodes are evidence context,
+not an input that improved that verdict.
 
-**Where we use it:**
+## Current wave clustering
 
-- Agent trend-detection: "is this candidate similar to previously-confirmed-trending projects?" → `$vectorSearch` candidates → `$rerank` against the agent's query.
-- Feed search: better relevance than raw vector search.
+The weekly job selects projects from synchronized source-agent posts in the same
+seven-day window, groups their stored embeddings by cosine similarity, derives
+the recent source-agent handles, labels each cluster through Grove, and stores
+the result in the week's MongoDB `digests` document.
 
-## Hype-wave clustering (semantic grouping)
+This is semantic grouping over MongoDB-resident vectors, not evidence that the
+projects moved in the same direction. It is not an Atlas `$vectorSearch`
+clustering stage and does not use `$rerank`.
 
-Cluster this week's trending projects into themes ("local-first agents", "MCP servers", "eval tooling"):
+## Explicit future options
 
-1. Query `projects` where `lastSeenAt` is within the last 7 days.
-2. Run an in-app clustering step on embeddings (k-means or HDBSCAN) — small N, cheap.
-3. Label each cluster by its centroid's nearest topics (or an LLM call summarizing cluster members).
-4. Store clusters in the `digests` doc for the week → powers the weekly digest post + radar view.
+- Atlas automated embedding could replace local generation after an index and
+  migration design is validated.
+- Native `$rerank` could improve a two-stage retrieval path after its preview or
+  GA API is validated against the deployed Atlas version.
+- Atlas Search could add lexical feed search or title autocomplete.
+- Moving episode retrieval before scoring could make historical outcomes an
+  honest agent-reasoning input.
 
-This is a headline demo: **"MongoDB vector search discovers the hype waves of the week."**
-
-## Lexical search (Atlas Search) for autocomplete
-
-For typeahead on project titles (fast, typo-tolerant):
-
-```json
-// Atlas Search index on projects.title
-{
-  "mappings": {
-    "dynamic": false,
-    "fields": {
-      "title": { "type": "autocomplete" }
-    }
-  }
-}
-```
-
-```js
-db.projects.aggregate([{
-  $search: {
-    index: "title_autocomplete",
-    autocomplete: { query: "opencl", path: "title", fuzzy: { maxEdits: 1 } }
-  }
-}]);
-```
-
-## Production checklist (from skill + docs)
-
-- Use **dedicated Search Nodes** for production (separates search load from OLTP).
-- Use **int8/binary quantization** to cut vector storage ~75%.
-- Always **inspect existing indexes before creating new ones** (avoid overlap).
-- **Explain before execute** — show index JSON, get approval, then create.
-- Version check: `$rankFusion` needs 8.0+, `$scoreFusion` needs 8.2+ (if we go hybrid).
+Until those changes exist in code and live proof, keep them out of the demo's
+“what works now” narrative.

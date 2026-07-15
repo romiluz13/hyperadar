@@ -1,168 +1,147 @@
-"""T2 end-to-end test: @github-radar agent run populates MongoDB + Port.
+"""Opt-in end-to-end proof against a dedicated MongoDB test DB and Port test org."""
 
-Mocks the GitHub search source so the test is deterministic and doesn't depend
-on live trending data. Asserts:
-  - Posts appear in MongoDB (posts collection) with the right shape
-  - A `hyperadar_post` entity exists in Port for each, with relations
-
-Run:  uv run pytest test_github_radar_e2e.py -v
-"""
-
+import asyncio
+import json
 import os
+import urllib.error
+import urllib.request
+from uuid import uuid4
 
 import pytest
-import pymongo
+
+
+def _port_request(method: str, path: str, token: str) -> dict:
+    request = urllib.request.Request(
+        f"https://api.getport.io/v1{path}",
+        method=method,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(request) as response:
+        payload = response.read()
+    return json.loads(payload) if payload else {"ok": True}
 
 
 @pytest.fixture()
-def env_loaded():
-    from dotenv import load_dotenv
+def port_test_token(monkeypatch):
+    client_id = os.environ.get("PORT_TEST_CLIENT_ID")
+    client_secret = os.environ.get("PORT_TEST_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        pytest.skip("dedicated PORT_TEST_CLIENT_ID/PORT_TEST_CLIENT_SECRET not set")
 
-    load_dotenv()
-    return os.environ
-
-
-@pytest.fixture()
-def mongo_db(env_loaded):
-    client = pymongo.MongoClient(os.environ["MONGODB_URI"])
-    return client[os.environ.get("MONGODB_DB", "hyperadar")]
-
-
-@pytest.fixture()
-def port_token(env_loaded):
-    import json
-    import urllib.error
-    import urllib.request
-
-    body = json.dumps(
-        {
-            "clientId": os.environ["PORT_CLIENT_ID"],
-            "clientSecret": os.environ["PORT_CLIENT_SECRET"],
-        }
-    ).encode()
-    req = urllib.request.Request(
+    body = json.dumps({"clientId": client_id, "clientSecret": client_secret}).encode()
+    request = urllib.request.Request(
         "https://api.getport.io/v1/auth/access_token",
         data=body,
         method="POST",
         headers={"Content-Type": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(req) as r:
-            return json.loads(r.read())["accessToken"]
-    except (urllib.error.URLError, KeyError) as e:
-        pytest.skip(f"Port auth unavailable: {e}")
+    with urllib.request.urlopen(request) as response:
+        token = json.loads(response.read())["accessToken"]
+
+    from _shared import port_client
+
+    monkeypatch.setattr(port_client, "_client_id", client_id)
+    monkeypatch.setattr(port_client, "_client_secret", client_secret)
+    monkeypatch.setattr(port_client, "_cached_token", token)
+    return token
 
 
-def _mock_candidates():
-    """Deterministic fake trending repos (no live GitHub call)."""
-    return [
-        {
-            "url": "https://github.com/test-org/hype-test-repo",
-            "title": "test-org/hype-test-repo",
-            "kind": "repo",
-            "description": "A test trending AI repo",
-            "topics": ["ai", "agents"],
-            "stars": 9000,
-            "created_at": "2026-06-01T00:00:00Z",
-            "owner": "test-org",
-            "repo": "hype-test-repo",
-        }
-    ]
+def _mock_candidate(unique: str) -> dict:
+    return {
+        "url": f"https://github.com/hyperadar-test/{unique}",
+        "title": f"hyperadar-test/{unique}",
+        "kind": "repo",
+        "description": "A deterministic test trending AI repo",
+        "topics": ["ai", "agents"],
+        "stars": 9000,
+        "created_at": "2026-06-01T00:00:00Z",
+        "owner": "hyperadar-test",
+        "repo": unique,
+    }
 
 
-def test_agent_run_writes_mongodb_and_port(
-    mongo_db, port_token, env_loaded, monkeypatch
-):
-    """The spine: scrape (mocked) -> score (Grove) -> write MongoDB + Port."""
-    import json
-    import urllib.request
-
-    # Monkeypatch the live GitHub source so the test is deterministic.
+def test_agent_run_writes_mongodb_and_port(db, port_test_token):
+    """The write spine persists one unique project and its exact Port relations."""
+    import agent
     import github_source
+    from _shared import mongo
+    from _shared.slug import project_slug_for_url
     from agent import _CANDIDATE_CACHE
 
-    async def fake_fetch(max_results=10):
-        return _mock_candidates()
-
-    monkeypatch.setattr(github_source, "fetch_trending_candidates", fake_fetch)
-
-    # Drive the write tool directly (proves the persistence layer end-to-end
-    # without depending on Grove's LLM nondeterminism).
-    import agent
-
-    cands = _mock_candidates()
-    test_url = cands[0]["url"]
+    candidate = _mock_candidate(f"e2e-{uuid4().hex}")
+    test_url = candidate["url"]
+    candidate["_momentum"] = github_source.compute_momentum(candidate, [], 0)
     _CANDIDATE_CACHE.clear()
-    _CANDIDATE_CACHE.update({c["url"]: c for c in cands})
-    history = []
-    prior = 0
-    m = github_source.compute_momentum(cands[0], history, prior)
-    cands[0]["_momentum"] = m
+    _CANDIDATE_CACHE[test_url] = candidate
+    post_ids: list[str] = []
+    cleanup_errors: list[str] = []
 
-    import asyncio
-
-    post = None
-    entities: list = []
-    try:
-        out = asyncio.run(
-            agent.write_hype_post.ainvoke(
+    async def invoke_tool():
+        try:
+            return await agent.write_hype_post.ainvoke(
                 {
                     "repo_url": test_url,
-                    "blurb": "▲ 9000★/wk. Test repo. This is real.",
                     "verdict": "hype looks real",
                 }
             )
-        )
-        assert "Posted" in out
+        finally:
+            await mongo.close_client()
 
-        # --- Assert MongoDB has the post + project + signal ---
-        post = mongo_db.posts.find_one({"project.url": test_url})
+    try:
+        output = asyncio.run(invoke_tool())
+        assert "Posted" in output
+
+        post = db.posts.find_one({"project.url": test_url})
         assert post is not None
+        post_id = str(post["_id"])
+        post_ids.append(post_id)
         assert post["agentHandle"] == "@github-radar"
         assert post["verdict"] == "hype looks real"
-        assert "body" in post and "▲" in post["body"]
+        assert post["portSyncStatus"] == "synced"
 
-        proj = mongo_db.projects.find_one({"url": test_url})
-        assert proj is not None
-        assert proj["momentumScore"] == m["momentumScore"]
+        project = db.projects.find_one({"url": test_url})
+        assert project is not None
+        assert project["momentumScore"] == candidate["_momentum"]["momentumScore"]
+        assert db.signals.find_one({"projectId": test_url, "metric": "github_stars"})
 
-        sig = mongo_db.signals.find_one({"projectId": test_url})
-        assert sig is not None
-        assert sig["metric"] == "stars"
-
-        # --- Assert a hyperadar_post entity exists in Port with relations ---
-        req = urllib.request.Request(
-            "https://api.getport.io/v1/blueprints/hyperadar_post/entities",
-            headers={"Authorization": f"Bearer {port_token}"},
-        )
-        with urllib.request.urlopen(req) as r:
-            entities = json.loads(r.read()).get("entities", [])
-        test_posts = [
-            e
-            for e in entities
-            if e.get("properties", {}).get("body", "").startswith("▲ 9000")
-        ]
-        assert test_posts, "expected a hyperadar_post entity for the test post"
-        rels = test_posts[0].get("relations", {})
-        assert rels.get("agent") == "github-radar"
-        assert "project" in rels
+        port_post = _port_request(
+            "GET",
+            f"/blueprints/hyperadar_post/entities/{post_id}",
+            port_test_token,
+        )["entity"]
+        assert port_post["relations"]["agent"] == "github-radar"
+        assert port_post["relations"]["project"] == project_slug_for_url(test_url)
     finally:
-        # --- Teardown: remove test data from MongoDB + Port ---
-        mongo_db.posts.delete_many({"project.url": test_url})
-        mongo_db.projects.delete_many({"url": test_url})
-        mongo_db.signals.delete_many({"projectId": test_url})
-        if post is not None:
-            mongo_db.reactions.delete_many({"postId": str(post["_id"])})
-        # Port: delete the test post entity (best-effort)
+        post_ids = [
+            str(item["_id"])
+            for item in db.posts.find({"project.url": test_url}, {"_id": 1})
+        ]
+        for post_id in post_ids:
+            try:
+                _port_request(
+                    "DELETE",
+                    f"/blueprints/hyperadar_post/entities/{post_id}",
+                    port_test_token,
+                )
+            except urllib.error.HTTPError as error:
+                if error.code != 404:
+                    cleanup_errors.append(f"Port post {post_id}: {error}")
         try:
-            for e in entities:
-                if e.get("properties", {}).get("body", "").startswith("▲ 9000"):
-                    urllib.request.urlopen(
-                        urllib.request.Request(
-                            f"https://api.getport.io/v1/blueprints/hyperadar_post/entities/{e['identifier']}",
-                            method="DELETE",
-                            headers={"Authorization": f"Bearer {port_token}"},
-                        )
-                    )
-        except Exception:
-            pass  # best-effort cleanup
+            _port_request(
+                "DELETE",
+                f"/blueprints/hyperadar_project/entities/{project_slug_for_url(test_url)}",
+                port_test_token,
+            )
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                cleanup_errors.append(f"Port project: {error}")
+
+        db.reactions.delete_many({"postId": {"$in": post_ids}})
+        db.posts.delete_many({"project.url": test_url})
+        db.projects.delete_many({"url": test_url})
+        db.signals.delete_many({"projectId": test_url})
+        db.signal_receipts.delete_many({"signal.projectId": test_url})
+        db.embeddings_audit.delete_many({"projectId": test_url})
+
+        if cleanup_errors:
+            raise AssertionError("; ".join(cleanup_errors))

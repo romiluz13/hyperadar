@@ -1,8 +1,8 @@
 """Embedding generation for project vector search.
 
 Uses sentence-transformers (all-MiniLM-L6-v2, 384 dims) locally — free, offline.
-For production, swap to Atlas auto-embedding (Voyage AI) — the $vectorSearch
-query + index are the same; only the embedding *generation* moves to Atlas.
+Atlas automated embedding is a possible future replacement; the current runtime
+stores these local vectors and queries them with $vectorSearch.
 """
 
 # Lazy-loaded so the model downloads only when first needed.

@@ -1,4 +1,4 @@
-from _shared.slug import slug_for_url
+from _shared.slug import project_slug_for_url, slug_for_url
 
 
 def test_project_url_slugs_match_the_public_web_routes():
@@ -15,3 +15,16 @@ def test_project_url_slugs_match_the_public_web_routes():
         == "reddit-localllama-abc123"
     )
     assert slug_for_url("hyperadar://digest/2026-W27") == "digest-2026-w27"
+
+
+def test_project_identifiers_cannot_collide_when_path_boundaries_move():
+    first = project_slug_for_url("https://github.com/foo-bar/baz")
+    second = project_slug_for_url("https://github.com/foo/bar-baz")
+
+    assert first != second
+    assert first.startswith("foo-bar-baz-")
+    assert second.startswith("foo-bar-baz-")
+    assert len(first.rsplit("-", 1)[-1]) == 16
+    assert len(second.rsplit("-", 1)[-1]) == 16
+    assert len(first) <= 120
+    assert len(second) <= 120

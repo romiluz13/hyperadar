@@ -16,6 +16,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pymongo  # noqa: E402
 
+from _shared.agent_catalog import AGENT_CATALOG  # noqa: E402
+
+SOURCE_AGENT_HANDLES = [
+    agent["handle"] for agent in AGENT_CATALOG if agent["source_type"] != "aggregator"
+]
+
 
 def _get_db():
     client = pymongo.MongoClient(os.environ["MONGODB_URI"])
@@ -41,6 +47,16 @@ def _distinct_agent_handles(
         for handle in agents_by_project.get(project["url"], set())
     }
     return sorted(handles)
+
+
+def _recent_source_post_filter(since: datetime) -> dict:
+    return {
+        "postedAt": {"$gte": since},
+        "agentHandle": {"$in": SOURCE_AGENT_HANDLES},
+        "portSyncStatus": "synced",
+        "evidenceContractVersion": 2,
+        "legacyDuplicateOf": {"$exists": False},
+    }
 
 
 def cluster_projects(projects: list[dict], threshold: float = 0.7) -> list[list[dict]]:
@@ -113,12 +129,21 @@ def compute_hype_waves() -> list[dict]:
     """Compute this week's hype waves. Returns clusters with labels + aggregate momentum."""
     now = datetime.now(timezone.utc)
     db = _get_db()
+    try:
+        return _compute_hype_waves(db, now)
+    finally:
+        db.client.close()
+
+
+def _compute_hype_waves(db, now: datetime) -> list[dict]:
     since = now - timedelta(days=7)
+    recent_post_filter = _recent_source_post_filter(since)
+    published_project_urls = db.posts.distinct("project.url", recent_post_filter)
     projects = list(
         db.projects.find(
             {
+                "url": {"$in": published_project_urls},
                 "embedding": {"$exists": True},
-                "lastSeenAt": {"$gte": since},
             }
         )
         .sort("momentumScore", -1)
@@ -132,7 +157,10 @@ def compute_hype_waves() -> list[dict]:
     project_urls = [project["url"] for project in projects]
     agents_by_project: dict[str, set[str]] = {}
     for post in db.posts.find(
-        {"project.url": {"$in": project_urls}},
+        {
+            **recent_post_filter,
+            "project.url": {"$in": project_urls},
+        },
         {"_id": 0, "agentHandle": 1, "project.url": 1},
     ):
         project_url = post.get("project", {}).get("url")
@@ -178,7 +206,10 @@ def compute_hype_waves() -> list[dict]:
                 "weekOf": now,
                 "waves": waves,
                 "computedAt": now,
-            }
+                "publicationSyncStatus": "pending",
+                "evidenceContractVersion": 2,
+            },
+            "$unset": {"publicationSyncedAt": ""},
         },
         upsert=True,
     )

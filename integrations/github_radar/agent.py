@@ -1,11 +1,11 @@
 """@github-radar agent brain — Deep Agents harness with custom tools.
 
-The LLM (Grove via ChatOpenAI, OpenAI-compatible) orchestrates: fetch candidates,
-inspect momentum, and for each worth posting write a blurb + verdict in the
-@github-radar voice, then persist to MongoDB + Port via the write tool.
+The LLM (Grove via ChatOpenAI, OpenAI-compatible) orchestrates candidate selection
+and verdicts. Public evidence copy is derived deterministically from cached source
+values before the write tool persists MongoDB + Port twins.
 
 Deep Agents provides planning/tool-calling on LangGraph; MongoDBSaver checkpoints
-the run (durable, resumable) — the showcase of MongoDB as agent memory.
+the run for durable inspection — the current MongoDB agent-memory proof.
 """
 
 import os
@@ -14,32 +14,33 @@ from deepagents import create_deep_agent
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 
-import embeddings
-import mongo
-import port_client
+from _shared import mongo
+from _shared.agent_catalog import agent_identity
+from _shared.evidence_copy import github_evidence_copy
+from _shared.write_post import write_post
 from github_source import fetch_trending_candidates, compute_momentum
 
 AGENT_HANDLE = "@github-radar"
-AGENT_NAME = "GitHub Radar"
-AGENT_BIO = "The numbers nerd. Leads with velocity. Terse, data-forward. Tracks trending AI repos on GitHub."
-SOURCE_TYPE = "github"
+_IDENTITY = agent_identity(AGENT_HANDLE)
+AGENT_NAME = _IDENTITY["name"]
+AGENT_BIO = _IDENTITY["bio"]
+SOURCE_TYPE = _IDENTITY["source_type"]
 
 SYSTEM_PROMPT = """\
 You are @github-radar, an AI dev hype tracker that scans GitHub for trending AI repositories.
 
-Your voice: terse, data-forward, you lead with velocity. Like: "▲ 2.3k/wk. 6-week sustained growth. This is real."
+Your voice: terse and data-forward. Distinguish a lifetime average from observed growth.
 
 Workflow:
 1. Call fetch_trending_repos to get today's candidate repos with their momentum data.
 2. For EACH candidate that genuinely looks like it's breaking out (momentumScore >= 40),
    call write_hype_post with:
    - repo_url (exact, from the candidate)
-   - blurb: ONE line, max 140 chars, in your voice, leading with the velocity number
    - verdict: one of "hype looks real", "inflated", "emerging", "cooling"
 3. Skip candidates with momentumScore < 40 — don't post noise.
 4. Post at most the top 3 candidates per run (quality over quantity).
 
-The blurb must start with the stars/week figure (e.g. "▲ 12k★/wk"). Be concrete, no filler.
+Never imply the repository gained that average in the latest week. Be concrete, no filler.
 """
 
 
@@ -57,14 +58,19 @@ async def fetch_trending_repos() -> str:
     lines = []
     for c in candidates:
         project_id = c["url"]
-        history = await mongo.get_momentum_history(project_id)
+        history = await mongo.get_momentum_history(
+            project_id,
+            source="github",
+            metric="github_stars",
+        )
         prior_posts = await mongo.get_prior_post_count(project_id)
         m = compute_momentum(c, history, prior_posts)
         c["_momentum"] = m  # cache for the write step
         lines.append(
             f"- {c['title']} | {c['url']}\n"
-            f"  stars={c['stars']} | stars/wk={m['starsPerWeek']} | "
-            f"momentumScore={m['momentumScore']} | sustained={m['sustained']} | "
+            f"  stars={c['stars']} | avg_stars/wk_since_creation="
+            f"{m['avgStarsPerWeekSinceCreation']} | momentumScore={m['momentumScore']} | "
+            f"sustainedSixWeekGrowth={m['sustainedSixWeekGrowth']} | "
             f"novel={m['novel']}\n"
             f"  desc: {c['description'][:120]}"
         )
@@ -77,21 +83,28 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 
 
 @tool
-async def write_hype_post(repo_url: str, blurb: str, verdict: str) -> str:
+async def write_hype_post(repo_url: str, verdict: str) -> str:
     """Publish a hype post for a repo. Persists signals + project + post to MongoDB
     and upserts the matching Port entities (agent, project, post with relations).
 
     Args:
         repo_url: exact URL from the candidate listing
-        blurb: one line, max 140 chars, @github-radar voice, lead with velocity
         verdict: one of "hype looks real", "inflated", "emerging", "cooling"
     """
     c = _CANDIDATE_CACHE.get(repo_url)
     if not c:
         return f"ERROR: unknown repo_url {repo_url}. Call fetch_trending_repos first."
-    m = c.get("_momentum") or {"momentumScore": 0.0, "starsPerWeek": 0.0}
+    m = c.get("_momentum") or {
+        "momentumScore": 0.0,
+        "avgStarsPerWeekSinceCreation": 0.0,
+        "sustainedSixWeekGrowth": False,
+    }
+    blurb = github_evidence_copy(
+        m["avgStarsPerWeekSinceCreation"],
+        c["stars"],
+        m["sustainedSixWeekGrowth"],
+    )
 
-    project_id = c["url"]
     project_doc = {
         "url": c["url"],
         "title": c["title"],
@@ -101,56 +114,30 @@ async def write_hype_post(repo_url: str, blurb: str, verdict: str) -> str:
         "momentumScore": m["momentumScore"],
         "hypeVerdict": verdict,
     }
-    # 1. MongoDB: upsert project (with embedding) + insert signal + insert post
-    embedding = embeddings.embed_project(c["title"], c["description"], c["topics"])
-    await mongo.upsert_project(project_doc, embedding=embedding)
-    await mongo.insert_signal(
-        {
-            "projectId": project_id,
-            "source": "github",
-            "metric": "stars",
-            "value": c["stars"],
-            "delta": m["starsPerWeek"],
-        }
-    )
     rank_score = m["momentumScore"]  # v1: rank = momentum (reactions blend in T4)
-    post_doc = {
-        "agentHandle": AGENT_HANDLE,
-        "body": blurb,
-        "verdict": verdict,
-        "rankScore": rank_score,
-        "project": {
-            "url": c["url"],
-            "title": c["title"],
-            "kind": c["kind"],
-            "momentumScore": m["momentumScore"],
-        },
-        "signalsSummary": f"stars={c['stars']}, +{m['starsPerWeek']}/wk",
+    signal = {
+        "source": "github",
+        "metric": "github_stars",
+        "value": c["stars"],
+        "delta": 0,
+        "evidenceUrl": c["url"],
+        "evidenceLabel": "Open GitHub repository",
+        "summary": (
+            f"GitHub stars={c['stars']}; avg since creation="
+            f"{m['avgStarsPerWeekSinceCreation']}/wk; "
+            f"6-week sustained={'yes' if m['sustainedSixWeekGrowth'] else 'not proven'}"
+        ),
     }
-    post_id = await mongo.insert_post(post_doc)
-
-    # 2. Port: upsert agent + project + post entities (catalog twin)
-    port_client.require_success(
-        port_client.upsert_agent(AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE),
-        f"agent sync for {AGENT_HANDLE}",
-    )
-    port_client.require_success(
-        port_client.upsert_project(
-            c["url"],
-            c["title"],
-            c["kind"],
-            c["description"],
-            c["topics"],
-            m["momentumScore"],
-            verdict,
-        ),
-        f"project sync for {c['url']}",
-    )
-    port_client.require_success(
-        port_client.upsert_post(
-            post_id, AGENT_HANDLE, c["url"], blurb, verdict, rank_score
-        ),
-        f"post sync for {post_id}",
+    post_id = await write_post(
+        AGENT_HANDLE,
+        AGENT_NAME,
+        AGENT_BIO,
+        SOURCE_TYPE,
+        project_doc,
+        blurb,
+        verdict,
+        signal,
+        rank_score,
     )
 
     return f"Posted: {c['title']} (momentum {m['momentumScore']}, verdict '{verdict}') -> post {post_id}"

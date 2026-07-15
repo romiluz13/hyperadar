@@ -68,37 +68,68 @@ async def get_repo_details(owner: str, repo: str) -> dict:
         return r.json()
 
 
+def _as_utc(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        with contextlib.suppress(ValueError):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _has_sustained_six_week_growth(
+    history: list[dict], current_value: float, current_at: datetime
+) -> bool:
+    observations = sorted(
+        [
+            (captured_at, float(signal.get("value", 0)))
+            for signal in history
+            if (captured_at := _as_utc(signal.get("capturedAt"))) is not None
+        ]
+        + [(current_at, float(current_value))],
+        key=lambda observation: observation[0],
+    )
+    if len(observations) < 6:
+        return False
+    if observations[-1][0] - observations[0][0] < timedelta(days=35):
+        return False
+    return observations[-1][1] > observations[0][1] and all(
+        current[1] >= previous[1]
+        for previous, current in zip(observations, observations[1:])
+    )
+
+
 def compute_momentum(candidate: dict, history: list[dict], prior_posts: int) -> dict:
     """Deterministic momentum score (0-100) per docs/specs design.
 
-    Velocity (40%): stars per week since creation.
-    Sustainedness (25%): prior signals exist (history) OR prior posts => sustained.
+    Velocity (40%): lifetime-average stars per week since creation.
+    Sustainedness (25%): six observations spanning at least five weeks, net-positive
+    and non-decreasing through the current candidate value.
     Novelty (15%): fewer prior posts => more novel.
     Multi-source (20%): N/A in @github-radar alone (set in T5 cross-agent) -> base 50.
 
-    Returns {momentumScore, starsPerWeek, sustained, novel}.
+    Returns explicitly labeled evidence fields so lifetime averages cannot be
+    presented as recent star velocity.
     """
     now = datetime.now(timezone.utc)
-    created = candidate.get("created_at")
+    created = _as_utc(candidate.get("created_at"))
     age_days = 30.0  # default if missing
     if created:
-        with contextlib.suppress(ValueError):
-            age_days = max(
-                (now - datetime.fromisoformat(created.replace("Z", "+00:00"))).days, 1
-            )
+        age_days = max((now - created).total_seconds() / 86_400, 1)
     stars = candidate.get("stars", 0)
-    stars_per_week = stars / (age_days / 7)
+    average_stars_per_week = stars / (age_days / 7)
 
-    # velocity: normalize — 5k stars/wk ~= 100
-    velocity = min(stars_per_week / 50, 1.0) * 100
-    sustained = 60.0 if (history or prior_posts) else 30.0
+    velocity = min(average_stars_per_week / 50, 1.0) * 100
+    sustained_six_week_growth = _has_sustained_six_week_growth(history, stars, now)
+    sustained = 60.0 if sustained_six_week_growth else 30.0
     novel = max(100 - prior_posts * 25, 0)
     multisource = 50.0  # base; boosted in T5 when cross-agent confirmation exists
 
     score = 0.40 * velocity + 0.25 * sustained + 0.20 * multisource + 0.15 * novel
     return {
         "momentumScore": round(min(score, 100), 1),
-        "starsPerWeek": round(stars_per_week, 1),
-        "sustained": bool(history or prior_posts),
+        "avgStarsPerWeekSinceCreation": round(average_stars_per_week, 1),
+        "sustainedSixWeekGrowth": sustained_six_week_growth,
         "novel": prior_posts == 0,
     }

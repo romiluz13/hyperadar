@@ -1,4 +1,4 @@
-import { Db, MongoClient } from "mongodb";
+import { type ClientSession, Db, MongoClient } from "mongodb";
 
 // Serverless pattern: initialize OUTSIDE the handler for connection reuse.
 // See docs/reference/mongodb-connection.md
@@ -21,4 +21,20 @@ export async function getDb(): Promise<Db> {
 	await client.connect();
 	_db = client.db(process.env.MONGODB_DB || "hyperadar");
 	return _db;
+}
+
+export async function closeMongoConnection(): Promise<void> {
+	await client?.close();
+	client = null;
+	_db = null;
+}
+
+export async function withMongoTransaction<T>(
+	operation: (db: Db, session: ClientSession) => Promise<T>,
+): Promise<T> {
+	const db = await getDb();
+	if (!client) throw new Error("MongoDB client unavailable");
+	return client.withSession((session) =>
+		session.withTransaction(() => operation(db, session)),
+	);
 }

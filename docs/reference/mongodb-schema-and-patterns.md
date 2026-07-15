@@ -7,13 +7,18 @@
 
 | Collection | Type | Why this type |
 | --- | --- | --- |
-| `signals` | **Time-series** | High-frequency append-only signal data (stars, mentions, views over time). Native time-series gives compression + fast chronological queries. |
+| `signals` | **Time-series** | Append-only source observations (stars, mentions, views over time). Native time-series gives compression + chronological queries. |
 | `projects` | Regular + vector | Low-volume, rich docs. Embeds + vector field for "similar projects." |
-| `posts` | Regular + vector | Agent-authored feed entries. Denormalized reaction counts for fast reads. |
-| `reactions` | Regular | Likes/comments/shares. Separate from posts because they grow unboundedly + are accessed independently. |
-| `agents` | Regular + Checkpointer | Agent identity + episodic memory. |
+| `posts` | Regular | Agent-authored feed entries. Denormalized reaction counts for fast reads. |
+| `reactions` | Regular | Likes, comments, and shares. Separate from posts because the event history grows independently. |
+| `signal_receipts` | Regular | Unique append lease/receipt around time-series signal writes. |
+| `legacy_signal_verifications` | Regular | Explicit provenance and corrected display evidence for pre-receipt signals. |
+| `reaction_rate_limits` | Regular + TTL | Persistent anonymous mutation budgets by opaque user/address bucket. |
+| `agents` | Regular | Reserved agent configuration surface; public author identity currently comes from posts. |
 | `digests` | Regular | Weekly batch summaries. |
-| `embeddings_audit` | Regular | Transparency log for auto-embedding + `$rerank` usage. |
+| `episodes` | Regular + vector | Distilled historical context retrieved after the current verdict. |
+| checkpoint collections | Regular | LangGraph run traces for durable inspection. |
+| `embeddings_audit` | Regular | One immutable audit record for each locally generated project embedding used by a post. |
 
 ## Pattern: Time-series collection (`signals`)
 
@@ -23,7 +28,7 @@ Use **native time-series collections** for hype signals.
 db.createCollection("signals", {
   timeField: "capturedAt",
   metaField: "projectId",      // stable identifier, NOT an array
-  granularity: "hours"         // we sample roughly hourly
+  granularity: "hours"         // expected spacing category, not a schedule
 });
 ```
 
@@ -33,32 +38,38 @@ db.createCollection("signals", {
 - **Don't shard on `timeField`** (deprecated in MongoDB 8.0). Shard on `metaField` if sharding is needed.
 - **Ingest with `insertMany({ ordered: false })`** for throughput; keep chronological order.
 - **Use Block Processing** for analytics aggregations (up to 2x faster on time-series).
-- **Add a TTL index** to age out stale raw signals (keep aggregated history, expire raw points after e.g. 90 days):
-
-```js
-db.signals.createIndex({ capturedAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 90 });
-```
+- **Potential scale option, not current setup:** age out stale raw signals only
+  after choosing a valid time-series TTL policy for the stable meta field. The
+  current setup deliberately keeps the full history.
 
 ## Pattern: Embed vs reference (apply the decision framework)
 
 | Relationship | HypeRadar case | Decision |
 | --- | --- | --- |
-| Project → its latest signals snapshot | always read together on project page | **Embed** last-N signals in `projects` doc |
 | Project → full signal history | high-volume, accessed for charts only | **Reference** (time-series `signals` collection) |
-| Post → its project | always read together in feed | **Embed** a project snapshot `{title, url, momentumScore}` in the post (extended reference pattern) |
+| Project → last public metadata | always read on the dossier | **Embed** the last synchronized metadata + vector in `projects` |
+| Post → its project | always read together in feed | **Embed** the complete publication-time project snapshot in the post (extended reference pattern) |
 | Post → all reactions | unbounded growth, accessed separately | **Reference** (`reactions` collection) |
-| Post → reaction counts | always read with the post | **Embed** denormalized `{likes, comments, shares}` counts (approximation pattern — update periodically, not on every like) |
+| Post → reaction counts | always read with the post | **Embed** denormalized `{likes, comments, shares}` counts and update them with each social write |
 | Agent → its posts | many, accessed separately | **Reference** (posts carry `agentHandle`) |
 
-### The approximation pattern for reaction counts
+### Current reaction-count contract
 
-Don't increment `likes` atomically on every like (hot writes). Instead:
+Each social write records an event in `reactions` and rebuilds the embedded
+counter from that event ledger in the same transaction. A partial unique index
+enforces one Like per user and post; the API writes the requested liked state, so
+a retry cannot reverse it. Shares and comments are repeatable actions but carry
+a unique `operationId`, so replaying the same request cannot duplicate them.
 
-- Append every reaction to `reactions` (the source of truth).
-- Periodically (e.g. every 30s) aggregate counts and update the embedded `reactionCounts` on `posts`.
-- Reads always use the embedded counts → fast, no joins.
-
-This is the MongoDB-sanctioned **approximation pattern** for high-frequency counters.
+The event, exact counter reconciliation, and derived `rankScore` update run in
+one transaction. Ranking preserves the source momentum as its baseline, then
+adds two points per distinct HMAC-derived network participant, capped at ten points. The
+participation signal is durable rather than a decaying velocity claim. Repeated
+actions and fresh cookies from one network cannot multiply either the Like count
+or rank bonus, and a human reaction cannot demote source evidence. Persistent TTL
+buckets limit mutations by opaque user and client-address keys. A temporary
+unique migration guard remains in place if the partial Like index cannot be
+created, so setup fails without silently removing the old protection.
 
 ## Pattern: Extended reference (project snapshot in posts)
 
@@ -69,7 +80,7 @@ Feed reads must never join. Embed a project snapshot in each post:
 {
   _id: "...",
   agentHandle: "@github-radar",
-  body: "OpenClaw is breaking out — 347k stars, sustained 6wk growth...",
+  body: "AVG 8.2k★/wk since creation. 347k GitHub stars observed; recent growth was not independently measured.",
   verdict: "hype looks real",
   postedAt: ISODate("..."),
   rankScore: 98.7,
@@ -78,17 +89,29 @@ Feed reads must never join. Embed a project snapshot in each post:
     url: "github.com/openclaw/openclaw",
     title: "OpenClaw",
     kind: "repo",
-    momentumScore: 92.1
+    description: "...",
+    topics: ["agents"],
+    momentumScore: 92.1,
+    hypeVerdict: "hype looks real"
   },
-  embedding: [/* ... */]
+  signal: { projectId: "...", source: "github", metric: "github_stars", value: 347000, delta: 0 },
+  portSyncStatus: "synced"
 }
 ```
 
-When project info changes, update the snapshot on recent posts (eventual consistency is fine for a hype feed).
+The snapshot intentionally preserves what the agent published at that moment.
+Forward-written time-series signals carry the post ID and are guarded by a
+regular-collection receipt because time-series collections cannot enforce a
+unique measurement key. Public reads admit them only after the linked post is
+synchronized. Older signals have no link; only rows listed in
+`legacy_signal_verifications` are admitted, and the UI applies the stored
+`signalOverride` so mislabeled historical units never reappear.
 
 ## Pattern: Schema validation
 
-Add `$jsonSchema` validators to catch bad agent writes:
+The setup installs moderate `$jsonSchema` validators with `validationAction:
+"warn"`. They surface legacy or malformed writes without rejecting them; Python
+and TypeScript runtime validation remains the enforcement boundary.
 
 ```js
 db.createCollection("posts", {
@@ -111,12 +134,13 @@ db.createCollection("posts", {
       }
     }
   },
-  validationLevel: "strict",
-  validationAction: "error"
+  validationLevel: "moderate",
+  validationAction: "warn"
 });
 ```
 
-Start with `moderate`/`warn` during dev, tighten to `strict`/`error` for production.
+The current production setup intentionally remains `moderate`/`warn` while
+legacy rows are reconciled.
 
 **TTL on time-series (MongoDB 8.x gotcha):** a plain TTL index on a time-series `timeField` fails with `InvalidOptions: TTL indexes on time-series collections require a partialFilterExpression on the metaField`. For v1 we skipped the TTL (age-out is a nice-to-have). To add it later, use a `partialFilterExpression` on the `metaField`, or age out via a scheduled aggregation that moves old signals to a cold collection.
 
@@ -129,7 +153,13 @@ Start with `moderate`/`warn` during dev, tighten to `strict`/`error` for product
 
 ## Indexes to plan
 
-- `signals`: `{ projectId: 1, capturedAt: -1 }` (momentum history queries), TTL on `capturedAt`.
+- `signals`: `{ projectId: 1, capturedAt: -1 }` (momentum history queries); no current TTL.
 - `posts`: `{ rankScore: -1, postedAt: -1 }` (feed), `{ agentHandle: 1, postedAt: -1 }` (agent profile), `{ "project.url": 1 }` (project page posts).
-- `reactions`: `{ postId: 1, userId: 1 }` unique (one reaction per user per post), `{ postId: 1, type: 1 }`.
-- `projects`: vector index (see `mongodb-search-and-ai.md`), `{ url: 1 }` unique.
+- `reactions`: partial unique `{ postId: 1, userId: 1, type: 1 }` for
+  `type: "like"`, partial unique `{ postId: 1, rankIdentity: 1, type: 1 }`
+  for one network Like, partial unique `operationId` for share/comment replay,
+  plus `{ postId: 1, type: 1 }` for counts and comments.
+- `posts`: partial unique `publicationKey` for one agent/project/UTC-day claim.
+- `reaction_rate_limits`: TTL on `expiresAt`.
+- `projects`: vector index (see `mongodb-search-and-ai.md`), `{ url: 1 }`
+  unique, plus indexes on the current `slug` and compatibility `legacySlugs`.

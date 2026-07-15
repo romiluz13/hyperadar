@@ -7,8 +7,8 @@
 | Runtime | Language/Driver | Workload | Concurrency |
 | --- | --- | --- | --- |
 | Next.js on Vercel (SSR / serverless functions) | Node.js driver | Read-heavy (feed, project pages, reactions) | Bursty, many instances |
-| Ocean agent-creators (Python, Vercel Sandbox) | Motor (async PyMongo) | Write-heavy (signals, posts, upserts) | Low concurrency per agent, scheduled |
-| Agent brain (Deep Agents / LangGraph, Python) | Motor | Read + write (vector search, checkpoint, store) | Low concurrency, long-ish ops |
+| Agent-creators (Python, GitHub Actions) | PyMongo Async | Write-heavy (signals, posts, upserts) | Low concurrency per on-demand run |
+| Agent checkpoints (LangGraph, Python) | `MongoDBSaver`-owned client | Run trace writes | Low concurrency, one agent invocation |
 
 ## Next.js on Vercel — serverless pattern
 
@@ -39,18 +39,20 @@ export const db = client.db("hyperadar");
 
 > **Watch for:** Vercel serverless functions have connection/time limits. If we hit `MongoWaitQueueTimeoutError`, check `connections.current` on the cluster before increasing pool size. If the server is at capacity, optimize queries instead.
 
-## Ocean agent-creators (Python / Motor) — long-running process pattern
+## Agent-creators (Python / PyMongo Async) — short-lived job pattern
 
-Each agent-creator is a containerized long-running process triggered by Port. Low concurrency, scheduled.
+Each Port-governed run dispatches a short-lived GitHub Actions job. One async
+client is reused for the job's event loop; tests receive one client per isolated
+event loop.
 
 ```python
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import AsyncMongoClient
 
-client = AsyncIOMotorClient(
+client = AsyncMongoClient(
     MONGODB_URI,
     maxPoolSize=10,       # low concurrency per agent
-    minPoolSize=2,        # a couple pre-warmed
-    maxIdleTimeMS=300000, # 5 min — long-running, keep connections
+    minPoolSize=0,        # do not pre-warm short-lived jobs
+    maxIdleTimeMS=300000,
     connectTimeoutMS=10000,
     socketTimeoutMS=30000,
 )
@@ -60,23 +62,18 @@ db = client.hyperadar
 ### Rationale
 
 - `maxPoolSize: 10` — agents do sequential-ish work, low concurrency. 10 + headroom.
-- `minPoolSize: 2` — pre-warm a couple to avoid cold connection on first upsert.
-- `maxIdleTimeMS: 5min` — long-running process benefits from persistent connections.
+- `minPoolSize: 0` — short-lived jobs should not hold idle connections.
+- One client per event loop — creating a client for every operation defeats pooling
+  and multiplies Atlas monitoring connections.
+- Close and evict the client before its owning event loop shuts down.
 
-## Agent brain (LangGraph) — analytical-ish, long operations
+`MongoDBSaver.from_conn_string(...)` owns a separate synchronous checkpoint
+client inside its context manager. The shared async client is not passed into the
+checkpointer and closes independently after the run.
 
-Vector search + `$rerank` + checkpoint can be slower ops.
-
-```python
-client = AsyncIOMotorClient(
-    MONGODB_URI,
-    maxPoolSize=10,
-    socketTimeoutMS=60000,  # vector search / rerank can take longer
-    maxIdleTimeMS=600000,
-)
-```
-
-`socketTimeoutMS` set higher to avoid killing legitimate slow search ops. From the skill: for analytical-ish workloads, set `socketTimeoutMS` to 2-3× the slowest operation.
+The application currently uses PyMongo 4.16. MongoDB deprecated Motor on May
+14, 2026 and recommends PyMongo Async as its replacement; see the official
+[migration guide](https://www.mongodb.com/docs/languages/python/pymongo-driver/current/reference/migration/).
 
 ## Server-side capacity planning
 
@@ -89,6 +86,6 @@ For Atlas, the tier (M10+) determines connection limits — size the tier to our
 ## Connection pitfalls
 
 - **Don't create a new client per request** (serverless anti-pattern) — reuse at module scope.
-- **Don't manually close connections** unless shutting down — let the pool manage them.
+- **Close once at job shutdown, not after each operation** — let the pool serve the full run.
 - **Don't set `maxPoolSize` without knowing concurrency** — arbitrary high values waste server RAM.
 - **Do use timeouts** — `connectTimeoutMS` + `socketTimeoutMS` prevent hanging.

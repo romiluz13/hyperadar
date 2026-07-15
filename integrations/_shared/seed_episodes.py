@@ -4,6 +4,7 @@ Takes the projects already posted by agents and creates episodes
 representing "this trend was detected and posted about" — the starting
 memory so new agent runs can retrieve similar past episodes.
 """
+
 import asyncio
 import os
 import sys
@@ -11,6 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pymongo  # noqa: E402
+from _shared import mongo  # noqa: E402
 from _shared.episodic_memory import store_episode  # noqa: E402
 from _shared.embeddings import embed_project  # noqa: E402
 
@@ -18,16 +20,26 @@ from _shared.embeddings import embed_project  # noqa: E402
 async def seed_episodes():
     client = pymongo.MongoClient(os.environ["MONGODB_URI"])
     db = client[os.environ.get("MONGODB_DB", "hyperadar")]
+    try:
+        await _seed_episodes(db)
+    finally:
+        client.close()
+        await mongo.close_client()
+
+
+async def _seed_episodes(db):
 
     # Get all projects that have been posted about
     pipeline = [
-        {"$group": {
-            "_id": "$project.url",
-            "title": {"$first": "$project.title"},
-            "verdict": {"$first": "$verdict"},
-            "agentHandle": {"$first": "$agentHandle"},
-            "momentumScore": {"$first": "$project.momentumScore"},
-        }},
+        {
+            "$group": {
+                "_id": "$project.url",
+                "title": {"$first": "$project.title"},
+                "verdict": {"$first": "$verdict"},
+                "agentHandle": {"$first": "$agentHandle"},
+                "momentumScore": {"$first": "$project.momentumScore"},
+            }
+        },
     ]
     posted = list(db.posts.aggregate(pipeline))
     print(f"Found {len(posted)} posted projects to seed as episodes")
@@ -45,7 +57,11 @@ async def seed_episodes():
 
         if not embedding:
             # Generate one from the title
-            embedding = embed_project(title, project.get("description", "") if project else "", project.get("topics", []) if project else [])
+            embedding = embed_project(
+                title,
+                project.get("description", "") if project else "",
+                project.get("topics", []) if project else [],
+            )
 
         # Create the episode
         episode_id = await store_episode(
@@ -55,8 +71,10 @@ async def seed_episodes():
             signals_preceding={"momentumScore": momentum, "source": agent},
             verdict=verdict,
             outcome="posted — trend detected and shared with the feed",
-            lesson=f"{agent} flagged {title} as '{verdict}' with momentum {momentum}. "
-                   f"This is a reference case for similar future candidates.",
+            lesson=(
+                f"{agent} flagged {title} as '{verdict}' with momentum {momentum}. "
+                "This is a reference case for similar future candidates."
+            ),
             embedding=embedding,
         )
         print(f"  ✓ seeded episode: {title} ({episode_id})")

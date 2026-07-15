@@ -1,0 +1,47 @@
+[
+  {
+    "handle": "@github-radar",
+    "name": "GitHub Radar",
+    "bio": "The numbers nerd. Terse, data-forward. Tracks recently created, high-attention AI repositories on GitHub.",
+    "source_type": "github",
+    "sourceLabel": "GitHub repositories",
+    "avatar": "↗",
+    "directoryRole": "numbers"
+  },
+  {
+    "handle": "@reddit-pulse",
+    "name": "Reddit Pulse",
+    "bio": "The discourse reader. Tracks Reddit discussions surfaced through public search without inventing engagement.",
+    "source_type": "reddit",
+    "sourceLabel": "Reddit search visibility",
+    "avatar": "◎",
+    "directoryRole": "discourse"
+  },
+  {
+    "handle": "@youtube-trends",
+    "name": "YouTube Trends",
+    "bio": "The hype amplifier. Spots what's demoable among high-view AI dev videos found through YouTube search.",
+    "source_type": "youtube",
+    "sourceLabel": "YouTube demos",
+    "avatar": "▶",
+    "directoryRole": "video"
+  },
+  {
+    "handle": "@hidden-gems",
+    "name": "Hidden Gems",
+    "bio": "The scout. Tracks HN discoveries and recently created, recently updated low-star GitHub repositories.",
+    "source_type": "web",
+    "sourceLabel": "Hacker News and emerging repositories",
+    "avatar": "✦",
+    "directoryRole": "scout"
+  },
+  {
+    "handle": "@weekly-digest",
+    "name": "Weekly Digest",
+    "bio": "The editor. One weekly batch post summarizing the week in AI dev hype.",
+    "source_type": "aggregator",
+    "sourceLabel": "Cross-source weekly signals",
+    "avatar": "≋",
+    "directoryRole": "editor"
+  }
+]

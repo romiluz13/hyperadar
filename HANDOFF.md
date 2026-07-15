@@ -1,5 +1,12 @@
 # HANDOFF — Hyperadar Deep Review + Port Showcase Pivot
 
+> **Superseded review snapshot.** This file records findings from before the
+> retry-safe publication and Port Workflow work landed. Do not use it as
+> current runtime truth. Start with `README.md` and `docs/README.md`. The fake
+> Vercel agent routes, webhook actions, and Vercel cron configuration described
+> below were retired; the active execution path is Port Workflow → GitHub
+> Actions → an isolated, frozen Python agent package.
+
 **Date:** 2026-07-13  
 **Branch:** `main` (tracks `origin/main`)  
 **Workspace:** `/Users/rom.iluz/Dev/hyperadar`  
@@ -32,7 +39,7 @@ Continue from a full-codebase multi-agent review and a Port.io feature-research 
 ```
 apps/web/           # Next.js SSR feed/project/waves/digest/agent + APIs
 integrations/       # 5 Python agents + _shared twin-write spine
-scripts/            # setup_mongodb.py, setup_port.py, daily_run.sh
+scripts/            # MongoDB, Port catalog, and Port Workflow provisioning
 docs/               # specs + reference
 ```
 
@@ -133,7 +140,7 @@ All ran on **Cursor Grok 4.5** (`grok-4.5-fast-xhigh`).
 | Agent | Maturity |
 |---|---|
 | github_radar | Complete tracer, **partial** shared intelligence (bypasses write_post) |
-| reddit_pulse | SERP real; **upvotes stubbed** from rank |
+| reddit_pulse | SERP discovery only; engagement unavailable |
 | youtube_trends | yt-dlp real; scores **serp_rank**, ignores `viewCount` |
 | hidden_gems | HN+GH real; weak AI filter |
 | weekly_digest | Aggregator works; waves bolted on |

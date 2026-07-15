@@ -1,105 +1,55 @@
-# Port.io Ocean Framework — Best Practices for HypeRadar Agent-Creators
+# Port Runtime — Current Workflow and Ocean Option
 
-> Source of truth for building each agent-creator as a Port Ocean integration.
-> Verified against `github.com/port-labs/ocean` + official docs (see `sources.md`).
+> Runtime truth for HypeRadar. The current implementation uses a Port Workflow,
+> Port's GitHub integration, GitHub Actions, and direct Port REST upserts.
 
-## What Ocean is
+## Current implementation
 
-Ocean is Port's open-source **Python SDK** (Python 3.11+) for building custom integrations. An integration = a Python service that Port schedules, runs, and lifecycles. It reads from a third-party source and upserts entities into Port's catalog.
+The five Python agent packages are not custom Ocean integrations. A governed run
+crosses these boundaries:
 
-**This is why Port is load-bearing in HypeRadar:** every agent-creator (`@github-radar`, `@reddit-pulse`, `@youtube-trends`, `@hidden-gems`, `@weekly-digest`) IS an Ocean integration. Remove Port → no agents run → no feed.
-
-## Folder structure (per integration)
-
-Each agent-creator is one folder under `integrations/`:
-
-```
-hyperadar-agents/
-└── integrations/
-    ├── github_radar/
-    │   ├── main.py          # core logic
-    │   ├── pyproject.toml   # deps
-    │   ├── Dockerfile       # containerized deploy
-    │   └── config.yaml      # framework + integration config
-    ├── reddit_pulse/
-    ├── youtube_trends/
-    ├── hidden_gems/
-    └── weekly_digest/
+```text
+Port Workflow trigger
+  → GitHub integration dispatches run-hyperadar-agent.yml
+    → GitHub Actions runs one integrations/<agent>/main.py package
+      → agent writes evidence to MongoDB
+      → shared write path upserts agent, project, and post entities to Port
+    → GitHub reports the final node result to Port
 ```
 
-## Scaffold a new agent-creator
+The Port GitHub installation happens to be named `github-ocean`; that is the
+installed GitHub integration identifier, not proof that the Python agents use
+the Ocean SDK.
 
-```bash
-pip install "port-ocean[cli]"   # or: poetry add "port-ocean[cli]"
-ocean new ./integrations/github_radar   # scaffold (follow prompts)
-cd integrations/github_radar && make install
-. .venv/bin/activate
-ocean sail ./integrations/github_radar  # run locally
+## Why this split is intentional
+
+- Port owns agent selection, authorization, dispatch, and the visible run trail.
+- GitHub Actions supplies isolated compute and the committed `uv` environment.
+- MongoDB stores rich evidence, vectors, social state, checkpoints, and posts.
+- Port's REST catalog holds the operational twin of each published post.
+
+Publication is fail-closed. A MongoDB post starts with
+`portSyncStatus: "pending"`; the public app hides it until all required Port
+upserts succeed. A retry repairs the same twin instead of creating another post.
+
+## Repository surfaces
+
+```text
+.github/workflows/run-hyperadar-agent.yml  GitHub runner and Port reporting
+scripts/setup_port_workflows.py            Idempotent Port Workflow provisioning
+scripts/report_port_workflow_run.py        Final node status callback
+integrations/_shared/port_client.py        Direct catalog entity upserts
+integrations/<agent>/main.py               One agent execution entry point
 ```
 
-## Core patterns (verified)
+## Ocean as a future option
 
-### 1. Use `async for` generators for resync logic
+Ocean is Port's framework for custom integrations and resource resync. It could
+be useful if HypeRadar later needs a continuously deployed, Port-managed source
+integration with webhook processors or JQ-configurable mappings. Adopting it
+would be a new architecture decision, not a description of today's runtime.
 
-Streaming prevents memory exhaustion when a source returns many items (e.g. GitHub trending across 50 languages). Yield entities one at a time:
-
-```python
-async def resync_resource(kind, client):
-    async for repo in client.iter_trending():
-        yield repo  # Port upserts one at a time
-```
-
-### 2. Keep data transformation in JQ mappings (`port-app-config.yml`)
-
-Don't hardcode transforms in Python. Put them in JQ mappings so they're customizable without redeploying the integration:
-
-```yaml
-# port-app-config.yml
-port:
-  entities:
-    - blueprint: project
-      mappings:
-        # JQ transforms raw source data → Port entity properties
-        body: |-
-          {
-            "identifier": .id,
-            "title": .name,
-            "url": .html_url,
-            "topics": .topics,
-            "momentumScore": .momentum_score
-          }
-```
-
-### 3. Webhooks for real-time updates
-
-Inherit from `AbstractWebhookProcessor` for live event ingestion (e.g. Reddit webhooks, GitHub push events) instead of pure polling.
-
-### 4. Encrypted action inputs
-
-When self-service actions carry secrets (API tokens for a source), use Ocean's encrypted action inputs — never log or store them in plaintext.
-
-## How an agent-creator run works (HypeRadar loop)
-
-```
-1. Port schedules the integration (cron, e.g. every 1h for github_radar)
-2. main.py scrapes the source (GitHub trending / Reddit / YouTube)
-3. For each candidate:
-   a. Query MongoDB for momentum history (see mongodb-agent-memory.md)
-   b. Score "real trend vs noise" using $rerank over prior signals
-   c. MongoDB Checkpointer logs the agent's reasoning episode
-4. Upsert raw signals → MongoDB time-series `signals` collection
-5. Upsert project → MongoDB `projects` (auto-embedded) + Port `project` entity
-6. Create a Post entity in Port + a post doc in MongoDB `posts`
-7. Port tracks run state (lastRunAt, runCount, status) on the AgentCreator entity
-```
-
-## Deployment
-
-Ocean integrations deploy as containers (Docker/K8s). Config via environment variables. For HypeRadar we'll deploy each agent-creator on **Vercel Python Sandbox** (Firecracker microVMs, up to 24h runtime, Python 3.13). Vercel Cron triggers the daily runs; Port Ocean schedules/tracks them. Free tier: 5 active CPU hrs/mo (once-daily agents fit). See `docs/specs/2026-07-09-hyperadar-design.md` Section 6.
-
-## Pitfalls
-
-- **Don't block on sync I/O** — Ocean is async. Use `httpx`/`aiohttp`, not `requests`.
-- **Don't upsert huge batches in one call** — stream with `async for`.
-- **Don't put transforms in Python when JQ works** — breaks customizability.
-- **Don't forget rate limits** — GitHub (5k req/h authenticated), Reddit, YouTube all have limits. Ocean has rate-limiting patterns in its skill references (`references/rate-limiting-patterns.md`).
+Before adopting Ocean, validate its current SDK and deployment APIs, then decide
+whether its resync model is a better fit than the existing agent workflow. Do not
+claim Ocean scheduling, Ocean containers, Vercel Python sandboxes, or Ocean JQ
+mappings in the current demo.

@@ -18,7 +18,8 @@ def db():
 
     load_dotenv()
     client = pymongo.MongoClient(os.environ["MONGODB_URI"])
-    return client[os.environ.get("MONGODB_DB", "hyperadar")]
+    yield client[os.environ["MONGODB_DB"]]
+    client.close()
 
 
 def _make_post(db, agent_handle, project_url, momentum=50.0):
@@ -48,7 +49,7 @@ def _cleanup(db, project_url):
     db.posts.delete_many({"project.url": project_url})
     db.projects.delete_many({"url": project_url})
     db.signals.delete_many({"projectId": project_url})
-    db.reactions.delete_many({})
+    db.signal_receipts.delete_many({"signal.projectId": project_url})
 
 
 class TestMultiSourceConfirmation:

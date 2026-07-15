@@ -125,11 +125,7 @@ class RunAgentWorkflowTests(unittest.TestCase):
             [
                 (
                     200,
-                    {
-                        "workflow": {
-                            "workflowVersionIdentifier": "wfv_1234567890abcdef"
-                        }
-                    },
+                    {"workflow": {"workflowVersionIdentifier": "wfv_1234567890abcdef"}},
                 ),
                 (200, {"ok": True}),
             ]
@@ -168,8 +164,19 @@ class RunAgentWorkflowTests(unittest.TestCase):
             "weekly-digest",
         ):
             self.assertIn(f"- {agent}", contents)
-        self.assertIn("run: uv run python main.py", contents)
-        self.assertNotIn("uv run --frozen", contents)
+        self.assertIn("run: uv run --frozen python main.py", contents)
+        for directory in (
+            "github_radar",
+            "reddit_pulse",
+            "youtube_trends",
+            "hidden_gems",
+            "weekly_digest",
+        ):
+            self.assertTrue(
+                (
+                    Path(__file__).parents[1] / "integrations" / directory / "uv.lock"
+                ).is_file()
+            )
         self.assertIn("port_node_run_id:", contents)
         self.assertIn("report-to-port:", contents)
         self.assertIn("needs: run-agent", contents)

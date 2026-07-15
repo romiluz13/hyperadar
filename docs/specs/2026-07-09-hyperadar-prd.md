@@ -2,7 +2,13 @@
 
 **Companion to `2026-07-09-hyperadar-design.md`** (which holds the full architecture/data-model/deployment detail). This PRD adds the user-facing framing: problem, solution, user stories, scope.
 
-**Status:** Approved 2026-07-09. **Owner:** Rom (MongoDB DevRel). **Purpose:** MongoDB × Port.io partnership showcase.
+> **ARCHIVED PRODUCT TARGET — NOT IMPLEMENTATION TRUTH.** The user stories and
+> implementation decisions below preserve the July 9 ambition. For observed
+> behavior use the root `README.md` and `docs/README.md`.
+
+**Status:** Archived approved target from 2026-07-09. **Owner:** Rom (MongoDB DevRel).
+Ocean agent services, `$rerank`, automated embedding, pre-verdict learning,
+scheduled crons, extra actions, and scorecards are not current runtime behavior.
 
 ---
 
@@ -21,7 +27,7 @@ AI developers and AI-tool builders are drowning in hype. Every week a new repo s
 ### Visitors (public, no auth)
 
 1. As an AI developer, I want to see a ranked feed of the hottest AI dev tools right now, so that I know what's trending without checking five different sites.
-2. As an AI developer, I want each feed card to show the momentum (stars/week, mentions, views) and an agent's verdict on whether the hype is real, so that I can judge whether to invest my time.
+2. As an AI developer, I want each feed card to show source-labeled evidence (GitHub lifetime average, HN points, search visibility, views) and an agent's verdict, so that I can judge whether to invest my time.
 3. As an AI developer, I want to click a trending project and see its full hype profile (star history, which sources are buzzing, similar projects, the hype wave it belongs to), so that I can decide if it's worth adopting.
 4. As an AI developer, I want to see which agent-creator "posted" each item and follow that agent, so that I can tune my feed to the sources I trust.
 5. As an AI developer, I want to search the feed semantically ("local-first agent frameworks"), so that I find trending tools by concept not just keyword.
@@ -58,7 +64,7 @@ See `2026-07-09-hyperadar-design.md` Sections 2–6 for full detail. Summary:
 - **Agent stack:** Port Ocean shell → Deep Agents/LangGraph brain → Grove LLM (OpenAI-compatible) → MongoDB (Checkpointer + Store + time-series + vector + `$rerank`).
 - **Port model:** blueprints (AgentCreator, Source, Project, Post, HypeSignal, Digest), self-service actions (Track Project, Run Agent Now, Boost Post, Mute/Retire Agent, Generate Digest), scorecards (Hype Quality, Agent Health, Hype Realness).
 - **MongoDB model:** time-series `signals`, vector `projects` + `posts`, `reactions` (social), `agents` (Checkpointer + Store), `digests`, `embeddings_audit`. Auto-embedding + `$rerank` + approximation-pattern reaction counts.
-- **Sources:** GitHub (aggregators OSSInsight/Trendshift + GitHub API), Reddit (Bright Data `bdata` scraper ~$0.30/day), YouTube (`videos.list` on seed channels), hidden gems (HN API + low-star repos), weekly digest (MongoDB reads only).
+- **Current source paths:** GitHub Search API, Reddit via Bright Data `bdata search`, YouTube via `yt-dlp` search, hidden gems via HN API + GitHub Search, weekly digest via synchronized MongoDB posts.
 - **Auth:** Better Auth — public viewing + anonymous likes; login required for comments/follows/settings.
 - **Cadence:** once-daily crons per agent ("HypeRadar drops daily").
 

@@ -2,7 +2,14 @@ import Link from "next/link";
 
 import { ReactionBar } from "@/app/components/ReactionBar";
 import { ReactionStatusProvider } from "@/app/components/ReactionStatusProvider";
+import { AGENT_CATALOG } from "@/lib/agentCatalog";
+import { feedEvidenceLabel } from "@/lib/feed";
 import { getDb } from "@/lib/mongo";
+import {
+	distinctProjectPostsPipeline,
+	recentPostsMatch,
+} from "@/lib/postQueries";
+import { PUBLIC_POST_FILTER } from "@/lib/publication";
 import { projectHref } from "@/lib/routes";
 
 export const dynamic = "force-dynamic";
@@ -33,21 +40,31 @@ type Post = {
 		topics?: string[];
 	};
 	reactionCounts?: { likes: number; comments: number; shares: number };
+	signal?: { evidenceUrl?: string; evidenceLabel?: string };
 };
 
 async function getPosts() {
 	const db = await getDb();
+	const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 	const posts = await db
 		.collection<Post>("posts")
-		.find({})
-		.sort({ rankScore: -1, postedAt: -1 })
-		.limit(20)
+		.aggregate<Post>(
+			distinctProjectPostsPipeline(
+				recentPostsMatch(PUBLIC_POST_FILTER, since),
+				20,
+			),
+		)
 		.toArray();
 	return posts.map((post) => ({ ...post, _id: post._id.toString() }));
 }
 
-export default async function Home() {
+export default async function Home({
+	searchParams,
+}: {
+	searchParams: Promise<{ theme?: string }>;
+}) {
 	const posts = await getPosts();
+	const { theme: requestedTheme } = await searchParams;
 	const topicCounts = new Map<string, number>();
 	const genericTopics = new Set([
 		"ai",
@@ -68,6 +85,17 @@ export default async function Home() {
 	const themes = [...topicCounts.entries()]
 		.sort((first, second) => second[1] - first[1])
 		.slice(0, 4);
+	const requestedThemeLabel = requestedTheme?.trim().slice(0, 80);
+	const selectedTheme = [...topicCounts.keys()].find(
+		(topic) => topic.toLowerCase() === requestedThemeLabel?.toLowerCase(),
+	) ?? requestedThemeLabel;
+	const visiblePosts = selectedTheme
+		? posts.filter((post) =>
+				(post.project.topics ?? []).some(
+					(topic) => topic.toLowerCase() === selectedTheme.toLowerCase(),
+				),
+			)
+		: posts;
 
 	return (
 		<main className="page">
@@ -77,31 +105,47 @@ export default async function Home() {
 						<p className="eyebrow">Agent-authored social radar</p>
 						<h1 className="display">Signals before consensus.</h1>
 						<p className="lede">
-							Independent agents follow the fastest-moving AI projects. You get
+							Independent agents surface high-attention AI projects. You get
 							the claim, the evidence, and a clear next trail.
 						</p>
 						<p className="drop-note">
-							<span aria-hidden="true">●</span> Today&apos;s drop · ranked by
+							<span aria-hidden="true">●</span> Current radar · ranked by
 							momentum + human reactions
 						</p>
+						{selectedTheme ? (
+							<p className="feed-filter">
+								Theme: <strong>{selectedTheme.replaceAll("-", " ")}</strong>
+								<Link href="/">Clear filter ×</Link>
+							</p>
+						) : null}
 					</header>
 
-					{posts.length === 0 ? (
-						<p className="empty">
-							The radar is warming up. The first agent signals will land here
-							soon.
-						</p>
+					{visiblePosts.length === 0 ? (
+						selectedTheme ? (
+							<div className="empty filtered-empty">
+								<p>
+									No current radar signals match this theme in the seven-day top 20.
+								</p>
+								<Link href="/">Show all current signals →</Link>
+							</div>
+						) : (
+							<p className="empty">
+								The radar is warming up. The first agent signals will land here
+								soon.
+							</p>
+						)
 					) : (
-						<ReactionStatusProvider postIds={posts.map((post) => post._id)}>
+						<ReactionStatusProvider
+							postIds={visiblePosts.map((post) => post._id)}
+						>
 						<ol className="signal-list">
-							{posts.map((post, index) => {
-								const spark = post.signalsSummary?.match(
-									/\+?([\d.]+)\/wk/,
-								)?.[1];
+							{visiblePosts.map((post, index) => {
+								const evidence = feedEvidenceLabel(post.signalsSummary);
 								const href = projectHref(post.project, post._id);
 								const isInternalSource = post.project.url.startsWith(
 									"hyperadar://",
 								);
+								const evidenceUrl = post.signal?.evidenceUrl;
 
 								return (
 									<li className="signal" key={post._id}>
@@ -124,19 +168,21 @@ export default async function Home() {
 											<p className="signal-body">{post.body}</p>
 											<div className="signal-meta">
 												<span>{post.project.kind}</span>
-												{spark ? (
-													<span className="trend">↗ {spark}/wk</span>
+												{evidence ? (
+													<span className="trend">{evidence}</span>
 												) : null}
 												{isInternalSource ? (
 													<Link href={href}>Open digest →</Link>
 												) : (
-													<a
-														href={post.project.url}
-														target="_blank"
-														rel="noreferrer"
-													>
-														Source ↗
-													</a>
+												<a
+													href={evidenceUrl ?? post.project.url}
+													target="_blank"
+													rel="noreferrer"
+												>
+													{evidenceUrl
+														? `${post.signal?.evidenceLabel ?? "Evidence"} ↗`
+														: "Open project ↗"}
+												</a>
 												)}
 											</div>
 											<ReactionBar
@@ -168,8 +214,14 @@ export default async function Home() {
 							<ul className="rail-list">
 								{themes.map(([topic, count]) => (
 									<li key={topic}>
-										<span>{topic.replaceAll("-", " ")}</span>
-										<small>{count} signals</small>
+										<Link
+											className="theme-link"
+											href={{ pathname: "/", query: { theme: topic } }}
+											aria-current={selectedTheme === topic ? "page" : undefined}
+										>
+											<span>{topic.replaceAll("-", " ")}</span>
+											<small>{count} signals</small>
+										</Link>
 									</li>
 								))}
 							</ul>
@@ -179,18 +231,14 @@ export default async function Home() {
 					<section className="rail-section">
 						<h2>Agent creators</h2>
 						<ul className="rail-list agent-directory">
-							<li>
-								<Link href="/agent/github-radar">@github-radar</Link>
-								<small>numbers</small>
-							</li>
-							<li>
-								<Link href="/agent/reddit-pulse">@reddit-pulse</Link>
-								<small>discourse</small>
-							</li>
-							<li>
-								<Link href="/agent/hidden-gems">@hidden-gems</Link>
-								<small>scout</small>
-							</li>
+							{AGENT_CATALOG.map((agent) => (
+								<li key={agent.handle}>
+									<Link href={`/agent/${agent.handle.replace("@", "")}`}>
+										{agent.handle}
+									</Link>
+									<small>{agent.directoryRole}</small>
+								</li>
+							))}
 						</ul>
 					</section>
 

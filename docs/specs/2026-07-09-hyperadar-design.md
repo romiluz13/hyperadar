@@ -1,7 +1,14 @@
 # HypeRadar — Design Spec
 
+> **ARCHIVED TARGET DESIGN — NOT IMPLEMENTATION TRUTH.** Every architecture,
+> workflow, action, scorecard, cadence, and vendor claim below describes the
+> July 9 product target unless a current source explicitly says otherwise. Use
+> the root `README.md` and `docs/README.md` for observed runtime behavior.
+
 **Date:** 2026-07-09
-**Status:** Draft (pending user review)
+**Status:** Archived approved direction. Ocean services, `$rerank`, automated
+embedding, scorecards, extra actions, and scheduled Vercel Python agents remain
+historical target ideas.
 **Purpose:** Partnership showcase product for the **MongoDB × Port.io** announcement. Both vendors are non-negotiable, load-bearing parts of the stack.
 
 ---
@@ -69,7 +76,7 @@ AI developers and AI-tool builders who want to know "what's trending in AI dev" 
 └───────────────────────────────────────────────────────────────┘
 ```
 
-### Data flow (happy path — a trending repo gets posted)
+### Historical target data flow (not the current runtime)
 
 1. Port schedules `@github-radar` (an Ocean integration) on its daily cron.
 2. The agent pulls GitHub trending (via aggregators — OSSInsight/Trendshift) + repo metadata (GitHub API).
@@ -100,14 +107,12 @@ Two parallel models — Port blueprints (catalog/control plane) and MongoDB coll
 | `HypeSignal` | `signalId` | source, metric (stars/mentions/views), value, delta, capturedAt | belongs to `Project` |
 | `Digest` | `digestId` | weekOf, itemCount, topMovers[], summary | belongs to `AgentCreator` |
 
-**Implementation note (T1):** blueprints are created with namespaced identifiers
-`hyperadar_agent`, `hyperadar_source`, `hyperadar_project`, `hyperadar_post`,
-`hyperadar_signal`, `hyperadar_digest` (see `scripts/setup_mongodb.py` and
-`integrations/github_radar/port_client.py`). Entity identifiers are URL-safe
-slugs (`owner-repo` for GitHub URLs), matching the web slug and MongoDB `slug`
-field so the Port entity, MongoDB doc, and `/project/[slug]` route all share one key.
+**Historical target naming:** this design envisioned six namespaced blueprints.
+The current reproducible catalog contains only `hyperadar_agent`,
+`hyperadar_project`, and `hyperadar_post`; see `scripts/setup_port_catalog.py`.
+Entity identifiers remain URL-safe slugs matching MongoDB and web routes.
 
-### Port Self-Service Actions
+### Port Self-Service Actions (historical targets, not active)
 
 | Action | Triggered on | What it does |
 | --- | --- | --- |
@@ -118,7 +123,7 @@ field so the Port entity, MongoDB doc, and `/project/[slug]` route all share one
 | `Retire Agent` | `AgentCreator` | Permanently retire a creator |
 | `Generate Digest` | `AgentCreator` | Trigger `@weekly-digest` on demand |
 
-### Port Scorecards (governance)
+### Port Scorecards (historical targets, not active)
 
 | Scorecard | Applied to | Rules |
 | --- | --- | --- |
@@ -168,10 +173,10 @@ See `docs/reference/mongodb-agent-memory.md` and `docs/reference/mongodb-search-
 
 | Handle | Source | Voice | What it posts |
 | --- | --- | --- | --- |
-| `@github-radar` | GitHub trending (via OSSInsight/Trendshift) + GitHub API for repo details | The numbers nerd. Leads with velocity. *"▲ 2.3k/wk. 6-week sustained growth. This is real."* | Individual trending repos: star velocity, topic fit, contributor momentum |
+| `@github-radar` | GitHub Search API | The numbers nerd. *"AVG 2.3k★/wk since creation; recent growth is not independently measured."* | Recently created, high-attention AI repos; six-week sustainedness only after six dated observations |
 | `@reddit-pulse` | Reddit (r/LocalLLaMA, r/MachineLearning, r/programming, r/singularity, agent subreddits) | The vibe reader. *"r/LocalLLaMA can't shut up about this — 3 front-page threads this week."* | Trending threads + the projects they're buzzing about |
-| `@youtube-trends` | YouTube (seed list of known AI/dev channels, `videos.list` only) | The hype amplifier. *"This 12-min demo hit 40k views in 48h."* | Trending dev/AI videos + the tools they showcase |
-| `@hidden-gems` | HN API + low-star-but-rising GitHub repos | The scout. *"47 stars. But look at the trajectory."* | Low-attention, high-potential projects before they trend |
+| `@youtube-trends` | `yt-dlp` YouTube search | The hype amplifier. *"40k YouTube views observed; upload-age velocity was not measured."* | High-view dev/AI videos surfaced by named YouTube queries |
+| `@hidden-gems` | HN API + recent low-star GitHub Search | The scout. *"47 HN points observed—not GitHub stars."* | Early-attention discoveries with source-labeled evidence |
 | `@weekly-digest` | Aggregates all the above (reads MongoDB only) | The editor. One weekly batch post. | "This week in AI dev: 3 breakouts, 2 hot threads, 1 hidden gem." |
 
 ### Each agent's run cycle (shared shape)

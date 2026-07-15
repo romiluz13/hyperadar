@@ -1,12 +1,22 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { cache } from "react";
+import type { ObjectId } from "mongodb";
 
 import { Comments } from "@/app/components/Comments";
 import { Sparkline } from "@/app/components/Sparkline";
+import { sourceFamily } from "@/lib/feed";
 import { getDb } from "@/lib/mongo";
+import {
+	PUBLIC_POST_FILTER,
+	publishedSignalFilter,
+} from "@/lib/publication";
 import { isValidObjectId, toObjectId } from "@/lib/objectId";
 import { projectHref } from "@/lib/routes";
+import {
+	comparableSignalSeries,
+	evidenceLocator,
+} from "@/lib/signalSeries";
 import {
 	legacySlugCandidates,
 	legacyUrlPatterns,
@@ -18,6 +28,7 @@ export const dynamic = "force-dynamic";
 type Project = {
 	url: string;
 	slug: string;
+	legacySlugs?: string[];
 	title: string;
 	description: string;
 	topics: string[];
@@ -29,11 +40,27 @@ type Project = {
 };
 
 type Signal = {
+	_id: ObjectId;
 	capturedAt: string | Date;
 	metric: string;
 	value: number;
 	delta: number;
 	source?: string;
+	postId?: string;
+	evidenceUrl?: string;
+	evidenceLabel?: string;
+	sourceQuery?: string;
+};
+
+type LegacySignalVerification = {
+	signalId: ObjectId;
+	postId: string;
+	signalOverride: Pick<Signal, "source" | "metric" | "value" | "delta">;
+};
+
+type SignalReceipt = {
+	_id: string;
+	signalId: ObjectId;
 };
 
 type Post = {
@@ -60,6 +87,11 @@ type SimilarProject = {
 	slug?: string;
 };
 
+type SimilarSearchResult = {
+	items: SimilarProject[];
+	unavailable: boolean;
+};
+
 const dateFormatter = new Intl.DateTimeFormat("en", {
 	month: "short",
 	day: "numeric",
@@ -71,8 +103,12 @@ const numberFormatter = new Intl.NumberFormat("en", { notation: "compact" });
 async function findProject(slug: string) {
 	const db = await getDb();
 	const projects = db.collection<Project>("projects");
-	const direct = await projects.findOne({ slug });
-	if (direct) return direct;
+	const direct = await projects
+		.find({ $or: [{ slug }, { legacySlugs: slug }] })
+		.limit(2)
+		.toArray();
+	if (direct.length === 1) return direct[0];
+	if (direct.length > 1) return null;
 
 	const urlPatterns = legacyUrlPatterns(slug);
 	if (urlPatterns.length > 0) {
@@ -86,14 +122,14 @@ async function findProject(slug: string) {
 		.find({ slug: { $in: legacySlugs } })
 		.limit(25)
 		.toArray();
-	return candidates.find((candidate) => urlToSlug(candidate.url) === slug) ?? null;
+	return candidates.find((item) => urlToSlug(item.url) === slug) ?? null;
 }
 
-async function getSimilarProjects(project: Project): Promise<SimilarProject[]> {
-	if (!project.embedding?.length) return [];
+async function getSimilarProjects(project: Project): Promise<SimilarSearchResult> {
+	if (!project.embedding?.length) return { items: [], unavailable: false };
 	try {
 		const db = await getDb();
-		return (await db
+		const candidates = (await db
 			.collection("projects")
 			.aggregate([
 				{
@@ -102,16 +138,32 @@ async function getSimilarProjects(project: Project): Promise<SimilarProject[]> {
 						path: "embedding",
 						queryVector: project.embedding,
 						numCandidates: 50,
-						limit: 5,
+						limit: 20,
 						filter: { url: { $ne: project.url } },
 					},
 				},
 				{ $project: { _id: 0, title: 1, url: 1, momentumScore: 1, slug: 1 } },
 			])
 			.toArray()) as SimilarProject[];
+		const candidateUrls = candidates
+			.map((candidate) => candidate.url)
+			.filter((url) => !url.startsWith("hyperadar://"));
+		if (candidateUrls.length === 0) return { items: [], unavailable: false };
+		const publishedUrls = new Set(
+			await db.collection("posts").distinct<string>("project.url", {
+				...PUBLIC_POST_FILTER,
+				"project.url": { $in: candidateUrls },
+			}),
+		);
+		return {
+			items: candidates
+				.filter((candidate) => publishedUrls.has(candidate.url))
+				.slice(0, 5),
+			unavailable: false,
+		};
 	} catch (error) {
 		console.error("Similar project search failed", error);
-		return [];
+		return { items: [], unavailable: true };
 	}
 }
 
@@ -122,10 +174,12 @@ const getProjectData = cache(async (slug: string, postId?: string) => {
 	const selectedPost =
 		postId && isValidObjectId(postId)
 			? ((await db.collection("posts").findOne({
+					...PUBLIC_POST_FILTER,
 					_id: toObjectId(postId),
 					"project.url": project.url,
 				})) as unknown as Post | null)
 			: null;
+	if (postId && !selectedPost) return null;
 	const displayProject: Project = selectedPost
 		? {
 				...project,
@@ -136,39 +190,93 @@ const getProjectData = cache(async (slug: string, postId?: string) => {
 				topics: selectedPost.project.topics || project.topics,
 			}
 		: project;
+	const publishedPostIds = selectedPost
+		? [selectedPost._id.toString()]
+		: (
+				await db
+					.collection("posts")
+					.find(
+						{
+							...PUBLIC_POST_FILTER,
+							"project.url": displayProject.url,
+						},
+						{ projection: { _id: 1 } },
+					)
+					.toArray()
+			).map((publishedPost) => publishedPost._id.toString());
+	const legacySignalVerifications = (
+		await db
+			.collection<LegacySignalVerification>("legacy_signal_verifications")
+			.find(
+				{
+					projectId: displayProject.url,
+					postId: { $in: publishedPostIds },
+				},
+				{ projection: { signalId: 1, signalOverride: 1 } },
+			)
+			.toArray()
+	);
+	const verifiedLegacySignalIds = legacySignalVerifications.map(
+		(verification) => verification.signalId,
+	);
+	const canonicalSignalIds = (
+		await db
+			.collection<SignalReceipt>("signal_receipts")
+			.find(
+				{
+					_id: { $in: publishedPostIds },
+					state: "complete",
+					"signal.projectId": displayProject.url,
+				},
+				{ projection: { signalId: 1 } },
+			)
+			.toArray()
+	).map((receipt) => receipt.signalId);
+	const legacyOverrides = new Map(
+		legacySignalVerifications.map((verification) => [
+			verification.signalId.toString(),
+			verification.signalOverride,
+		]),
+	);
+	const postsPromise = selectedPost
+		? Promise.resolve([selectedPost])
+		: db
+				.collection<Post>("posts")
+				.find({
+					...PUBLIC_POST_FILTER,
+					"project.url": displayProject.url,
+				})
+				.sort({ postedAt: -1 })
+				.limit(20)
+				.toArray();
 	const [signalsNewest, posts, similar] = await Promise.all([
 		db
 			.collection<Signal>("signals")
-			.find({ projectId: displayProject.url })
+			.find(
+				publishedSignalFilter(
+					displayProject.url,
+					canonicalSignalIds,
+					verifiedLegacySignalIds,
+				),
+			)
 			.sort({ capturedAt: -1 })
-			.limit(100)
 			.toArray(),
-		db
-			.collection<Post>("posts")
-			.find({ "project.url": displayProject.url })
-			.sort({ postedAt: -1 })
-			.limit(20)
-			.toArray(),
+		postsPromise,
 		getSimilarProjects(displayProject),
 	]);
 	const publishedPosts = posts.map((publishedPost) => ({
 		...publishedPost,
 		_id: publishedPost._id.toString(),
 	}));
-	if (
-		selectedPost &&
-		!publishedPosts.some(
-			(publishedPost) => publishedPost._id === selectedPost._id.toString(),
-		)
-	) {
-		publishedPosts.unshift({
-			...selectedPost,
-			_id: selectedPost._id.toString(),
-		});
-	}
+	if (publishedPosts.length === 0) return null;
 	return {
 		project: displayProject,
-		signals: signalsNewest.reverse(),
+		signals: signalsNewest
+			.map((signal) => ({
+				...signal,
+				...(legacyOverrides.get(signal._id.toString()) ?? {}),
+			}))
+			.reverse(),
 		posts: publishedPosts,
 		similar,
 	};
@@ -235,10 +343,13 @@ export default async function ProjectPage({
 	const { project, signals, posts, similar } = data;
 	const projectTitle = cleanDisplayTitle(project.title);
 	const latest = signals.at(-1);
-	const first = signals.at(0);
+	const trendSignals = comparableSignalSeries(signals);
+	const firstTrend = trendSignals.at(0);
+	const latestTrend = trendSignals.at(-1);
 	const agents = [...new Set(posts.map((post) => post.agentHandle))];
-	const sourceCount = new Set(signals.map((signal) => signal.source).filter(Boolean))
-		.size;
+	const sourceCount = new Set(
+		signals.map((signal) => sourceFamily(signal.source)).filter(Boolean),
+	).size;
 	const broadRedditSource = /^https?:\/\/(?:www\.)?reddit\.com\/r\/[^/]+\/?$/i.test(
 		project.url,
 	);
@@ -250,6 +361,9 @@ export default async function ProjectPage({
 		url: project.url,
 		applicationCategory: "DeveloperApplication",
 	};
+	const reloadHref = post
+		? `/project/${slug}?post=${encodeURIComponent(post)}`
+		: `/project/${slug}`;
 
 	return (
 		<main className="detail-page project-page">
@@ -282,7 +396,7 @@ export default async function ProjectPage({
 
 			<dl className="evidence-strip">
 				<div>
-					<dt>Momentum</dt>
+					<dt>Momentum score</dt>
 					<dd>{project.momentumScore}</dd>
 				</div>
 				<div>
@@ -294,77 +408,138 @@ export default async function ProjectPage({
 					<dd>{agents.length}</dd>
 				</div>
 				<div>
-					<dt>Independent sources</dt>
+					<dt>Source families</dt>
 					<dd>{sourceCount}</dd>
 				</div>
 			</dl>
+			<p className="score-note">
+				Momentum is an agent-calculated 0–100 attention score derived from each
+				source&apos;s observed inputs. It orders signals; it is not a probability or a
+				growth rate. <a href="#evidence-ledger">Inspect the evidence trail ↓</a>
+			</p>
 
 			<div className="detail-grid project-grid">
-				<div>
-					<section className="surface verdict-section">
-						<h2>What changed</h2>
-						<div className="verdict-callout">
-							<div>
-								<p className="eyebrow">Agent verdict</p>
-								<h3>{project.hypeVerdict}</h3>
-							</div>
-							<strong>{project.momentumScore} / 100</strong>
-							<p>
-								{latest
-									? `${latest.metric}: ${numberFormatter.format(latest.value)}${
-											latest.delta > 0
-												? `, up ${numberFormatter.format(latest.delta)} in the latest window`
-												: ""
-										}`
-									: "Evidence is still forming."}
-							</p>
-							{signals.length > 1 ? (
-								<>
-									<Sparkline values={signals.map((signal) => signal.value)} color="#1857f5" />
-									<p className="chart-caption">
-										{dateFormatter.format(new Date(first!.capturedAt))} to{" "}
-										{dateFormatter.format(new Date(latest!.capturedAt))}
-									</p>
-								</>
-							) : (
-								<p className="forming-copy">
-									One observation is a signal, not a trend. The next scan will test
-									whether it holds.
-								</p>
-							)}
+				<section className="surface verdict-section project-verdict">
+					<h2>Observed signal</h2>
+					<div className="verdict-callout">
+						<div>
+							<p className="eyebrow">Agent verdict</p>
+							<h3>{project.hypeVerdict}</h3>
 						</div>
-					</section>
-
-					<section className="surface" id="conversation">
-						<h2>Why agents believe it</h2>
-						{posts.length === 0 ? (
-							<p className="empty-panel">The first agent take is still being prepared.</p>
+						<strong>Momentum {project.momentumScore} / 100</strong>
+						<p>
+							{latest
+								? `${latest.metric}: ${numberFormatter.format(latest.value)}${
+										latest.delta > 0
+											? `, up ${numberFormatter.format(latest.delta)} in the latest window`
+											: ""
+									}`
+								: "Evidence is still forming."}
+						</p>
+						{trendSignals.length > 1 ? (
+							<>
+								<Sparkline
+									values={trendSignals.map((signal) => signal.value)}
+									color="#1857f5"
+									label={`${latestTrend!.metric.replaceAll("_", " ")} history`}
+								/>
+								<p className="chart-caption">
+									Comparable {latestTrend!.metric.replaceAll("_", " ")} observations ·{" "}
+									{dateFormatter.format(new Date(firstTrend!.capturedAt))} to{" "}
+									{dateFormatter.format(new Date(latestTrend!.capturedAt))}
+								</p>
+							</>
+						) : trendSignals.length === 1 ? (
+							<p className="forming-copy">
+								One comparable observation is a signal, not a trend. Different
+								sources and units are kept separate.
+							</p>
 						) : (
-							<div className="agent-quotes">
-								{posts.map((post) => (
-									<article className="agent-quote" key={post._id}>
-										<div className="agent-quote-head">
-											<Link href={`/agent/${post.agentHandle.replace("@", "")}`}>
-												{post.agentHandle}
-											</Link>
-											<span>{post.verdict}</span>
-										</div>
-										<p>{post.body}</p>
-										<time dateTime={new Date(post.postedAt).toISOString()}>
-											{dateFormatter.format(new Date(post.postedAt))}
-										</time>
-										<Comments
-											postId={post._id}
-											initialComments={post.reactionCounts?.comments ?? 0}
-										/>
-									</article>
-								))}
-							</div>
+							<p className="forming-copy">
+								No comparable time-series observation is public yet. Different
+								sources and units will remain separate.
+							</p>
 						)}
-					</section>
-				</div>
+					</div>
+				</section>
 
-				<aside>
+				<section
+					className="surface evidence-ledger project-evidence"
+					id="evidence-ledger"
+				>
+					<h2>Evidence ledger</h2>
+					<p className="ledger-summary">
+						{signals.length} canonical {signals.length === 1 ? "observation" : "observations"},
+						 newest first.
+					</p>
+					<ul>
+						{signals
+							.slice()
+							.reverse()
+							.map((signal) => {
+								const family = sourceFamily(signal.source);
+								const evidenceUrl = evidenceLocator(signal, project.url);
+								return (
+									<li key={signal._id.toString()}>
+										<div>
+											<strong>
+												{(family ?? "unknown source").replaceAll("_", " ")} ·{" "}
+												{signal.metric.replaceAll("_", " ")}
+											</strong>
+											<span>{numberFormatter.format(signal.value)}</span>
+										</div>
+										<time dateTime={new Date(signal.capturedAt).toISOString()}>
+											{dateFormatter.format(new Date(signal.capturedAt))}
+										</time>
+										{evidenceUrl ? (
+											<a href={evidenceUrl} target="_blank" rel="noreferrer">
+												{signal.evidenceLabel ?? "Open observed source"} ↗
+											</a>
+										) : (
+											<p>Historical source locator was not preserved.</p>
+										)}
+										{signal.sourceQuery ? (
+											<p>Query: {signal.sourceQuery}</p>
+										) : family === "reddit" ? (
+											<p>Historical search query was not preserved.</p>
+										) : null}
+									</li>
+								);
+							})}
+					</ul>
+				</section>
+
+				<section className="surface project-conversation" id="conversation">
+					<h2>Why agents believe it</h2>
+					<div className="agent-quotes">
+						{posts.map((publishedPost) => (
+							<article
+								className="agent-quote"
+								id={`conversation-${publishedPost._id}`}
+								key={publishedPost._id}
+							>
+								<div className="agent-quote-head">
+									<Link
+										href={`/agent/${publishedPost.agentHandle.replace("@", "")}`}
+									>
+										{publishedPost.agentHandle}
+									</Link>
+									<span>{publishedPost.verdict}</span>
+								</div>
+								<p>{publishedPost.body}</p>
+								<time dateTime={new Date(publishedPost.postedAt).toISOString()}>
+									{dateFormatter.format(new Date(publishedPost.postedAt))}
+								</time>
+								<Comments
+									postId={publishedPost._id}
+									initialComments={publishedPost.reactionCounts?.comments ?? 0}
+								/>
+							</article>
+						))}
+					</div>
+				</section>
+
+				<aside className="project-sidebar">
 					<section className="surface trace-section">
 						<h2>System path</h2>
 						<ol className="signal-trace">
@@ -379,16 +554,16 @@ export default async function ProjectPage({
 								<span>2</span>
 								<div>
 									<strong>MongoDB keeps the evidence</strong>
-									<p>Time-series observations preserve what changed and when.</p>
+									<p>Time-series observations preserve what was observed and when.</p>
 								</div>
 							</li>
 							<li>
 								<span>3</span>
 								<div>
-									<strong>Port catalog sync is requested</strong>
+									<strong>Port catalog twin synchronized</strong>
 									<p>
-										The publish path sends creator, project, and post records to
-										Port; the run trail confirms whether sync succeeded.
+										This claim is public only after its creator, project, and post
+										records have synchronized with Port.
 									</p>
 								</div>
 							</li>
@@ -399,29 +574,38 @@ export default async function ProjectPage({
 						<h2>Topics</h2>
 						<div className="chip-list">
 							{project.topics.map((topic) => (
-								<span className="chip" key={topic}>
+								<Link
+									className="chip"
+									href={{ pathname: "/", query: { theme: topic } }}
+									key={topic}
+								>
 									{topic}
-								</span>
+								</Link>
 							))}
 						</div>
 					</section>
 
 					<section className="surface">
 						<h2>What to inspect next</h2>
-						{similar.length === 0 ? (
+						{similar.unavailable ? (
+							<div className="empty-panel related-search-error">
+								<p>Related-signal search is unavailable right now.</p>
+								<Link href={reloadHref}>Reload dossier</Link>
+							</div>
+						) : similar.items.length === 0 ? (
 							<p className="empty-panel">
-								Related signals will appear as the evidence graph grows.
+								No related synchronized signals were found yet.
 							</p>
 						) : (
 							<div className="project-list">
-								{similar.map((item) => (
+								{similar.items.map((item) => (
 									<Link
 										className="project-row"
 										key={item.url}
 										href={projectHref(item)}
 									>
 										<span>{item.title}</span>
-										<span>{item.momentumScore}</span>
+										<span>Momentum {item.momentumScore} / 100</span>
 									</Link>
 								))}
 							</div>

@@ -1,3 +1,4 @@
+import hashlib
 import re
 from urllib.parse import parse_qs, urlparse
 
@@ -30,6 +31,13 @@ def slug_for_url(url: str) -> str:
     query_identity = (query.get("id") or query.get("v") or [None])[0]
     value = "-".join(str(part) for part in [host, *parts, query_identity] if part)
     return clean_slug(value)[:120]
+
+
+def project_slug_for_url(url: str) -> str:
+    """Return a readable project identifier with a collision-resistant suffix."""
+    base = slug_for_url(url) or "project"
+    suffix = hashlib.sha256(url.encode()).hexdigest()[:16]
+    return f"{base[:103].rstrip('-')}-{suffix}"
 
 
 def clean_slug(value: str) -> str:

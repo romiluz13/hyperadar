@@ -14,15 +14,13 @@ T2 tracer bullet: proves the whole spine
 import asyncio
 import os
 import sys
-from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
 load_dotenv()  # load repo-root .env
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import mongo  # noqa: E402
-import port_client  # noqa: E402
+from _shared.runner import run_agent  # noqa: E402
 from agent import (  # noqa: E402
     AGENT_BIO,
     AGENT_HANDLE,
@@ -30,42 +28,13 @@ from agent import (  # noqa: E402
     SOURCE_TYPE,
     build_agent,
 )
-from langgraph.checkpoint.mongodb import MongoDBSaver  # noqa: E402
 
 
 async def run_once() -> dict:
     """Run one @github-radar cycle. Returns a summary dict."""
-    # 1. Ensure the agent exists in the Port catalog before it posts.
-    port_client.require_success(
-        port_client.upsert_agent(AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE),
-        f"agent sync for {AGENT_HANDLE}",
+    return await run_agent(
+        AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE, build_agent
     )
-
-    # 2. MongoDBSaver checkpoints the run (durable, resumable) — MongoDB as agent memory.
-    #    from_conn_string is a context manager; .setup() creates checkpoint collections.
-    thread_id = f"github-radar:{datetime.now(timezone.utc).isoformat()}"
-    config = {"configurable": {"thread_id": thread_id}}
-    start_of_day = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-
-    with MongoDBSaver.from_conn_string(os.environ["MONGODB_URI"]) as checkpointer:
-        agent = build_agent(checkpointer=checkpointer)
-        await agent.ainvoke(
-            {"messages": "Run today's GitHub radar scan."}, config=config
-        )
-
-    # 3. Count posts created today by this agent.
-    posts_today = await mongo.db.posts.count_documents(
-        {"agentHandle": AGENT_HANDLE, "postedAt": {"$gte": start_of_day}}
-    )
-    ok = posts_today > 0
-    if not ok:
-        print(
-            f"WARNING: {AGENT_HANDLE} produced 0 posts — possible source failure",
-            file=sys.stderr,
-        )
-    return {"thread_id": thread_id, "posts_today": posts_today, "ok": ok}
 
 
 def main():

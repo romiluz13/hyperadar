@@ -1,18 +1,30 @@
-# MongoDB — Agent Memory (Checkpointer + Long-Term Store)
+# MongoDB — Agent Memory Architecture
 
-> The agent-creators' "brain." Grounded in MongoDB LangGraph/LangChain docs (see `sources.md`).
-> This makes MongoDB load-bearing for the agents' *reasoning*, not just storage.
+> Current behavior and target architecture, grounded in MongoDB
+> LangGraph/LangChain docs (see `sources.md`).
+
+## Current implementation status
+
+`MongoDBSaver` currently checkpoints each run. The custom `episodes` collection
+stores embeddings and supports Atlas Vector Search retrieval. The shared write
+path retrieves similar episodes and records them as transparent context on the
+published post, but retrieval happens after the LLM has selected its verdict.
+Therefore HypeRadar does **not** currently claim that episodes improve verdicts
+or that agents learn across runs. The pre-verdict loop below is the target design.
 
 ## Two memory layers (distinct — don't conflate)
 
 | Layer | Tool | Purpose | HypeRadar use |
 | --- | --- | --- | --- |
-| **Short-term (state)** | `MongoDBSaver` (Checkpointer) | Persist a single agent run's state — survive restarts, enable resume | An agent's current scrape cycle: candidates seen, decisions made mid-run |
-| **Long-term (episodic)** | `MongoDBStore` | Cross-session learning — store distilled episodes of good decisions | "Last time OpenClaw spiked, these signals preceded it" — few-shot examples for future trend detection |
+| **Short-term (current)** | `MongoDBSaver` (Checkpointer) | Persist one run's execution trace | Inspect the current scrape cycle after execution |
+| **Long-term (partial)** | Custom `episodes` collection + Atlas Vector Search | Store and retrieve distilled episodes | Attach similar historical evidence to a published post |
+| **Learning loop (target)** | Pre-verdict episodic retrieval | Supply recalled lessons to agent reasoning | Influence a future verdict with prior confirmed outcomes |
 
-## Short-term: MongoDBSaver (Checkpointer)
+## Current short-term state: MongoDBSaver
 
-Powers resumable agent runs. If an agent crashes mid-scrape, it resumes from the last checkpoint.
+Persists a durable trace for each run. Every invocation currently generates a
+fresh timestamped thread ID, so automatic resume into a failed prior invocation
+is not implemented and must not be claimed in the demo.
 
 ```python
 from langgraph.checkpoint.mongodb import MongoDBSaver
@@ -23,7 +35,7 @@ checkpointer.setup()  # creates required collections/indexes — call once
 graph = build_agent_graph().compile(checkpointer=checkpointer)
 ```
 
-### Best practices (verified)
+### Target operational hardening
 
 - **Always call `.setup()`** once to create checkpoint collections + indexes.
 - **Use a TTL index** to expire old conversation/run states (don't keep forever):
@@ -34,7 +46,7 @@ db.checkpoints.createIndex({ "ts": 1 }, { expireAfterSeconds: 60 * 60 * 24 * 7 }
 
 - Each agent-creator uses its own `thread_id` (e.g. `github-radar:run:2026-07-09T12:00`) so runs don't collide.
 
-## Long-term: MongoDBStore (episodic memory)
+## Target: long-term MongoDBStore episodic memory
 
 Cross-run learning. After a successful trend detection (a project the agent flagged *actually* blew up), store a distilled episode — not raw logs.
 
@@ -73,7 +85,7 @@ episodes = store.search(
 
 This is **agentic RAG over the agent's own history** — the headline demo of MongoDB as agent brain.
 
-## The agent brain loop (putting it together)
+## Target agent brain loop
 
 ```
 For each candidate project from the source:
@@ -84,13 +96,15 @@ For each candidate project from the source:
   5. Checkpointer logs the decision (short-term, for this run)
   6. If "real hype":
      a. Upsert signals → MongoDB time-series
-     b. Upsert project → MongoDB (auto-embedded)
+     b. Generate a local embedding and upsert the project → MongoDB
      c. Upsert post → MongoDB + Port entity
      d. Store a distilled episode → MongoDBStore (long-term, for future runs)
 ```
 
-## Why this makes MongoDB load-bearing (the brain argument)
+## Target value of the completed memory loop
 
-- **Short-term:** without the checkpointer, agent runs can't resume → fragile, no observability of reasoning.
-- **Long-term:** without episodic memory, every run starts from scratch → no learning, no "the agent got better at spotting hype over time" story.
-- Remove MongoDB's memory layer → the agents are stateless, memoryless scrapers. The whole "agent brain" story collapses.
+- **Current:** MongoDB is load-bearing for source observations, projects, posts,
+  social reactions, vector retrieval, and durable checkpoint traces.
+- **Not current:** automatic crash resume and episode-informed verdict improvement.
+- **Target:** moving retrieval before verdict selection would complete the
+  cross-run learning loop described above.

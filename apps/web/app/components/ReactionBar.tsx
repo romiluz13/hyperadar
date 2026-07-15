@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 
 import { useLikedPostStatus } from "@/app/components/ReactionStatusProvider";
 import { reactionLabel } from "@/lib/reactionLabel";
 import { absoluteShareUrl } from "@/lib/share";
+import { operationForShare } from "@/lib/shareOperation";
 
 type Props = {
 	postId: string;
@@ -28,6 +29,7 @@ export function ReactionBar({
 	const [feedback, setFeedback] = useState("");
 	const [pending, startTransition] = useTransition();
 	const storedLiked = useLikedPostStatus(postId);
+	const pendingShareOperation = useRef<string | null>(null);
 
 	useEffect(() => {
 		if (storedLiked !== null) setLiked(storedLiked);
@@ -35,12 +37,13 @@ export function ReactionBar({
 
 	function toggleLike() {
 		setFeedback("");
+		const desiredLiked = !liked;
 		startTransition(async () => {
 			try {
 				const response = await fetch("/api/reactions", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ postId, type: "like" }),
+					body: JSON.stringify({ postId, type: "like", liked: desiredLiked }),
 				});
 				if (!response.ok) throw new Error("Like request failed");
 				const data = await response.json();
@@ -54,6 +57,8 @@ export function ReactionBar({
 
 	function share() {
 		setFeedback("");
+		const operationId = operationForShare(pendingShareOperation.current);
+		pendingShareOperation.current = operationId;
 		startTransition(async () => {
 			try {
 				if (!navigator.clipboard) throw new Error("Clipboard unavailable");
@@ -69,12 +74,13 @@ export function ReactionBar({
 				const response = await fetch("/api/reactions", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ postId, type: "share" }),
+					body: JSON.stringify({ postId, type: "share", operationId }),
 				});
 				if (!response.ok) throw new Error("Share request failed");
 				const data = await response.json();
 				setShares(data.counts.shares);
 				setFeedback("Link copied.");
+				pendingShareOperation.current = null;
 			} catch {
 				setFeedback("Link copied. The public share count could not update.");
 			}
@@ -89,15 +95,23 @@ export function ReactionBar({
 					onClick={toggleLike}
 					disabled={pending}
 					aria-pressed={liked}
-					aria-label={`${liked ? "Unlike" : "Like"} this signal. ${likes} likes`}
+					aria-label={
+						likes > 0
+							? `${liked ? "Unlike" : "Like"} this signal. ${likes} ${likes === 1 ? "like" : "likes"}`
+							: `${liked ? "Unlike" : "Like"} this signal`
+					}
 				>
 					<span aria-hidden="true">{liked ? "♥" : "♡"}</span>{" "}
 					{reactionLabel(likes, "Like")}
 				</button>
 				<Link
 					className="reaction-stat"
-					href={`${permalink}#conversation`}
-					aria-label={`Open ${initialComments} comments`}
+					href={`${permalink}#conversation-${postId}`}
+					aria-label={
+						initialComments > 0
+							? `Discuss this signal. Open ${initialComments} comments`
+							: "Discuss this signal"
+					}
 				>
 					<span aria-hidden="true">◌</span>{" "}
 					{reactionLabel(initialComments, "Discuss")}
@@ -106,7 +120,11 @@ export function ReactionBar({
 					type="button"
 					onClick={share}
 					disabled={pending}
-					aria-label={`Copy a link to this signal. ${shares} shares`}
+					aria-label={
+						shares > 0
+							? `Share this signal by copying its link. ${shares} ${shares === 1 ? "share" : "shares"}`
+							: "Share this signal by copying its link"
+					}
 				>
 					<span aria-hidden="true">↗</span>{" "}
 					{reactionLabel(shares, "Share")}

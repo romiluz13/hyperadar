@@ -1,31 +1,28 @@
 """MongoDB-backed episodic memory store for HypeRadar agents.
 
-Stores distilled "episodes" of successful trend detections so agents can
-learn over time. When scoring a new candidate, the agent retrieves similar
-past episodes as few-shot examples — "last time a repo with this velocity
-and these topics spiked, the verdict was correct."
+Stores distilled "episodes" of successful trend detections for semantic
+retrieval. The current write path attaches recalled episodes as transparent
+post context after a verdict; it does not yet use them to change that verdict.
 
 Uses MongoDB Atlas Vector Search for semantic episode retrieval (the same
 projects_vector_index pattern, on a dedicated episodes collection).
-This is the "agents learn" MongoDB showcase.
+This is the persistence and retrieval foundation for a future learning loop.
 """
+
 import logging
 import os
 from datetime import datetime, timezone
 
-from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.operations import SearchIndexModel
+
+from . import mongo
 
 _uri = os.environ["MONGODB_URI"]
 _db_name = os.environ.get("MONGODB_DB", "hyperadar")
 
 
 def _get_db():
-    client = AsyncIOMotorClient(
-        _uri, maxPoolSize=10, minPoolSize=0, maxIdleTimeMS=300_000,
-        connectTimeoutMS=10_000, socketTimeoutMS=30_000,
-    )
-    return client[_db_name]
+    return mongo.db
 
 
 async def store_episode(
@@ -101,17 +98,29 @@ async def retrieve_similar_episodes(
                 }
             },
         ]
-        results = await db.episodes.aggregate(pipeline).to_list(length=limit)
+        cursor = await db.episodes.aggregate(pipeline)
+        results = await cursor.to_list(length=limit)
         if results:
             return results
     except Exception as e:
         logging.warning("episodes vector search failed, falling back to recent: %s", e)
 
     # Fallback: return most recent episodes (no semantic search)
-    cursor = db.episodes.find(
-        filter_query,
-        {"_id": 0, "projectTitle": 1, "verdict": 1, "outcome": 1, "lesson": 1, "signalsPreceding": 1},
-    ).sort("storedAt", -1).limit(limit)
+    cursor = (
+        db.episodes.find(
+            filter_query,
+            {
+                "_id": 0,
+                "projectTitle": 1,
+                "verdict": 1,
+                "outcome": 1,
+                "lesson": 1,
+                "signalsPreceding": 1,
+            },
+        )
+        .sort("storedAt", -1)
+        .limit(limit)
+    )
     return await cursor.to_list(length=limit)
 
 
@@ -141,10 +150,17 @@ def setup_episodes_collection():
         model = SearchIndexModel(
             name="episodes_vector_index",
             type="vectorSearch",
-            definition={"fields": [
-                {"type": "vector", "path": "embedding", "numDimensions": 384, "similarity": "cosine"},
-                {"type": "filter", "path": "agentHandle"},
-            ]},
+            definition={
+                "fields": [
+                    {
+                        "type": "vector",
+                        "path": "embedding",
+                        "numDimensions": 384,
+                        "similarity": "cosine",
+                    },
+                    {"type": "filter", "path": "agentHandle"},
+                ]
+            },
         )
         db.episodes.create_search_index(model=model)
         print("✓ episodes vector index created")
