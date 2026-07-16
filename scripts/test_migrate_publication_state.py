@@ -936,6 +936,86 @@ class PublicationMigrationTests(unittest.TestCase):
             ["quiescence", "digests", "evidence", "invariants", "drain"],
         )
 
+    def test_run_syncs_project_identities_when_description_is_missing(self):
+        # Regression: sync_port_project in run() used project["description"] (hard
+        # subscript). A project missing description (e.g. the next.js repo) raised
+        # KeyError in the final migration phase, leaving production half-migrated.
+        # The canonical write_post runtime uses project.get("description", ""); the
+        # migration closure must match.
+        with patch.dict(
+            os.environ,
+            {
+                "MONGODB_URI": "mongodb://localhost:27017",
+                "PORT_CLIENT_ID": "test-client",
+                "PORT_CLIENT_SECRET": "test-secret",
+            },
+        ):
+            from _shared import mongo, port_client
+
+            project = {
+                "url": "https://github.com/vercel/next.js",
+                "slug": "next-js",  # legacy slug -> identity_is_current is False -> sync fires
+                "title": "next.js",
+                "kind": "repo",
+                # NOTE: no "description" field — the bug trigger
+            }
+            database = FakeIdentityDatabase([project], [])
+            upserted_projects = []
+
+            with (
+                patch.object(mongo, "_get_db", return_value=database),
+                patch.object(mongo, "close_client", new=AsyncMock()),
+                patch.object(
+                    migration, "assert_migration_quiescence",
+                    side_effect=lambda *_a: {"activeLeases": 0}, create=True,
+                ),
+                patch.object(
+                    migration, "migrate_digest_evidence",
+                    side_effect=lambda *_a: {"correctedDigests": 0},
+                ),
+                patch.object(
+                    migration, "migrate_post_evidence",
+                    side_effect=lambda *_a: {"correctedPosts": 0, "deletedPosts": 0},
+                ),
+                patch.object(
+                    migration, "assert_publication_invariants", create=True,
+                    side_effect=lambda *_a: {"unpublishedPosts": 0},
+                ),
+                patch.object(
+                    migration, "drain_publication_backlog",
+                    side_effect=lambda *_a: {"repaired": 0, "byAgent": {}},
+                ),
+                patch.object(
+                    migration, "migrate_signal_provenance",
+                    side_effect=lambda *_a: {
+                        "verifiedLegacy": 0,
+                        "quarantinedLegacy": 0,
+                    },
+                ),
+                # Real migrate_project_identities runs with the real sync_port_project
+                # closure — do NOT patch it.
+                patch.object(
+                    port_client, "upsert_project",
+                    side_effect=lambda *args, **_kw: upserted_projects.append(args)
+                    or {"ok": True},
+                ),
+                patch.object(port_client, "upsert_post", return_value={"ok": True}),
+                patch.object(
+                    port_client, "delete_project_entity",
+                    return_value={"ok": True, "status": 404},
+                ),
+                patch.object(
+                    port_client, "delete_post_entity",
+                    return_value={"ok": True, "status": 404},
+                ),
+            ):
+                result = asyncio.run(migration.run())
+
+        self.assertEqual(result["projectIdentities"]["migratedProjects"], 1)
+        # The closure reached upsert_project without raising, passing description="".
+        self.assertEqual(len(upserted_projects), 1)
+        self.assertEqual(upserted_projects[0][3], "")  # description arg
+
     def test_migration_preflight_rejects_active_signal_and_project_leases(self):
         now = migration.datetime.now(migration.timezone.utc)
 
