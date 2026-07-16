@@ -865,7 +865,7 @@ async def run():
             project["url"],
             project.get("title", "Weekly Digest"),
             project.get("kind", "site"),
-            project["description"],
+            project.get("description", ""),
             project.get("topics", []),
             project.get("momentumScore", 100),
             project.get("hypeVerdict", "hype looks real"),
