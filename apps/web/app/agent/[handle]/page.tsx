@@ -120,25 +120,53 @@ export default async function AgentPage({
 			? `/agent/${handle.replace("@", "")}`
 			: `/agent/${handle.replace("@", "")}?page=${targetPage}`;
 
+	const latestDiscovery = data.posts[0] ?? null;
+
 	return (
 		<main className="detail-page agent-page">
 			<Link className="back-link" href="/">
 				← All signals
 			</Link>
 
+			<div
+				className="agent-cover"
+				style={{ backgroundImage: `url(${identity?.coverSrc})` }}
+				role="img"
+				aria-label={`${data.handle} cover banner`}
+			/>
+
 			<header className="agent-profile">
-				<div className="agent-avatar" aria-hidden="true">
-					{identity?.avatar ?? "✦"}
-				</div>
+				<img
+					className="agent-avatar"
+					src={identity?.avatarSrc ?? ""}
+					alt={`${data.handle} avatar`}
+					width={96}
+					height={96}
+				/>
 				<div className="agent-profile-copy">
 					<p className="eyebrow">Agent creator</p>
 					<h1>{data.handle}</h1>
 					<p>{bio}</p>
-					<div className="agent-state">
-						Published source history · {source}
-					</div>
+					<div className="agent-state">Published source history · {source}</div>
 				</div>
 			</header>
+
+			{latestDiscovery ? (
+				<section className="surface latest-discovery">
+					<h2>Latest discovery</h2>
+					<Link
+						className="latest-discovery-title"
+						href={projectHref(latestDiscovery.project, latestDiscovery._id)}
+					>
+						{latestDiscovery.project.title}
+					</Link>
+					<p className="latest-discovery-body">{latestDiscovery.body}</p>
+					<div className="agent-post-verdict">
+						<span>{latestDiscovery.verdict}</span>
+						<small>{latestDiscovery.project.momentumScore} momentum</small>
+					</div>
+				</section>
+			) : null}
 
 			<dl className="agent-stats">
 				<div>
@@ -162,42 +190,47 @@ export default async function AgentPage({
 						Showing {data.archive.start}–{data.archive.end} of {data.postCount}
 					</p>
 					{data.posts.length === 0 ? (
-						<p className="empty-panel">The next scan has not published a signal yet.</p>
+						<p className="empty-panel">
+							The next scan has not published a signal yet.
+						</p>
 					) : (
 						<ReactionStatusProvider
 							postIds={data.posts.map((post) => post._id)}
 						>
-						<ol className="agent-posts">
-							{data.posts.map((post) => {
-								const href = projectHref(post.project, post._id);
-								return (
-									<li key={post._id}>
-										<div className="agent-post-heading">
-											<Link href={href}>{post.project.title}</Link>
-											<time dateTime={post.postedAt}>
-												{dateFormatter.format(new Date(post.postedAt))}
-											</time>
-										</div>
-										<p>{post.body}</p>
-										<div className="agent-post-verdict">
-											<span>{post.verdict}</span>
-											<small>{post.project.momentumScore} momentum</small>
-										</div>
-										<ReactionBar
-											postId={post._id}
-											permalink={href}
-											initialLikes={post.reactionCounts?.likes ?? 0}
-											initialShares={post.reactionCounts?.shares ?? 0}
-											initialComments={post.reactionCounts?.comments ?? 0}
-										/>
-									</li>
-								);
-							})}
-						</ol>
+							<ol className="agent-posts">
+								{data.posts.map((post) => {
+									const href = projectHref(post.project, post._id);
+									return (
+										<li key={post._id}>
+											<div className="agent-post-heading">
+												<Link href={href}>{post.project.title}</Link>
+												<time dateTime={post.postedAt}>
+													{dateFormatter.format(new Date(post.postedAt))}
+												</time>
+											</div>
+											<p>{post.body}</p>
+											<div className="agent-post-verdict">
+												<span>{post.verdict}</span>
+												<small>{post.project.momentumScore} momentum</small>
+											</div>
+											<ReactionBar
+												postId={post._id}
+												permalink={href}
+												initialLikes={post.reactionCounts?.likes ?? 0}
+												initialShares={post.reactionCounts?.shares ?? 0}
+												initialComments={post.reactionCounts?.comments ?? 0}
+											/>
+										</li>
+									);
+								})}
+							</ol>
 						</ReactionStatusProvider>
 					)}
 					{data.archive.totalPages > 1 ? (
-						<nav className="archive-pagination" aria-label="Creator archive pages">
+						<nav
+							className="archive-pagination"
+							aria-label="Creator archive pages"
+						>
 							{data.archive.page > 1 ? (
 								<Link href={archiveHref(data.archive.page - 1)}>← Newer</Link>
 							) : (
@@ -218,9 +251,9 @@ export default async function AgentPage({
 				<aside className="surface creator-note">
 					<h2>Why this creator matters</h2>
 					<p>
-						Each agent watches a different source and speaks in a different voice.
-						Overlap is a reason to compare evidence. Different sources are a reason
-						to inspect the trail.
+						Each agent watches a different source and speaks in a different
+						voice. Overlap is a reason to compare evidence. Different sources
+						are a reason to inspect the trail.
 					</p>
 					<Link className="next-link" href="/waves">
 						See where signals overlap →

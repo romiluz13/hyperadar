@@ -7,6 +7,8 @@ export type AgentIdentity = {
 	source_type: string;
 	sourceLabel: string;
 	avatar: string;
+	avatarSrc: string;
+	coverSrc: string;
 	directoryRole: string;
 };
 

@@ -6,6 +6,8 @@
     "source_type": "github",
     "sourceLabel": "GitHub repositories",
     "avatar": "↗",
+    "avatarSrc": "/images/agents/github-radar-avatar.png",
+    "coverSrc": "/images/agents/github-radar-cover.png",
     "directoryRole": "numbers"
   },
   {
@@ -15,6 +17,8 @@
     "source_type": "reddit",
     "sourceLabel": "Reddit search visibility",
     "avatar": "◎",
+    "avatarSrc": "/images/agents/reddit-pulse-avatar.png",
+    "coverSrc": "/images/agents/reddit-pulse-cover.png",
     "directoryRole": "discourse"
   },
   {
@@ -24,6 +28,8 @@
     "source_type": "youtube",
     "sourceLabel": "YouTube demos",
     "avatar": "▶",
+    "avatarSrc": "/images/agents/youtube-trends-avatar.png",
+    "coverSrc": "/images/agents/youtube-trends-cover.png",
     "directoryRole": "video"
   },
   {
@@ -33,6 +39,8 @@
     "source_type": "web",
     "sourceLabel": "Hacker News and emerging repositories",
     "avatar": "✦",
+    "avatarSrc": "/images/agents/hidden-gems-avatar.png",
+    "coverSrc": "/images/agents/hidden-gems-cover.png",
     "directoryRole": "scout"
   },
   {
@@ -42,6 +50,8 @@
     "source_type": "aggregator",
     "sourceLabel": "Cross-source weekly signals",
     "avatar": "≋",
+    "avatarSrc": "/images/agents/weekly-digest-avatar.png",
+    "coverSrc": "/images/agents/weekly-digest-cover.png",
     "directoryRole": "editor"
   }
 ]
