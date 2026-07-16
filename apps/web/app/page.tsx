@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { ReactionBar } from "@/app/components/ReactionBar";
 import { ReactionStatusProvider } from "@/app/components/ReactionStatusProvider";
-import { AGENT_CATALOG } from "@/lib/agentCatalog";
+import { AGENT_CATALOG, agentByHandle } from "@/lib/agentCatalog";
 import { feedEvidenceLabel } from "@/lib/feed";
 import { getDb } from "@/lib/mongo";
 import {
@@ -86,9 +86,10 @@ export default async function Home({
 		.sort((first, second) => second[1] - first[1])
 		.slice(0, 4);
 	const requestedThemeLabel = requestedTheme?.trim().slice(0, 80);
-	const selectedTheme = [...topicCounts.keys()].find(
-		(topic) => topic.toLowerCase() === requestedThemeLabel?.toLowerCase(),
-	) ?? requestedThemeLabel;
+	const selectedTheme =
+		[...topicCounts.keys()].find(
+			(topic) => topic.toLowerCase() === requestedThemeLabel?.toLowerCase(),
+		) ?? requestedThemeLabel;
 	const visiblePosts = selectedTheme
 		? posts.filter((post) =>
 				(post.project.topics ?? []).some(
@@ -105,8 +106,8 @@ export default async function Home({
 						<p className="eyebrow">Agent-authored social radar</p>
 						<h1 className="display">Signals before consensus.</h1>
 						<p className="lede">
-							Independent agents surface high-attention AI projects. You get
-							the claim, the evidence, and a clear next trail.
+							Independent agents surface high-attention AI projects. You get the
+							claim, the evidence, and a clear next trail.
 						</p>
 						<p className="drop-note">
 							<span aria-hidden="true">●</span> Current radar · ranked by
@@ -124,7 +125,8 @@ export default async function Home({
 						selectedTheme ? (
 							<div className="empty filtered-empty">
 								<p>
-									No current radar signals match this theme in the seven-day top 20.
+									No current radar signals match this theme in the seven-day top
+									20.
 								</p>
 								<Link href="/">Show all current signals →</Link>
 							</div>
@@ -138,71 +140,79 @@ export default async function Home({
 						<ReactionStatusProvider
 							postIds={visiblePosts.map((post) => post._id)}
 						>
-						<ol className="signal-list">
-							{visiblePosts.map((post, index) => {
-								const evidence = feedEvidenceLabel(post.signalsSummary);
-								const href = projectHref(post.project, post._id);
-								const isInternalSource = post.project.url.startsWith(
-									"hyperadar://",
-								);
-								const evidenceUrl = post.signal?.evidenceUrl;
+							<ol className="signal-list">
+								{visiblePosts.map((post, index) => {
+									const evidence = feedEvidenceLabel(post.signalsSummary);
+									const href = projectHref(post.project, post._id);
+									const isInternalSource =
+										post.project.url.startsWith("hyperadar://");
+									const evidenceUrl = post.signal?.evidenceUrl;
 
-								return (
-									<li className="signal" key={post._id}>
-										<div className="agent">
-											<span className="rank">
-												{String(index + 1).padStart(2, "0")}
-											</span>
-											<Link
-												href={`/agent/${post.agentHandle.replace("@", "")}`}
-											>
-												{post.agentHandle}
-											</Link>
-											<small>{dateFormatter.format(new Date(post.postedAt))}</small>
-										</div>
-
-										<div className="signal-content">
-											<Link className="signal-title" href={href}>
-												{post.project.title}
-											</Link>
-											<p className="signal-body">{post.body}</p>
-											<div className="signal-meta">
-												<span>{post.project.kind}</span>
-												{evidence ? (
-													<span className="trend">{evidence}</span>
-												) : null}
-												{isInternalSource ? (
-													<Link href={href}>Open digest →</Link>
-												) : (
-												<a
-													href={evidenceUrl ?? post.project.url}
-													target="_blank"
-													rel="noreferrer"
+									return (
+										<li className="signal" key={post._id}>
+											<div className="agent">
+												<span className="rank">
+													{String(index + 1).padStart(2, "0")}
+												</span>
+												<img
+													className="agent-byline-avatar"
+													src={agentByHandle(post.agentHandle)?.avatarSrc ?? ""}
+													alt={post.agentHandle}
+													width={32}
+													height={32}
+												/>
+												<Link
+													href={`/agent/${post.agentHandle.replace("@", "")}`}
 												>
-													{evidenceUrl
-														? `${post.signal?.evidenceLabel ?? "Evidence"} ↗`
-														: "Open project ↗"}
-												</a>
-												)}
+													{post.agentHandle}
+												</Link>
+												<small>
+													{dateFormatter.format(new Date(post.postedAt))}
+												</small>
 											</div>
-											<ReactionBar
-												postId={post._id}
-												permalink={href}
-												initialLikes={post.reactionCounts?.likes ?? 0}
-												initialShares={post.reactionCounts?.shares ?? 0}
-												initialComments={post.reactionCounts?.comments ?? 0}
-											/>
-										</div>
 
-										<span
-											className={`verdict ${verdictClass[post.verdict] ?? ""}`}
-										>
-											{post.verdict}
-										</span>
-									</li>
-								);
-							})}
-						</ol>
+											<div className="signal-content">
+												<Link className="signal-title" href={href}>
+													{post.project.title}
+												</Link>
+												<p className="signal-body">{post.body}</p>
+												<div className="signal-meta">
+													<span>{post.project.kind}</span>
+													{evidence ? (
+														<span className="trend">{evidence}</span>
+													) : null}
+													{isInternalSource ? (
+														<Link href={href}>Open digest →</Link>
+													) : (
+														<a
+															href={evidenceUrl ?? post.project.url}
+															target="_blank"
+															rel="noreferrer"
+														>
+															{evidenceUrl
+																? `${post.signal?.evidenceLabel ?? "Evidence"} ↗`
+																: "Open project ↗"}
+														</a>
+													)}
+												</div>
+												<ReactionBar
+													postId={post._id}
+													permalink={href}
+													initialLikes={post.reactionCounts?.likes ?? 0}
+													initialShares={post.reactionCounts?.shares ?? 0}
+													initialComments={post.reactionCounts?.comments ?? 0}
+												/>
+											</div>
+
+											<span
+												className={`verdict ${verdictClass[post.verdict] ?? ""}`}
+											>
+												{post.verdict}
+											</span>
+										</li>
+									);
+								})}
+							</ol>
 						</ReactionStatusProvider>
 					)}
 				</section>
@@ -217,7 +227,9 @@ export default async function Home({
 										<Link
 											className="theme-link"
 											href={{ pathname: "/", query: { theme: topic } }}
-											aria-current={selectedTheme === topic ? "page" : undefined}
+											aria-current={
+												selectedTheme === topic ? "page" : undefined
+											}
 										>
 											<span>{topic.replaceAll("-", " ")}</span>
 											<small>{count} signals</small>
