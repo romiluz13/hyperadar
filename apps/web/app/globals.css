@@ -574,6 +574,9 @@ textarea {
 	padding: 0;
 }
 .agent a,
+.agent-directory li {
+	align-items: center;
+}
 .agent-directory a,
 .signal-meta a {
 	font-weight: 800;
@@ -838,6 +841,20 @@ textarea {
 	border: 1px solid var(--ink);
 	object-fit: cover;
 	flex: none;
+}
+.agent-rail-avatar {
+	width: 36px;
+	height: 36px;
+	border: 1px solid var(--ink);
+	object-fit: cover;
+	flex: none;
+}
+.latest-discovery-time {
+	display: block;
+	margin-top: .6rem;
+	color: var(--muted);
+	font-size: .72rem;
+	font-weight: 800;
 }
 .agent-profile-copy h1 {
 	margin: 0;

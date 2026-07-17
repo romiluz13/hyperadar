@@ -245,6 +245,13 @@ export default async function Home({
 						<ul className="rail-list agent-directory">
 							{AGENT_CATALOG.map((agent) => (
 								<li key={agent.handle}>
+									<img
+										className="agent-rail-avatar"
+										src={agent.avatarSrc}
+										alt={agent.handle}
+										width={36}
+										height={36}
+									/>
 									<Link href={`/agent/${agent.handle.replace("@", "")}`}>
 										{agent.handle}
 									</Link>

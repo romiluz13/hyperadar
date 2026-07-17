@@ -27,6 +27,18 @@ const dateFormatter = new Intl.DateTimeFormat("en", {
 	year: "numeric",
 });
 
+function relativeTime(then: Date): string {
+	const seconds = Math.floor((Date.now() - then.getTime()) / 1000);
+	if (seconds < 60) return "just now";
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	if (days < 7) return `${days}d ago`;
+	return dateFormatter.format(then);
+}
+
 async function getAgentData(handle: string, requestedPage?: string) {
 	const db = await getDb();
 	const fullHandle = handle.startsWith("@") ? handle : `@${handle}`;
@@ -121,6 +133,9 @@ export default async function AgentPage({
 			: `/agent/${handle.replace("@", "")}?page=${targetPage}`;
 
 	const latestDiscovery = data.posts[0] ?? null;
+	const latestRelativeTime = latestDiscovery
+		? relativeTime(new Date(latestDiscovery.postedAt))
+		: null;
 
 	return (
 		<main className="detail-page agent-page">
@@ -165,6 +180,14 @@ export default async function AgentPage({
 						<span>{latestDiscovery.verdict}</span>
 						<small>{latestDiscovery.project.momentumScore} momentum</small>
 					</div>
+					{latestRelativeTime ? (
+						<time
+							className="latest-discovery-time"
+							dateTime={latestDiscovery.postedAt}
+						>
+							{latestRelativeTime}
+						</time>
+					) : null}
 				</section>
 			) : null}
 
