@@ -137,7 +137,7 @@ async def write_digest() -> str:
         week_of = existing_digest.get("weekOf", now)
         item_count = existing_digest.get("itemCount", 0)
     else:
-        waves = compute_hype_waves()
+        waves = await compute_hype_waves()
         summary = digest_summary(waves)
         rank_score = digest_rank_score(waves)
         week_of = now

@@ -125,30 +125,24 @@ def label_cluster(cluster: list[dict]) -> str:
         return topics[0] if topics else "uncategorized"
 
 
-def compute_hype_waves() -> list[dict]:
+async def compute_hype_waves() -> list[dict]:
     """Compute this week's hype waves. Returns clusters with labels + aggregate momentum."""
     now = datetime.now(timezone.utc)
-    db = _get_db()
-    try:
-        return _compute_hype_waves(db, now)
-    finally:
-        db.client.close()
+    from _shared import mongo as _mongo
+    db = _mongo._get_db()
+    return await _compute_hype_waves(db, now)
 
 
-def _compute_hype_waves(db, now: datetime) -> list[dict]:
+async def _compute_hype_waves(db, now: datetime) -> list[dict]:
     since = now - timedelta(days=7)
     recent_post_filter = _recent_source_post_filter(since)
-    published_project_urls = db.posts.distinct("project.url", recent_post_filter)
-    projects = list(
-        db.projects.find(
-            {
-                "url": {"$in": published_project_urls},
-                "embedding": {"$exists": True},
-            }
-        )
-        .sort("momentumScore", -1)
-        .limit(100)
-    )
+    published_project_urls = await db.posts.distinct("project.url", recent_post_filter)
+    projects = await db.projects.find(
+        {
+            "url": {"$in": published_project_urls},
+            "embedding": {"$exists": True},
+        }
+    ).sort("momentumScore", -1).limit(100).to_list(100)
 
     if not projects:
         return []
@@ -156,7 +150,7 @@ def _compute_hype_waves(db, now: datetime) -> list[dict]:
     clusters = cluster_projects(projects, threshold=0.65)
     project_urls = [project["url"] for project in projects]
     agents_by_project: dict[str, set[str]] = {}
-    for post in db.posts.find(
+    async for post in db.posts.find(
         {
             **recent_post_filter,
             "project.url": {"$in": project_urls},
