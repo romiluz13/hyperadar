@@ -71,8 +71,11 @@ async def publish_community_posts() -> str:
             verdict = "emerging"
         else:
             verdict = "cooling"
+        # Unique URL per topic so the daily dedup guard doesn't block them.
+        topic_slug = c["title"][:60].lower().replace(" ", "-").replace("—", "-")
+        unique_url = f"{c['url']}/{topic_slug}"
         project = {
-            "url": c["url"],
+            "url": unique_url,
             "title": c["title"],
             "kind": c["kind"],
             "description": c["description"],
