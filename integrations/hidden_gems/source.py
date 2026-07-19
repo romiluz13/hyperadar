@@ -77,50 +77,59 @@ async def fetch_hn_candidates(max_results: int = 5) -> list[dict]:
     return candidates
 
 
-async def fetch_low_star_github_candidates(max_results: int = 5) -> list[dict]:
+async def fetch_low_star_github_candidates(max_results: int = 15) -> list[dict]:
     """Recently created GitHub repos with 10–200 stars (true hidden gems).
 
-    The previous 50–500 range was too high to be "hidden." 10–200 stars with
-    a recent-creation gate surfaces niche tools that haven't hit the viral
-    cycle yet.
+    Searches across ai, llm, and agent topics to find niche tools.
     """
     since = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
-    params = {
-        "q": f"created:>{since} stars:10..200 topic:ai sort:updated",
-        "sort": "updated",
-        "order": "desc",
-        "per_page": max_results,
-    }
+    all_candidates = []
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(
-            "https://api.github.com/search/repositories",
-            params=params,
-            headers=_headers,
-        )
-        r.raise_for_status()
-        items = r.json().get("items", [])
-
-    candidates = []
-    for it in items:
-        stars = it.get("stargazers_count", 0)
-        if stars == 0:  # skip repos with no star data
-            continue
-        candidates.append(
-            {
-                "url": it["html_url"],
-                "title": it["full_name"],
-                "kind": "repo",
-                "description": it.get("description") or "",
-                "topics": it.get("topics") or [],
-                "discovery_source": "github",
-                "evidence_url": it["html_url"],
-                "github_stars": it.get("stargazers_count", 0),
-                "created_at": it.get("created_at"),
-                "owner": it["owner"]["login"],
-                "repo": it["name"],
+        for topic in ["ai", "llm", "agent"]:
+            if len(all_candidates) >= max_results:
+                break
+            params = {
+                "q": f"created:>{since} stars:10..200 topic:{topic} sort:updated",
+                "sort": "updated",
+                "order": "desc",
+                "per_page": min(max_results - len(all_candidates), 30),
             }
-        )
-    return candidates
+            try:
+                r = await client.get(
+                    "https://api.github.com/search/repositories",
+                    params=params,
+                    headers=_headers,
+                )
+                r.raise_for_status()
+                items = r.json().get("items", [])
+            except Exception:
+                continue
+            for it in items:
+                stars = it.get("stargazers_count", 0)
+                if stars == 0:
+                    continue
+                all_candidates.append(
+                    {
+                        "url": it["html_url"],
+                        "title": it["full_name"],
+                        "kind": "repo",
+                        "description": it.get("description") or "",
+                        "topics": it.get("topics") or [],
+                        "discovery_source": "github",
+                        "evidence_url": it["html_url"],
+                        "github_stars": stars,
+                        "created_at": it.get("created_at"),
+                        "owner": it["owner"]["login"],
+                        "repo": it["name"],
+                    }
+                )
+    seen = set()
+    unique = []
+    for c in all_candidates:
+        if c["url"] not in seen:
+            seen.add(c["url"])
+            unique.append(c)
+    return unique[:max_results]
 
 
 async def fetch_hidden_gems(max_results: int = 8) -> list[dict]:
