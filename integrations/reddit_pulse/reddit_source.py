@@ -1,8 +1,8 @@
-"""Reddit source — uses Bright Data SERP search (bdata search) to discover trending Reddit posts.
+"""Reddit source — Bright Data structured Reddit Scraper API via bdata pipelines.
 
-Reddit's public JSON API is now 403-blocked and bdata scrape is blocked by
-robots.txt. bdata search (SERP) is the reliable path: it gives real Reddit
-thread URLs with titles and descriptions via Google SERP ranking.
+Replaces SERP guessing (bdata search) with bdata pipelines reddit_posts, which
+returns structured JSON: num_upvotes, num_comments, title, url, community_name.
+This gives real engagement metrics, not a Google visibility proxy.
 
 Requires: bdata CLI in PATH (installed via npm, part of Bright Data).
 """
@@ -13,16 +13,26 @@ import logging
 import os
 import signal
 import shutil
-from urllib.parse import quote_plus
 
-# Search queries targeting AI subreddits
-SEARCH_QUERIES = [
-    "site:reddit.com/r/LocalLLaMA AI agent framework 2026",
-    "site:reddit.com/r/MachineLearning trending AI 2026",
-    "site:reddit.com/r/singularity AI breakthrough 2026",
+# Target subreddits for AI developer discourse.
+SUBREDDITS = [
+    "https://www.reddit.com/r/LocalLLaMA/hot/",
+    "https://www.reddit.com/r/MachineLearning/hot/",
+    "https://www.reddit.com/r/singularity/hot/",
+    "https://www.reddit.com/r/artificial/hot/",
+    "https://www.reddit.com/r/OpenAI/hot/",
 ]
-SOURCE_COMMAND_TIMEOUT_SECONDS = 120
+SOURCE_COMMAND_TIMEOUT_SECONDS = 180
 SOURCE_COMMAND_CLEANUP_TIMEOUT_SECONDS = 5
+
+
+def _visibility_from_upvotes(upvotes: int, comments: int) -> float:
+    """Map upvotes + comments to a 0-100 visibility score.
+
+    Upvotes dominate; comments add discourse signal. Capped at 100.
+    """
+    score = min(upvotes / 10, 80) + min(comments / 5, 20)
+    return round(max(score, 20), 1)
 
 
 async def _stop_source_process(proc, communication) -> None:
@@ -55,9 +65,10 @@ async def _stop_source_process(proc, communication) -> None:
 
 
 async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
-    """Discover trending Reddit AI posts via bdata SERP search.
+    """Discover trending Reddit AI posts via bdata pipelines reddit_posts.
 
-    Raises RuntimeError if bdata is not in PATH (fail fast, don't silently return []).
+        Pulls hot posts from curated AI subreddits with structured upvote/comment
+    data. Raises RuntimeError if bdata is not in PATH.
     """
     if not shutil.which("bdata"):
         raise RuntimeError(
@@ -65,13 +76,17 @@ async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
         )
 
     candidates = []
-    for query in SEARCH_QUERIES[:2]:  # 2 queries per run
+    for subreddit_url in SUBREDDITS[:3]:  # 3 subreddits per run
+        if len(candidates) >= max_results:
+            break
         try:
             proc = await asyncio.create_subprocess_exec(
                 "bdata",
-                "search",
-                query,
-                "--json",
+                "pipelines",
+                "reddit_posts",
+                subreddit_url,
+                "--format",
+                "json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
@@ -84,50 +99,53 @@ async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
                 )
             except TimeoutError:
                 await _stop_source_process(proc, communication)
-                raise RuntimeError(
-                    f"bdata search timed out after {SOURCE_COMMAND_TIMEOUT_SECONDS} seconds"
-                ) from None
+                logging.warning("bdata pipelines timed out for %s", subreddit_url)
+                continue
             except asyncio.CancelledError:
                 await _stop_source_process(proc, communication)
                 raise
             if proc.returncode:
-                raise RuntimeError(
-                    stderr.decode().strip() or "bdata search returned an error"
+                logging.warning(
+                    "bdata pipelines error for %s: %s",
+                    subreddit_url,
+                    stderr.decode().strip()[:200],
                 )
+                continue
             payload = json.loads(stdout)
+            # bdata pipelines may return a list or {"results": [...]}
+            posts = payload if isinstance(payload, list) else payload.get("results", [])
 
-            for fallback_rank, result in enumerate(payload.get("organic", []), start=1):
-                rank = int(result.get("rank") or fallback_rank)
-                title = str(result.get("title") or "").strip()
-                url = str(result.get("link") or "").strip()
-                desc = str(result.get("description") or "").strip()
-
-                if "reddit.com/r/" not in url:
+            for post in posts:
+                if len(candidates) >= max_results:
+                    break
+                url = str(post.get("url") or "").strip()
+                title = str(post.get("title") or "").strip()
+                if not url or not title:
                     continue
-
-                # Extract subreddit from URL
-                subreddit = ""
-                if "/r/" in url:
+                subreddit = str(post.get("community_name") or "").strip()
+                if not subreddit and "/r/" in url:
                     subreddit = url.split("/r/")[1].split("/")[0]
-
+                upvotes = int(post.get("num_upvotes") or 0)
+                comments = int(post.get("num_comments") or 0)
+                if upvotes < 10:  # filter noise
+                    continue
                 candidates.append(
                     {
                         "url": url,
                         "title": title[:200],
                         "kind": "thread",
-                        "description": desc[:500],
+                        "description": str(post.get("description") or title)[:500],
                         "topics": ["reddit", "ai", subreddit],
                         "subreddit": subreddit,
-                        "serp_rank": rank,
-                        "visibility_score": max(100 - rank * 10, 20),
-                        "search_query": query,
-                        "evidence_url": (
-                            f"https://www.google.com/search?q={quote_plus(query)}"
-                        ),
+                        "num_upvotes": upvotes,
+                        "num_comments": comments,
+                        "serp_rank": 1,  # back-compat: no longer SERP, keep field
+                        "visibility_score": _visibility_from_upvotes(upvotes, comments),
+                        "evidence_url": url,
                     }
                 )
         except Exception as e:
-            logging.warning("reddit_source fetch failed for query '%s': %s", query, e)
+            logging.warning("reddit_source fetch failed for %s: %s", subreddit_url, e)
             continue
 
     # Deduplicate by URL

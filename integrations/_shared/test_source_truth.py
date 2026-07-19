@@ -55,7 +55,7 @@ def test_one_catalog_drives_python_agent_identity():
 
 
 @pytest.mark.asyncio
-async def test_youtube_candidate_preserves_real_views_without_a_star_proxy(monkeypatch):
+async def test_youtube_candidate_preserves_channel_and_views(monkeypatch):
     source = load_source("youtube_trends/source.py", "youtube_truth_source")
     monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/yt-dlp")
     subprocess_calls = []
@@ -70,6 +70,7 @@ async def test_youtube_candidate_preserves_real_views_without_a_star_proxy(monke
                     "channel": "Signal Channel",
                     "view_count": 285000,
                     "duration": 720,
+                    "upload_date": "20260715",
                 }
             )
             + "\n"
@@ -82,10 +83,11 @@ async def test_youtube_candidate_preserves_real_views_without_a_star_proxy(monke
     candidates = await source.fetch_youtube_candidates(max_results=1)
 
     assert "--dump-json" in subprocess_calls[0]
-    assert "--print" not in subprocess_calls[0]
+    assert "--dateafter" in subprocess_calls[0]
     assert candidates[0]["viewCount"] == 285000
-    assert candidates[0]["youtube_search_position"] == 1
-    assert candidates[0]["search_query"] == "AI agent framework demo 2026"
+    assert candidates[0]["channel"] == "Signal Channel"
+    assert candidates[0]["channel_url"] == source.CHANNELS[0]
+    assert "youtube_search_position" not in candidates[0]
     assert "serp_rank" not in candidates[0]
     assert "stars" not in candidates[0]
 
@@ -247,7 +249,94 @@ def test_github_sustained_growth_rejects_flat_history_and_a_current_regression()
 
 
 @pytest.mark.asyncio
-async def test_github_history_reads_only_comparable_star_observations(monkeypatch):
+async def test_github_ossinsight_includes_repos_with_ai_description_not_just_topics(
+    monkeypatch,
+):
+    """A repo with no AI topics but an AI-related description should pass the filter.
+
+    The previous narrow topic filter (ai/llm/agent/gpt/openai/ml) missed 63%
+    of OSSInsight trending repos. Description-based matching catches repos
+    like stablyai/orca (agent fleet) that lack ai as a topic.
+    """
+    source = load_source("github_radar/github_source.py", "github_ossinsight_source")
+    monkeypatch.setattr(source, "_token", "fake-token")
+    monkeypatch.setattr(source, "_headers", {"Authorization": "token fake-token"})
+
+    class FakeResponse:
+        def __init__(self, data, status=200):
+            self._data = data
+            self.status_code = status
+
+        def json(self):
+            return self._data
+
+        def raise_for_status(self):
+            if self.status_code != 200:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+    class FakeClient:
+        call_count = 0
+
+        def __init__(self, **_kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+        async def get(self, url, **kw):
+            type(self).call_count += 1
+            if "ossinsight" in url:
+                return FakeResponse(
+                    {
+                        "data": {
+                            "rows": [
+                                {
+                                    "repo_name": "stablyai/orca",
+                                    "description": "Agent fleet manager",
+                                    "stars": 6,
+                                    "primary_language": "Python",
+                                },
+                                {
+                                    "repo_name": "someuser/nonai",
+                                    "description": "A recipe app",
+                                    "stars": 5,
+                                    "primary_language": "Go",
+                                },
+                            ]
+                        }
+                    }
+                )
+            # GitHub API call for repo details
+            if "stablyai/orca" in url:
+                return FakeResponse(
+                    {
+                        "topics": ["cli", "automation"],
+                        "description": "Agent fleet manager for parallel agents",
+                        "stargazers_count": 500,
+                        "created_at": "2026-06-01",
+                        "pushed_at": "2026-07-19",
+                    }
+                )
+            return FakeResponse(
+                {
+                    "topics": ["recipes"],
+                    "description": "A recipe app",
+                    "stargazers_count": 10,
+                    "created_at": "2026-01-01",
+                    "pushed_at": "2026-07-01",
+                },
+                status=200,
+            )
+
+    monkeypatch.setattr(source.httpx, "AsyncClient", FakeClient)
+    candidates = await source._fetch_ossinsight_trending(max_results=5)
+    titles = [c["title"] for c in candidates]
+    assert "stablyai/orca" in titles
+    assert "someuser/nonai" not in titles
+
     from _shared import mongo
 
     post_id = ObjectId()
@@ -618,7 +707,7 @@ async def test_episode_seed_closes_its_sync_and_async_mongo_clients(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_reddit_candidate_labels_search_visibility_as_a_proxy(monkeypatch):
+async def test_reddit_candidate_returns_structured_upvote_data(monkeypatch):
     source = load_source("reddit_pulse/reddit_source.py", "reddit_truth_source")
     monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
     full_url = (
@@ -631,16 +720,16 @@ async def test_reddit_candidate_labels_search_visibility_as_a_proxy(monkeypatch)
         subprocess_calls.append(args)
         return FakeProcess(
             json.dumps(
-                {
-                    "organic": [
-                        {
-                            "rank": 1,
-                            "title": "A complete Reddit title | with a separator",
-                            "link": full_url,
-                            "description": "Search result description",
-                        }
-                    ]
-                }
+                [
+                    {
+                        "url": full_url,
+                        "title": "A complete Reddit title | with a separator",
+                        "description": "Search result description",
+                        "num_upvotes": 342,
+                        "num_comments": 89,
+                        "community_name": "LocalLLaMA",
+                    }
+                ]
             )
         )
 
@@ -650,15 +739,15 @@ async def test_reddit_candidate_labels_search_visibility_as_a_proxy(monkeypatch)
 
     candidates = await source.fetch_reddit_candidates(max_results=1)
 
-    assert "--json" in subprocess_calls[0]
+    assert "reddit_posts" in subprocess_calls[0]
+    assert "--format" in subprocess_calls[0]
     assert candidates[0]["url"] == full_url
     assert candidates[0]["title"] == "A complete Reddit title | with a separator"
-    assert candidates[0]["serp_rank"] == 1
-    assert candidates[0]["visibility_score"] == 90
-    assert candidates[0]["search_query"] == source.SEARCH_QUERIES[0]
-    assert candidates[0]["evidence_url"].startswith("https://www.google.com/search?")
-    assert "upvotes" not in candidates[0]
-    assert "num_comments" not in candidates[0]
+    assert candidates[0]["num_upvotes"] == 342
+    assert candidates[0]["num_comments"] == 89
+    assert candidates[0]["subreddit"] == "LocalLLaMA"
+    assert candidates[0]["visibility_score"] > 0
+    assert candidates[0]["evidence_url"] == full_url
 
 
 @pytest.mark.asyncio
@@ -903,9 +992,9 @@ def test_source_evidence_copy_is_generated_only_from_observed_values():
     assert hidden_gem_evidence_copy("hacker_news", 293) == (
         "293 HN points observed. Early attention—not GitHub stars or a proven trajectory."
     )
-    assert reddit_evidence_copy(3, 70) == (
-        "Google search surfaced this Reddit result at position 3; "
-        "70/100 is a visibility proxy, not engagement."
+    assert reddit_evidence_copy(342, 89) == (
+        "342 Reddit upvotes observed across 89 comments. "
+        "Hot-post engagement, not GitHub stars."
     )
 
 

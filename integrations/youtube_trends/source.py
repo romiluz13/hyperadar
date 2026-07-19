@@ -1,7 +1,9 @@
-"""YouTube source — uses yt-dlp search to discover high-view AI videos.
+"""YouTube source — channel-scoped yt-dlp discovery for AI-dev channels.
 
-yt-dlp searches YouTube directly and returns real metadata (view counts,
-channel, duration) without any API key or bdata dependency.
+Instead of generic `ytsearch` (which surfaces old popular videos), this scans
+a curated allowlist of AI-dev YouTube channels for recent uploads, preserving
+channel identity and view counts. View velocity is approximated by
+views/days-since-upload when no snapshot history exists.
 """
 
 import asyncio
@@ -10,11 +12,17 @@ import logging
 import os
 import signal
 import shutil
+from datetime import datetime, timedelta, timezone
 
-SEARCH_QUERIES = [
-    "AI agent framework demo 2026",
-    "LLM tutorial trending 2026",
-    "AI dev tools showcase 2026",
+# Curated AI-dev channel allowlist (verified handles from research).
+CHANNELS = [
+    "https://www.youtube.com/@AndrejKarpathy/videos",
+    "https://www.youtube.com/@YannicKilcher/videos",
+    "https://www.youtube.com/@AIJasonZ/videos",
+    "https://www.youtube.com/@matthew_berman/videos",
+    "https://www.youtube.com/@Fireship/videos",
+    "https://www.youtube.com/@samwitteveen/videos",
+    "https://www.youtube.com/@ColeMedin/videos",
 ]
 SOURCE_COMMAND_TIMEOUT_SECONDS = 120
 SOURCE_COMMAND_CLEANUP_TIMEOUT_SECONDS = 5
@@ -50,23 +58,31 @@ async def _stop_source_process(proc, communication) -> None:
 
 
 async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
-    """Discover AI YouTube videos and preserve search-order evidence.
+    """Discover recent AI-dev videos from a curated channel allowlist.
 
-    Raises RuntimeError if yt-dlp is not in PATH (fail fast, don't silently return []).
+        Scans each channel's /videos page for recent uploads via yt-dlp, preserving
+    channel identity and real view counts. Raises RuntimeError if yt-dlp is not
+    in PATH.
     """
     if not shutil.which("yt-dlp"):
         raise RuntimeError(
             "yt-dlp not found in PATH — install with: brew install yt-dlp"
         )
     candidates = []
-    # Use 2 queries per run, get 5 results each
-    for query in SEARCH_QUERIES[:2]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y%m%d")
+    for channel_url in CHANNELS:
+        if len(candidates) >= max_results:
+            break
         try:
             proc = await asyncio.create_subprocess_exec(
                 "yt-dlp",
-                "--flat-playlist",
                 "--dump-json",
-                f"ytsearch5:{query}",
+                "--dateafter",
+                cutoff,  # only videos from the last 14 days
+                "--playlist-end",
+                "3",  # 3 most recent per channel (full metadata, not flat)
+                "--no-warnings",
+                channel_url,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
@@ -79,15 +95,14 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
                 )
             except TimeoutError:
                 await _stop_source_process(proc, communication)
-                raise RuntimeError(
-                    f"yt-dlp search timed out after {SOURCE_COMMAND_TIMEOUT_SECONDS} seconds"
-                ) from None
+                logging.warning("yt-dlp timed out for %s", channel_url)
+                continue
             except asyncio.CancelledError:
                 await _stop_source_process(proc, communication)
                 raise
             output = stdout.decode()
 
-            for search_position, line in enumerate(output.strip().split("\n"), start=1):
+            for line in output.strip().split("\n"):
                 line = line.strip()
                 if not line:
                     continue
@@ -100,7 +115,9 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
                 vid_id = str(metadata.get("id") or "").strip()
                 title = str(metadata.get("title") or "").strip()
                 channel = str(
-                    metadata.get("channel") or metadata.get("uploader") or "Unknown channel"
+                    metadata.get("channel")
+                    or metadata.get("uploader")
+                    or "Unknown channel"
                 ).strip()
                 if not vid_id or not title:
                     continue
@@ -124,15 +141,14 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
                         ],
                         "channel": channel,
                         "viewCount": view_count,
-                        "youtube_search_position": search_position,
-                        "search_query": query,
+                        "channel_url": channel_url,
                     }
                 )
         except Exception as e:
-            logging.warning("youtube_source fetch failed for query '%s': %s", query, e)
+            logging.warning("youtube_source fetch failed for %s: %s", channel_url, e)
             continue
 
-    # Deduplicate by URL, then prioritize observed total views for review.
+    # Deduplicate by URL, prioritize by view count.
     seen = set()
     unique = []
     for c in candidates:
