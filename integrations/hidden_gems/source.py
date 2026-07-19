@@ -122,6 +122,6 @@ async def fetch_low_star_github_candidates(max_results: int = 5) -> list[dict]:
 
 async def fetch_hidden_gems(max_results: int = 8) -> list[dict]:
     """Combine HN + low-star GitHub to find hidden gems before they blow up."""
-    hn = await fetch_hn_candidates(max_results=5)
-    gh = await fetch_low_star_github_candidates(max_results=5)
+    hn = await fetch_hn_candidates(max_results=10)
+    gh = await fetch_low_star_github_candidates(max_results=15)
     return (hn + gh)[:max_results]

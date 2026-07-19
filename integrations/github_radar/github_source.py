@@ -42,7 +42,7 @@ async def _fetch_ossinsight_trending(max_results: int) -> list[dict]:
         rows = body.get("data", {}).get("rows", body.get("data", []))
         if not isinstance(rows, list):
             return []
-        for row in rows[: max_results * 3]:  # over-fetch, then AI-filter
+        for row in rows[: max_results * 5]:  # over-fetch 5x, then AI-filter
             repo_name = row.get("repo_name") or ""
             if not repo_name or "/" not in repo_name:
                 continue

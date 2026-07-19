@@ -80,7 +80,7 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
                 "--dateafter",
                 cutoff,  # only videos from the last 14 days
                 "--playlist-end",
-                "3",  # 3 most recent per channel (full metadata, not flat)
+                "10",  # 10 most recent per channel (full metadata, not flat)
                 "--no-warnings",
                 channel_url,
                 stdout=asyncio.subprocess.PIPE,
