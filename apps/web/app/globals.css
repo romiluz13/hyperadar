@@ -547,6 +547,40 @@ textarea {
 	color: var(--blue);
 	font-weight: 850;
 }
+.search-form {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	margin: 1rem 0 0;
+}
+.search-form input[type="search"] {
+	flex: 1;
+	padding: 0.6rem 0.8rem;
+	border: 1px solid var(--line);
+	border-radius: 0.5rem;
+	font-size: 0.9rem;
+	background: var(--paper);
+	color: var(--ink);
+}
+.search-form input[type="search"]:focus {
+	outline: none;
+	border-color: var(--blue);
+}
+.search-form button {
+	padding: 0.6rem 1rem;
+	border: none;
+	border-radius: 0.5rem;
+	background: var(--ink);
+	color: var(--paper);
+	font-weight: 800;
+	font-size: 0.85rem;
+	cursor: pointer;
+}
+.search-form a {
+	color: var(--muted);
+	font-size: 0.82rem;
+	font-weight: 700;
+}
 .filtered-empty p {
 	margin: 0 0 0.5rem;
 }

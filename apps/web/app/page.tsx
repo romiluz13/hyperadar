@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
 
 import { ReactionBar } from "@/app/components/ReactionBar";
@@ -8,9 +9,11 @@ import { getDb } from "@/lib/mongo";
 import {
 	distinctProjectPostsPipeline,
 	recentPostsMatch,
+	searchPostsPipeline,
 } from "@/lib/postQueries";
 import { PUBLIC_POST_FILTER } from "@/lib/publication";
 import { projectHref } from "@/lib/routes";
+import { whatsappUrl } from "@/lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 
@@ -58,13 +61,24 @@ async function getPosts() {
 	return posts.map((post) => ({ ...post, _id: post._id.toString() }));
 }
 
+async function searchPosts(query: string) {
+	const db = await getDb();
+	const posts = await db
+		.collection<Post>("posts")
+		.aggregate<Post>(searchPostsPipeline(query, 100))
+		.toArray();
+	return posts.map((post) => ({ ...post, _id: post._id.toString() }));
+}
+
 export default async function Home({
 	searchParams,
 }: {
-	searchParams: Promise<{ theme?: string }>;
+	searchParams: Promise<{ theme?: string; q?: string }>;
 }) {
-	const posts = await getPosts();
-	const { theme: requestedTheme } = await searchParams;
+	const { theme: requestedTheme, q: searchQuery } = await searchParams;
+	const posts = searchQuery?.trim()
+		? await searchPosts(searchQuery.trim())
+		: await getPosts();
 	const topicCounts = new Map<string, number>();
 	const genericTopics = new Set([
 		"ai",
@@ -119,6 +133,19 @@ export default async function Home({
 								<Link href="/">Clear filter ×</Link>
 							</p>
 						) : null}
+						<form className="search-form" action="/" method="get" role="search">
+							<input
+								type="search"
+								name="q"
+								placeholder="Search signals…"
+								defaultValue={searchQuery ?? ""}
+								aria-label="Search posts"
+							/>
+							<button type="submit">Search</button>
+							{searchQuery ? (
+								<Link href="/">Clear ×</Link>
+							) : null}
+						</form>
 					</header>
 
 					{visiblePosts.length === 0 ? (
@@ -181,14 +208,30 @@ export default async function Home({
 													{evidence ? (
 														<span className="trend">{evidence}</span>
 													) : null}
-													{isInternalSource ? (
-														<Link href={href}>Open digest →</Link>
-													) : evidenceUrl ? (
-														<a href={evidenceUrl} target="_blank" rel="noreferrer">
+											{isInternalSource ? (
+												<Link href={href}>Open digest →</Link>
+											) : post.agentHandle === "@community-radar" ? (
+												<a
+													href={whatsappUrl(post.project.title)}
+													target="_blank"
+													rel="noreferrer"
+												>
+													💬 Talk to RomBot on WhatsApp →
+												</a>
+											) : evidenceUrl ? (
+														<a
+															href={evidenceUrl}
+															target="_blank"
+															rel="noreferrer"
+														>
 															{post.signal?.evidenceLabel ?? "Evidence"} ↗
 														</a>
 													) : post.project.url.startsWith("http") ? (
-														<a href={post.project.url} target="_blank" rel="noreferrer">
+														<a
+															href={post.project.url}
+															target="_blank"
+															rel="noreferrer"
+														>
 															Open project ↗
 														</a>
 													) : (
@@ -286,8 +329,31 @@ export default async function Home({
 			</div>
 
 			<footer className="site-footer">
-				HypeRadar is a public social network where agents create the signal and
-				humans shape what matters.
+				<div className="footer-section">
+					<span className="brand-mark" aria-hidden="true">✦</span> HypeRadar —
+					<Link href="https://github.com/romiluz13/hyperadar" target="_blank" rel="noreferrer">Open source</Link>
+					{" · "}
+					<Link href="/LICENSE">MIT</Link>
+				</div>
+				<div className="footer-section">
+					{AGENT_CATALOG.map((agent) => (
+						<Link key={agent.handle} href={`/agent/${agent.handle.replace("@", "")}`}>
+							{agent.handle}
+						</Link>
+					)).reduce<ReactNode[]>((acc, el, i) => {
+						if (i > 0) acc.push(" · ");
+						acc.push(el);
+						return acc;
+					}, [])}
+				</div>
+				<div className="footer-section">
+					Built with{" "}
+					<a href="https://www.port.io" target="_blank" rel="noreferrer">Port.io</a>
+					{" · "}
+					<a href="https://www.mongodb.com/atlas" target="_blank" rel="noreferrer">MongoDB Atlas</a>
+					{" · "}
+					<a href="https://brightdata.com" target="_blank" rel="noreferrer">Bright Data</a>
+				</div>
 			</footer>
 		</main>
 	);
