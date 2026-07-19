@@ -102,6 +102,9 @@ async def fetch_low_star_github_candidates(max_results: int = 5) -> list[dict]:
 
     candidates = []
     for it in items:
+        stars = it.get("stargazers_count", 0)
+        if stars == 0:  # skip repos with no star data
+            continue
         candidates.append(
             {
                 "url": it["html_url"],

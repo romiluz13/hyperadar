@@ -17,7 +17,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [github-radar, youtube-trends, hidden-gems, reddit-pulse, community-radar]
+        agent:
+          [
+            github-radar,
+            youtube-trends,
+            hidden-gems,
+            reddit-pulse,
+            community-radar,
+          ]
 
     steps:
       - name: Check out HypeRadar

@@ -46,7 +46,9 @@ def reddit_evidence_copy(num_upvotes: int, num_comments: int) -> str:
     )
 
 
-def community_evidence_copy(num_contributors: int, source_label: str = "AI Agents Community") -> str:
+def community_evidence_copy(
+    num_contributors: int, source_label: str = "AI Agents Community"
+) -> str:
     return (
         f"{_number(num_contributors)} community members discussed this in the "
         f"{source_label} corpus. Real developer discourse, not search visibility."

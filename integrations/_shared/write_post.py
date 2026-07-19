@@ -384,9 +384,7 @@ async def _reconcile_multi_source_locked(
             session=session,
         )
         if pending.matched_count != len(target_ids):
-            raise RuntimeError(
-                f"Cannot gate every multi-source twin for {project_url}"
-            )
+            raise RuntimeError(f"Cannot gate every multi-source twin for {project_url}")
 
     async with database.client.start_session() as session:
         await session.with_transaction(gate_targets)

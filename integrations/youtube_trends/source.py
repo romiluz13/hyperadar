@@ -126,6 +126,9 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
                     view_count = int(views or 0)
                 except (TypeError, ValueError):
                     view_count = 0
+                # Skip videos with 0 views (brand-new or metadata unavailable).
+                if view_count == 0:
+                    continue
 
                 candidates.append(
                     {

@@ -126,6 +126,9 @@ async def _fetch_ossinsight_trending(max_results: int) -> list[dict]:
                     continue  # not AI-related by topic or description
                 c["topics"] = topics
                 c["stars"] = data.get("stargazers_count", c["stars"])
+                # Skip repos with 0 stars (data unavailable or brand-new).
+                if c["stars"] == 0:
+                    continue
                 c["created_at"] = data.get("created_at")
                 c["pushed_at"] = data.get("pushed_at")
                 c["description"] = data.get("description") or c["description"]
