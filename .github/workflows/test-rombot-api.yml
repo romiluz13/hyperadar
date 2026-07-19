@@ -1,0 +1,39 @@
+name: Test RomBot API (diagnostic)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install httpx
+      - name: Call RomBot community-ask API
+        env:
+          ROMBOT_COMMUNITY_ASK_TOKEN: ${{ secrets.ROMBOT_COMMUNITY_ASK_TOKEN }}
+        run: |
+          python -c "
+          import asyncio, json, os, httpx
+          async def main():
+              token = os.environ['ROMBOT_COMMUNITY_ASK_TOKEN']
+              async with httpx.AsyncClient(timeout=90) as client:
+                  response = await client.post(
+                      'https://api.rombot.uk/api/community-ask',
+                      json={'message': 'What are the 10 most discussed topics in the AI agents community in the last 2 weeks? For each topic, give the topic name, who discussed it, a one-sentence summary, and how many people were involved.'},
+                      headers={'Content-Type': 'application/json', 'X-Community-Ask-Token': token},
+                  )
+                  print(f'STATUS: {response.status_code}')
+                  body = response.json()
+                  print(f'ANSWER_LENGTH: {len(body.get(\"answer\", \"\"))}')
+                  print(f'MODEL: {body.get(\"model\", \"?\")}')
+                  print(f'LATENCY_MS: {body.get(\"latency_ms\", \"?\")}')
+                  print()
+                  print('=== FULL ANSWER ===')
+                  print(body.get('answer', '(empty)'))
+          asyncio.run(main())
+          "
