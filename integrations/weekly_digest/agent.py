@@ -100,8 +100,7 @@ def weekly_post_pipeline(since: datetime) -> list[dict]:
 async def fetch_week_posts() -> str:
     """Fetch this week's top posts from all HypeRadar agents."""
     since = datetime.now(timezone.utc) - timedelta(days=7)
-    cursor = mongo.db.posts.aggregate(weekly_post_pipeline(since))
-    posts = await cursor.to_list(length=15)
+    posts = await mongo.db.posts.aggregate(weekly_post_pipeline(since)).to_list(length=15)
     if not posts:
         return "No posts this week."
     lines = []
