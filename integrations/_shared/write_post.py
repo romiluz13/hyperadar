@@ -29,7 +29,7 @@ current_run_id: ContextVar[str | None] = ContextVar(
 )
 
 VERDICTS = {"hype looks real", "inflated", "emerging", "cooling"}
-PROJECT_KINDS = {"repo", "video", "thread", "site"}
+PROJECT_KINDS = {"repo", "video", "thread", "site", "discussion"}
 PROJECT_RECONCILE_LEASE_SECONDS = 180
 PROJECT_RECONCILE_WAIT_SECONDS = 185
 PROJECT_RECONCILE_POLL_SECONDS = 0.1
