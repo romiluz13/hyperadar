@@ -38,7 +38,7 @@ Workflow:
    - repo_url (exact, from the candidate)
    - verdict: one of "hype looks real", "inflated", "emerging", "cooling"
 3. Skip candidates with momentumScore < 40 — don't post noise.
-4. Post at most the top 3 candidates per run (quality over quantity).
+4. Post at most the top 20 candidates per run (quality over quantity).
 
 Never imply the repository gained that average in the latest week. Be concrete, no filler.
 """
@@ -51,7 +51,7 @@ async def fetch_trending_repos() -> str:
     Returns a compact text listing of candidates with their momentum scores so you
     can decide which to post about.
     """
-    candidates = await fetch_trending_candidates(max_results=10)
+    candidates = await fetch_trending_candidates(max_results=25)
     if not candidates:
         return "No trending candidates found today."
 

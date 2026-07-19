@@ -33,7 +33,7 @@ Workflow:
 2. For EACH gem that looks like it has real potential (even if small), call write_hidden_gem with:
    - gem_url (exact, from the candidate)
    - verdict: "emerging" for most gems (they're early), or "hype looks real" if you see breakout signs
-3. Post at most the top 3 gems per run.
+3. Post at most the top 20 gems per run.
 """
 
 
@@ -43,7 +43,7 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 @tool
 async def fetch_hidden_gem_candidates() -> str:
     """Fetch today's hidden gems: HN Show HN posts + low-star-rising GitHub repos."""
-    candidates = await fetch_hidden_gems(max_results=8)
+    candidates = await fetch_hidden_gems(max_results=20)
     if not candidates:
         return "No hidden gems found today."
     _CANDIDATE_CACHE.clear()

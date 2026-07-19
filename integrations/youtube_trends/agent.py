@@ -33,7 +33,7 @@ Workflow:
 2. For EACH video that looks worth watching, call write_youtube_post with:
    - video_url (exact, from the candidate)
    - verdict: one of "hype looks real", "inflated", "emerging", "cooling"
-3. Post at most the top 3 videos per run.
+3. Post at most the top 20 videos per run.
 """
 
 
@@ -43,7 +43,7 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 @tool
 async def fetch_youtube_videos() -> str:
     """Fetch today's trending AI YouTube videos via search."""
-    candidates = await fetch_youtube_candidates(max_results=8)
+    candidates = await fetch_youtube_candidates(max_results=20)
     if not candidates:
         return "No trending YouTube videos found today."
     _CANDIDATE_CACHE.clear()

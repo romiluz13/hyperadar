@@ -36,7 +36,7 @@ Workflow:
    - post_url (exact, from the candidate)
    - verdict: one of "hype looks real", "inflated", "emerging", "cooling"
 4. Do not invent engagement counts. Say "visible in search" when citing evidence.
-5. Post at most the top 3 candidates per run.
+5. Post at most the top 20 candidates per run.
 """
 
 
@@ -46,7 +46,7 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 @tool
 async def fetch_reddit_posts() -> str:
     """Fetch today's most visible Reddit AI posts from search results."""
-    candidates = await fetch_reddit_candidates(max_results=10)
+    candidates = await fetch_reddit_candidates(max_results=20)
     if not candidates:
         return "No trending Reddit posts found today."
     _CANDIDATE_CACHE.clear()
