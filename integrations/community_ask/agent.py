@@ -32,21 +32,16 @@ Your voice: the community listener. You report what real developers are \
 discussing, not search visibility or star counts.
 
 CRITICAL RULE: You MUST NOT publish any post unless you first called \
-fetch_community_posts AND it returned real candidates. If \
-fetch_community_posts returns 'No trending community discussions found today.' \
-then STOP — do NOT call write_community_post, do NOT invent topics. \
-Return 'No community discussions to publish today.' and end the run.
+publish_community_posts AND it returned real results. If \
+publish_community_posts returns 'No trending community discussions found today.' \
+then STOP — return 'No community discussions to publish today.' and end.
 
 Workflow:
-1. Call fetch_community_posts to get today's trending community discussions.
-2. If no discussions found, STOP and report empty.
-3. For each interesting discussion, call write_community_post with:
-   - topic_title (EXACT title from the candidate listing)
-   - verdict: one of "hype looks real", "inflated", "emerging", "cooling"
+1. Call publish_community_posts to fetch and publish all trending community discussions.
+2. Review the results — each post will include the topic, contributor count, and verdict.
+3. If no discussions found, STOP and report empty.
 4. Community discourse is evidence of real developer interest — cite the \
    number of contributors, not stars or views.
-5. Post ALL candidates (up to 10) — the community owner wants every real \
-   topic surfaced, not just a curated few.
 """
 
 
@@ -54,75 +49,65 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 
 
 @tool
-async def fetch_community_posts() -> str:
-    """Fetch today's trending AI agent community discussions."""
+async def publish_community_posts() -> str:
+    """Fetch all trending community discussions and publish them in one call.
+
+    Returns a summary of what was posted. If no discussions found, returns
+    'No trending community discussions found today.'
+    """
     candidates = await fetch_community_candidates(max_results=10)
     if not candidates:
         return "No trending community discussions found today."
-    _CANDIDATE_CACHE.clear()
-    _CANDIDATE_CACHE.update({c["title"]: c for c in candidates})
-    lines = []
+
+    results = []
     for c in candidates:
-        lines.append(
-            f"- {c['title']}\n"
-            f"  contributors={c.get('num_contributors', '?')} | "
-            f"who={c.get('who', '?')}\n"
-            f"  summary: {c['description'][:120]}"
+        momentum = c["visibility_score"]
+        contributors = c.get("num_contributors", 0)
+        blurb = community_evidence_copy(contributors)
+        # Deterministic verdict based on contributor engagement.
+        if contributors >= 15:
+            verdict = "hype looks real"
+        elif contributors >= 10:
+            verdict = "emerging"
+        else:
+            verdict = "cooling"
+        project = {
+            "url": c["url"],
+            "title": c["title"],
+            "kind": c["kind"],
+            "description": c["description"],
+            "topics": c["topics"],
+            "momentumScore": round(momentum, 1),
+            "hypeVerdict": verdict,
+        }
+        signal = {
+            "source": "community",
+            "metric": "contributors",
+            "value": contributors,
+            "delta": 0,
+            "evidenceUrl": c["evidence_url"],
+            "evidenceLabel": "AI Agents community corpus",
+            "summary": (
+                f"Community discussion with {contributors} contributors; "
+                f"raised by {c.get('who', 'community members')}"
+            ),
+        }
+        post_id = await write_post(
+            AGENT_HANDLE,
+            AGENT_NAME,
+            AGENT_BIO,
+            SOURCE_TYPE,
+            project,
+            blurb,
+            verdict,
+            signal,
+            momentum,
         )
-    return "\n".join(lines)
-
-
-@tool
-async def write_community_post(topic_title: str, verdict: str) -> str:
-    """Publish a hype post about a trending community discussion.
-
-    Args:
-        topic_title: exact topic title from the candidate listing
-        verdict: one of "hype looks real", "inflated", "emerging", "cooling"
-    """
-    c = _CANDIDATE_CACHE.get(topic_title)
-    if not c:
-        return f"ERROR: unknown topic_title {topic_title}. Call fetch_community_posts first."
-
-    momentum = c["visibility_score"]
-    contributors = c.get("num_contributors", 0)
-    blurb = community_evidence_copy(contributors)
-    project = {
-        "url": c["url"],
-        "title": c["title"],
-        "kind": c["kind"],
-        "description": c["description"],
-        "topics": c["topics"],
-        "momentumScore": round(momentum, 1),
-        "hypeVerdict": verdict,
-    }
-    signal = {
-        "source": "community",
-        "metric": "contributors",
-        "value": contributors,
-        "delta": 0,
-        "evidenceUrl": c["evidence_url"],
-        "evidenceLabel": "AI Agents community corpus",
-        "summary": (
-            f"Community discussion with {contributors} contributors; "
-            f"raised by {c.get('who', 'community members')}"
-        ),
-    }
-    post_id = await write_post(
-        AGENT_HANDLE,
-        AGENT_NAME,
-        AGENT_BIO,
-        SOURCE_TYPE,
-        project,
-        blurb,
-        verdict,
-        signal,
-        momentum,
-    )
-    return (
-        f"Posted: {c['title']} ({contributors} contributors, "
-        f"verdict '{verdict}') -> post {post_id}"
-    )
+        results.append(
+            f"Posted: {c['title']} ({contributors} contributors, "
+            f"verdict '{verdict}') -> post {post_id}"
+        )
+    return f"Published {len(results)} community discussions:\n" + "\n".join(results)
 
 
 def build_agent(checkpointer=None):
@@ -136,7 +121,7 @@ def build_agent(checkpointer=None):
     )
     kwargs = {
         "model": model,
-        "tools": [fetch_community_posts, write_community_post],
+        "tools": [publish_community_posts],
         "system_prompt": SYSTEM_PROMPT,
     }
     if checkpointer is not None:
