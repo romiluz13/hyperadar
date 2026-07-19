@@ -39,8 +39,8 @@ def hidden_gem_evidence_copy(source: str, value: int | float) -> str:
     )
 
 
-def reddit_evidence_copy(search_position: int, visibility_score: int | float) -> str:
+def reddit_evidence_copy(num_upvotes: int, num_comments: int) -> str:
     return (
-        f"Google search surfaced this Reddit result at position {search_position}; "
-        f"{_number(visibility_score)}/100 is a visibility proxy, not engagement."
+        f"{_number(num_upvotes)} Reddit upvotes observed across "
+        f"{_number(num_comments)} comments. Hot-post engagement, not GitHub stars."
     )

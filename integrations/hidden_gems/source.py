@@ -35,38 +35,58 @@ def normalize_hn_story(story: dict, story_id: int) -> dict:
 
 
 async def fetch_hn_candidates(max_results: int = 5) -> list[dict]:
-    """Fetch top HN stories, filter for Show HN / GitHub links (hidden gems)."""
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get("https://hacker-news.firebaseio.com/v0/topstories.json")
-        r.raise_for_status()
-        story_ids = r.json()[:20]
+    """Fetch Show HN posts with traction via the Algolia HN API.
 
-    candidates = []
+    Algolia returns full JSON objects with searchable tags (show_hn) and
+    numeric filters (points), unlike the Firebase API which only returns IDs.
+    Show HN posts surface GitHub repos 24-48h before they trend.
+    """
+    candidates: list[dict] = []
     async with httpx.AsyncClient(timeout=30) as client:
-        for sid in story_ids:
-            if len(candidates) >= max_results:
-                break
-            r = await client.get(
-                f"https://hacker-news.firebaseio.com/v0/item/{sid}.json"
-            )
-            if r.status_code != 200:
-                continue
-            story = r.json()
-            if not story or story.get("type") != "story":
-                continue
-            url = story.get("url", "")
-            title = story.get("title", "")
-            # Look for GitHub links or Show HN posts
-            if "github.com" in url or title.startswith("Show HN"):
-                candidates.append(normalize_hn_story(story, sid))
+        r = await client.get(
+            "https://hn.algolia.com/api/v1/search",
+            params={
+                "tags": "show_hn",
+                "numericFilters": "points>50",
+                "hitsPerPage": 20,
+            },
+        )
+        r.raise_for_status()
+        hits = r.json().get("hits", [])
+    for hit in hits:
+        if len(candidates) >= max_results:
+            break
+        url = hit.get("url") or ""
+        title = hit.get("title") or ""
+        story_id = hit.get("objectID") or ""
+        if not title:
+            continue
+        candidates.append(
+            {
+                "url": url or f"https://news.ycombinator.com/item?id={story_id}",
+                "title": title[:200],
+                "kind": "repo" if "github.com" in url else "thread",
+                "description": title,
+                "topics": ["hn", "hidden-gem", "ai"],
+                "discovery_source": "hacker_news",
+                "evidence_url": f"https://news.ycombinator.com/item?id={story_id}",
+                "hn_points": hit.get("points", 0),
+                "hn_comments": hit.get("num_comments", 0),
+            }
+        )
     return candidates
 
 
 async def fetch_low_star_github_candidates(max_results: int = 5) -> list[dict]:
-    """Recently created, recently updated GitHub repos with 50–500 stars."""
-    since = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y-%m-%d")
+    """Recently created GitHub repos with 10–200 stars (true hidden gems).
+
+    The previous 50–500 range was too high to be "hidden." 10–200 stars with
+    a recent-creation gate surfaces niche tools that haven't hit the viral
+    cycle yet.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
     params = {
-        "q": f"created:>{since} stars:50..500 topic:ai sort:updated",
+        "q": f"created:>{since} stars:10..200 topic:ai sort:updated",
         "sort": "updated",
         "order": "desc",
         "per_page": max_results,

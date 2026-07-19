@@ -55,8 +55,8 @@ async def fetch_reddit_posts() -> str:
     for c in candidates:
         lines.append(
             f"- {c['title']} | {c['url']}\n"
-            f"  Google SERP rank={c['serp_rank']} | "
-            f"visibility proxy={c['visibility_score']}/100 | "
+            f"  upvotes={c.get('num_upvotes', '?')} | "
+            f"comments={c.get('num_comments', '?')} | "
             f"subreddit={c.get('subreddit', '?')}\n"
             f"  desc: {c['description'][:120]}"
         )
@@ -76,7 +76,7 @@ async def write_reddit_post(post_url: str, verdict: str) -> str:
         return f"ERROR: unknown post_url {post_url}. Call fetch_reddit_posts first."
 
     momentum = c["visibility_score"]
-    blurb = reddit_evidence_copy(c["serp_rank"], momentum)
+    blurb = reddit_evidence_copy(c.get("num_upvotes", 0), c.get("num_comments", 0))
     project = {
         "url": c["url"],
         "title": c["title"],
@@ -88,14 +88,15 @@ async def write_reddit_post(post_url: str, verdict: str) -> str:
     }
     signal = {
         "source": "reddit",
-        "metric": "search visibility",
-        "value": momentum,
-        "delta": 0,
+        "metric": "upvotes",
+        "value": c.get("num_upvotes", 0),
+        "delta": c.get("num_comments", 0),
         "evidenceUrl": c["evidence_url"],
-        "evidenceLabel": "Re-run source query",
-        "sourceQuery": c["search_query"],
+        "evidenceLabel": "Open Reddit thread",
+        "subreddit": c.get("subreddit", ""),
         "summary": (
-            f"Google SERP rank={c['serp_rank']}; visibility proxy={momentum}/100"
+            f"Reddit upvotes={c.get('num_upvotes', 0)}, "
+            f"comments={c.get('num_comments', 0)}"
         ),
     }
     post_id = await write_post(
@@ -110,7 +111,7 @@ async def write_reddit_post(post_url: str, verdict: str) -> str:
         momentum,
     )
     return (
-        f"Posted: {c['title']} (SERP rank {c['serp_rank']}, "
+        f"Posted: {c['title']} (upvotes {c.get('num_upvotes', '?')}, "
         f"verdict '{verdict}') -> post {post_id}"
     )
 

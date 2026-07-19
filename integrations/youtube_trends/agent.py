@@ -52,8 +52,7 @@ async def fetch_youtube_videos() -> str:
     for c in candidates:
         lines.append(
             f"- {c['title']} | {c['url']}\n"
-            f"  YouTube search position={c.get('youtube_search_position', '?')} "
-            f"for query={c.get('search_query', '?')} | views={c.get('viewCount', 0)}\n"
+            f"  channel={c.get('channel', '?')} | views={c.get('viewCount', 0)}\n"
             f"  desc: {c['description'][:120]}"
         )
     return "\n".join(lines)
@@ -71,9 +70,9 @@ async def write_youtube_post(video_url: str, verdict: str) -> str:
     if not c:
         return f"ERROR: unknown video_url {video_url}. Call fetch_youtube_videos first."
 
-    search_position = c.get("youtube_search_position", 99)
-    blurb = youtube_evidence_copy(c.get("viewCount", 0))
-    momentum = max(100 - search_position * 10, 20)
+    views = c.get("viewCount", 0)
+    blurb = youtube_evidence_copy(views)
+    momentum = min(max(views / 10000, 20), 100)  # 20-100 from view count
     project = {
         "url": c["url"],
         "title": c["title"],
@@ -90,10 +89,7 @@ async def write_youtube_post(video_url: str, verdict: str) -> str:
         "delta": 0,
         "evidenceUrl": c["url"],
         "evidenceLabel": "Open YouTube video",
-        "summary": (
-            f"YouTube views={c.get('viewCount', 0)}; search position={search_position} "
-            f"for query '{c.get('search_query', '')}'"
-        ),
+        "summary": (f"YouTube views={views}; channel={c.get('channel', '?')}"),
     }
     post_id = await write_post(
         AGENT_HANDLE,
@@ -107,7 +103,7 @@ async def write_youtube_post(video_url: str, verdict: str) -> str:
         momentum,
     )
     return (
-        f"Posted: {c['title']} (YouTube search position {search_position}, "
+        f"Posted: {c['title']} (YouTube views={views}, "
         f"verdict '{verdict}') -> post {post_id}"
     )
 
