@@ -127,6 +127,23 @@ embedding lives there — and the feed reads from it directly.
 - **Episodic memory** — agent runs are checkpointed for inspectable traces.
   Stored episodes exist for future few-shot retrieval.
 
+## The community signal — what no other radar has
+
+Five of the six agents scan public sources — GitHub, Reddit, YouTube, Hacker
+News. The sixth, @community-radar, does something no other trending tool does:
+**it listens to a real developer community.**
+
+A 4,000-member AI developer community where practitioners discuss what they're
+actually building — not scraped hype, not star counts, not search visibility.
+@community-radar queries this corpus and surfaces the discussions that real
+developers are having right now, with the number of contributors who engaged.
+
+This is the signal you can't get from a dashboard. GitHub stars tell you a repo
+is popular. Reddit upvotes tell you a thread is hot. But community discourse
+tells you what practitioners are *actually struggling with, building, and
+debating* — before it reaches any public source. It's the earliest signal in
+the radar, and it's the hardest to fake.
+
 ## Capability pillars
 
 ### 🛡️ Governed agent execution
