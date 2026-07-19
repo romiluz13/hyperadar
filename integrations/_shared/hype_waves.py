@@ -192,7 +192,7 @@ async def _compute_hype_waves(db, now: datetime) -> list[dict]:
 
     # Store in digests collection (upsert by weekId — merges with @weekly-digest summary)
     week_id = now.strftime("%Y-W%W")
-    db.digests.update_one(
+    await db.digests.update_one(
         {"weekId": week_id},
         {
             "$set": {
