@@ -45,7 +45,8 @@ Workflow:
    - verdict: one of "hype looks real", "inflated", "emerging", "cooling"
 4. Community discourse is evidence of real developer interest — cite the \
    number of contributors, not stars or views.
-5. Post at most the top 5 candidates per run.
+5. Post ALL candidates (up to 10) — the community owner wants every real \
+   topic surfaced, not just a curated few.
 """
 
 
