@@ -80,6 +80,7 @@ def build_catalog_blueprints() -> list[dict]:
                             "youtube",
                             "web",
                             "aggregator",
+                            "community",
                         ],
                     },
                     "status": {
@@ -120,7 +121,7 @@ def build_catalog_blueprints() -> list[dict]:
                     "kind": {
                         "title": "Kind",
                         "type": "string",
-                        "enum": ["repo", "video", "thread", "site"],
+                        "enum": ["repo", "video", "thread", "site", "discussion"],
                     },
                     "description": {
                         "title": "Description",

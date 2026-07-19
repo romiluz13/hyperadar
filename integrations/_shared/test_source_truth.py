@@ -49,8 +49,8 @@ def load_source(relative_path: str, module_name: str):
 def test_one_catalog_drives_python_agent_identity():
     from _shared.agent_catalog import AGENT_CATALOG, agent_identity
 
-    assert len(AGENT_CATALOG) == 5
-    assert len({agent["handle"] for agent in AGENT_CATALOG}) == 5
+    assert len(AGENT_CATALOG) == 6
+    assert len({agent["handle"] for agent in AGENT_CATALOG}) == 6
     assert agent_identity("@youtube-trends")["bio"].startswith("The hype amplifier")
 
 
@@ -748,6 +748,67 @@ async def test_reddit_candidate_returns_structured_upvote_data(monkeypatch):
     assert candidates[0]["subreddit"] == "LocalLLaMA"
     assert candidates[0]["visibility_score"] > 0
     assert candidates[0]["evidence_url"] == full_url
+
+
+@pytest.mark.asyncio
+async def test_community_source_parses_rombot_api_response(monkeypatch):
+    """The community source calls the RomBot API and parses the text answer."""
+    source = load_source("community_ask/source.py", "community_truth_source")
+    monkeypatch.setattr(source.os, "environ", {"ROMBOT_COMMUNITY_ASK_TOKEN": "fake-token"})
+
+    class FakeResponse:
+        def __init__(self, data):
+            self._data = data
+            self.status_code = 200
+        def json(self):
+            return self._data
+        def raise_for_status(self):
+            pass
+
+    class FakeClient:
+        def __init__(self, **_kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            pass
+        async def post(self, url, **kw):
+            assert "api.rombot.uk" in url
+            assert kw["headers"]["X-Community-Ask-Token"] == "fake-token"
+            return FakeResponse({
+                "answer": (
+                    "TOPIC: LangGraph vs CrewAI for multi-agent workflows\n"
+                    "WHO: @devbuilder\n"
+                    "SUMMARY: Community compared LangGraph's graph-based orchestration with CrewAI's role-based approach.\n"
+                    "CONTRIBUTORS: 12\n"
+                    "TOPIC: Coding agents replacing IDE plugins\n"
+                    "WHO: @aieng\n"
+                    "SUMMARY: Discussion on whether Claude Code and Cursor agents replace traditional IDE extensions.\n"
+                    "CONTRIBUTORS: 8\n"
+                ),
+                "model": "grove",
+                "latency_ms": 3500,
+            })
+
+    monkeypatch.setattr(source.httpx, "AsyncClient", FakeClient)
+    candidates = await source.fetch_community_candidates(max_results=5)
+
+    assert len(candidates) == 2
+    assert candidates[0]["title"] == "LangGraph vs CrewAI for multi-agent workflows"
+    assert candidates[0]["kind"] == "discussion"
+    assert candidates[0]["num_contributors"] == 12
+    assert candidates[0]["visibility_score"] > 0
+    assert candidates[1]["title"] == "Coding agents replacing IDE plugins"
+    assert candidates[1]["num_contributors"] == 8
+
+
+def test_community_evidence_copy_describes_real_discourse():
+    from _shared.evidence_copy import community_evidence_copy
+
+    assert community_evidence_copy(12) == (
+        "12 community members discussed this in the AI Agents Community "
+        "corpus. Real developer discourse, not search visibility."
+    )
 
 
 @pytest.mark.asyncio

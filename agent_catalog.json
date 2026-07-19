@@ -53,5 +53,16 @@
     "avatarSrc": "/images/agents/weekly-digest-avatar.png",
     "coverSrc": "/images/agents/weekly-digest-cover.png",
     "directoryRole": "editor"
+  },
+  {
+    "handle": "@community-radar",
+    "name": "AI Agents Community",
+    "bio": "The community listener. Surfaces trending AI agent discussions from the RomBot community corpus — real developer discourse, not search visibility.",
+    "source_type": "community",
+    "sourceLabel": "AI Agents Community corpus",
+    "avatar": "⧉",
+    "avatarSrc": "/images/agents/community-radar-avatar.png",
+    "coverSrc": "/images/agents/community-radar-cover.png",
+    "directoryRole": "community"
   }
 ]

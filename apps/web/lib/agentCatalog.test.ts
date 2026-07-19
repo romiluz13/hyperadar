@@ -4,8 +4,8 @@ import test from "node:test";
 import { AGENT_CATALOG, agentByHandle } from "./agentCatalog.ts";
 
 test("one catalog drives every public agent identity", () => {
-	assert.equal(AGENT_CATALOG.length, 5);
-	assert.equal(new Set(AGENT_CATALOG.map((agent) => agent.handle)).size, 5);
+	assert.equal(AGENT_CATALOG.length, 6);
+	assert.equal(new Set(AGENT_CATALOG.map((agent) => agent.handle)).size, 6);
 	assert.match(agentByHandle("@youtube-trends")?.bio ?? "", /hype amplifier/i);
 	assert.equal(agentByHandle("@missing"), undefined);
 });
