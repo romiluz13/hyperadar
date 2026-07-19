@@ -25,7 +25,9 @@ class RunAgentWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow["identifier"], "run-hyperadar-agent")
         self.assertEqual(workflow["category"], "Agent Operations")
 
-        trigger, dispatch = workflow["nodes"]
+        nodes_by_id = {n["identifier"]: n for n in workflow["nodes"]}
+        trigger = nodes_by_id["select-agent"]
+        dispatch = nodes_by_id["run-agent"]
         self.assertEqual(trigger["config"]["type"], "SELF_SERVE_TRIGGER")
         self.assertEqual(trigger["config"]["permissions"], {})
         self.assertEqual(
@@ -72,15 +74,43 @@ class RunAgentWorkflowTests(unittest.TestCase):
             dispatch["links"],
             ["https://github.com/romiluz13/hyperadar/actions"],
         )
-        self.assertEqual(
-            workflow["connections"],
-            [
-                {
-                    "sourceIdentifier": "select-agent",
-                    "targetIdentifier": "run-agent",
-                }
-            ],
+
+    def test_workflow_includes_an_approval_gate_before_agent_execution(self):
+        """The workflow must have an INPUT approval node between trigger and dispatch.
+
+        This showcases Port's HITL (human-in-the-loop) capability: an editor
+        approves before any agent runs. Declining stops the workflow.
+        """
+        workflow = build_run_agent_workflow("github-ocean")
+        nodes_by_id = {n["identifier"]: n for n in workflow["nodes"]}
+
+        # The approval node exists and is an INPUT type
+        self.assertIn("approve-run", nodes_by_id)
+        approval = nodes_by_id["approve-run"]
+        self.assertEqual(approval["config"]["type"], "INPUT")
+
+        # It has approve and decline outlets
+        outlet_ids = {o["identifier"] for o in approval["config"]["outlets"]}
+        self.assertEqual(outlet_ids, {"approve", "decline"})
+
+        # The approve outlet requires 1 responder
+        approve_outlet = next(
+            o for o in approval["config"]["outlets"] if o["identifier"] == "approve"
         )
+        self.assertEqual(approve_outlet["numOfResponders"], 1)
+
+        # Connections: trigger -> approval -> (approve outlet) -> run-agent
+        conn_by_source = {}
+        for conn in workflow["connections"]:
+            key = (conn["sourceIdentifier"], conn.get("sourceOutletIdentifier"))
+            conn_by_source[key] = conn["targetIdentifier"]
+
+        self.assertEqual(conn_by_source[("select-agent", None)], "approve-run")
+        self.assertEqual(conn_by_source[("approve-run", "approve")], "run-agent")
+
+        # The decline path must NOT connect to run-agent
+        decline_target = conn_by_source.get(("approve-run", "decline"))
+        self.assertNotEqual(decline_target, "run-agent")
 
     def test_dry_run_prints_the_publishable_workflow_without_credentials(self):
         script = Path(__file__).with_name("setup_port_workflows.py")
@@ -100,8 +130,9 @@ class RunAgentWorkflowTests(unittest.TestCase):
 
         workflow = json.loads(result.stdout)
         self.assertEqual(workflow["identifier"], "run-hyperadar-agent")
+        nodes_by_id = {n["identifier"]: n for n in workflow["nodes"]}
         self.assertEqual(
-            workflow["nodes"][1]["config"]["installationId"], "github-ocean"
+            nodes_by_id["run-agent"]["config"]["installationId"], "github-ocean"
         )
 
     def test_provisioning_creates_the_workflow_when_it_does_not_exist(self):
