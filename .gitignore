@@ -3,6 +3,13 @@
 .env.*
 !.env.example
 
+# pi agent artifacts (local-only, transcripts may capture secrets)
+.pi-subagents/
+.loop-diff.patch
+.loop-evidence/
+.loop-plan.md
+.loop-ref-*.json
+
 # node
 node_modules/
 .next/
