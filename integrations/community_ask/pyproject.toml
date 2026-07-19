@@ -1,0 +1,18 @@
+[project]
+name = "community-ask"
+version = "0.1.0"
+description = "HypeRadar @community-radar agent — surfaces AI agent community discussions via RomBot community-ask API."
+requires-python = ">=3.11"
+dependencies = [
+  "deepagents",
+  "langchain-openai",
+  "langgraph",
+  "langgraph-checkpoint-mongodb",
+  "pymongo>=4.16",
+  "httpx",
+  "python-dotenv",
+  "sentence-transformers",
+]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio"]

@@ -13,6 +13,7 @@ on:
           - youtube-trends
           - hidden-gems
           - weekly-digest
+          - community-radar
       port_node_run_id:
         description: Port workflow node run to complete
         required: false
@@ -53,6 +54,7 @@ jobs:
             youtube-trends) directory=youtube_trends ;;
             hidden-gems) directory=hidden_gems ;;
             weekly-digest) directory=weekly_digest ;;
+            community-radar) directory=community_ask ;;
             *) echo "Unknown agent"; exit 2 ;;
           esac
           echo "directory=$directory" >> "$GITHUB_OUTPUT"
@@ -92,6 +94,16 @@ jobs:
         if: inputs.agent == 'youtube-trends'
         run: uv tool install yt-dlp==2026.07.04
 
+      - name: Validate community-ask secret
+        if: inputs.agent == 'community-radar'
+        env:
+          ROMBOT_COMMUNITY_ASK_TOKEN: ${{ secrets.ROMBOT_COMMUNITY_ASK_TOKEN }}
+        run: |
+          if [ -z "$ROMBOT_COMMUNITY_ASK_TOKEN" ]; then
+            echo "::error::ROMBOT_COMMUNITY_ASK_TOKEN is not configured"
+            exit 1
+          fi
+
       - name: Run agent
         working-directory: integrations/${{ steps.agent.outputs.directory }}
         env:
@@ -104,6 +116,7 @@ jobs:
           GROVE_MODEL: ${{ secrets.GROVE_MODEL }}
           BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.HYPERADAR_GITHUB_TOKEN || github.token }}
+          ROMBOT_COMMUNITY_ASK_TOKEN: ${{ secrets.ROMBOT_COMMUNITY_ASK_TOKEN }}
         run: uv run --frozen python main.py
 
   report-to-port:

@@ -41,7 +41,7 @@ class PortCatalogSetupTests(unittest.TestCase):
 
         payload = json.loads(result.stdout)
         self.assertEqual(len(payload["blueprints"]), 3)
-        self.assertEqual(len(payload["agents"]), 5)
+        self.assertEqual(len(payload["agents"]), 6)
         reddit = next(
             agent
             for agent in payload["agents"]
@@ -60,6 +60,7 @@ class PortCatalogSetupTests(unittest.TestCase):
                 "youtube-trends",
                 "hidden-gems",
                 "weekly-digest",
+                "community-radar",
             ],
         )
         self.assertTrue(
