@@ -23,6 +23,9 @@ CHANNELS = [
     "https://www.youtube.com/@Fireship/videos",
     "https://www.youtube.com/@samwitteveen/videos",
     "https://www.youtube.com/@ColeMedin/videos",
+    "https://www.youtube.com/@NicholasRenotte/videos",
+    "https://www.youtube.com/@vrpsworld/videos",
+    "https://www.youtube.com/@MatthewBerman/videos",
 ]
 SOURCE_COMMAND_TIMEOUT_SECONDS = 120
 SOURCE_COMMAND_CLEANUP_TIMEOUT_SECONDS = 5
