@@ -111,6 +111,62 @@ def build_run_agent_workflow(installation_id: str) -> dict:
                 },
             },
             {
+                "identifier": "approve-run",
+                "title": "Approve agent run",
+                "config": {
+                    "type": "INPUT",
+                    "description": (
+                        "Review the selected agent creator and approve or decline "
+                        "the radar refresh. No agent runs without explicit approval."
+                    ),
+                    "userInputs": {
+                        "properties": {
+                            "note": {
+                                "type": "string",
+                                "title": "Note (optional)",
+                                "description": ("Add a note for the audit trail."),
+                            }
+                        },
+                        "buttons": [
+                            {
+                                "identifier": "approve",
+                                "label": "Approve",
+                                "variant": "PRIMARY",
+                                "icon": "Check",
+                            },
+                            {
+                                "identifier": "decline",
+                                "label": "Decline",
+                                "variant": "DANGER",
+                                "icon": "X",
+                            },
+                        ],
+                    },
+                    "outlets": [
+                        {
+                            "evaluationMethod": "button",
+                            "identifier": "approve",
+                            "title": "Approved",
+                            "numOfResponders": 1,
+                            "statusLabel": {
+                                "text": "Approved",
+                                "variant": "success",
+                            },
+                        },
+                        {
+                            "evaluationMethod": "button",
+                            "identifier": "decline",
+                            "title": "Declined",
+                            "numOfResponders": 1,
+                            "statusLabel": {
+                                "text": "Declined",
+                                "variant": "alert",
+                            },
+                        },
+                    ],
+                },
+            },
+            {
                 "identifier": "run-agent",
                 "title": "Run agent and publish signals",
                 "config": {
@@ -137,8 +193,13 @@ def build_run_agent_workflow(installation_id: str) -> dict:
         "connections": [
             {
                 "sourceIdentifier": "select-agent",
+                "targetIdentifier": "approve-run",
+            },
+            {
+                "sourceIdentifier": "approve-run",
                 "targetIdentifier": "run-agent",
-            }
+                "sourceOutletIdentifier": "approve",
+            },
         ],
     }
 
