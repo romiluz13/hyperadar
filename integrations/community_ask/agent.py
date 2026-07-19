@@ -71,11 +71,10 @@ async def publish_community_posts() -> str:
             verdict = "emerging"
         else:
             verdict = "cooling"
-        # Unique URL per topic so the daily dedup guard doesn't block them.
-        topic_slug = c["title"][:60].lower().replace(" ", "-").replace("—", "-")
-        unique_url = f"{c['url']}/{topic_slug}"
+        # No external URL — the community corpus is private.
+        # Use the URL from the source (already an internal anchor).
         project = {
-            "url": unique_url,
+            "url": c["url"],
             "title": c["title"],
             "kind": c["kind"],
             "description": c["description"],
@@ -88,8 +87,8 @@ async def publish_community_posts() -> str:
             "metric": "contributors",
             "value": contributors,
             "delta": 0,
-            "evidenceUrl": c["evidence_url"],
-            "evidenceLabel": "AI Agents community corpus",
+            "evidenceUrl": c.get("evidence_url") or None,
+            "evidenceLabel": "AI Agents Community corpus (private)",
             "summary": (
                 f"Community discussion with {contributors} contributors; "
                 f"raised by {c.get('who', 'community members')}"

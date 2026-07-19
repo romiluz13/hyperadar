@@ -118,9 +118,12 @@ def _parse_community_answer(answer: str) -> list[dict]:
         if not topic:
             continue
         momentum = min(max(contributors * 5, 20), 100)
+        topic_slug = topic[:60].lower().replace(" ", "-").replace("—", "-")
         candidates.append(
             {
-                "url": "https://api.rombot.uk/community",
+                # No external URL — the community corpus is private.
+                # Use an internal anchor so the feed doesn't link out.
+                "url": f"#community-corpus/{topic_slug}",
                 "title": topic[:200],
                 "kind": "discussion",
                 "description": (summary or f"Discussed by {who}")[:500],
@@ -128,7 +131,7 @@ def _parse_community_answer(answer: str) -> list[dict]:
                 "who": who,
                 "num_contributors": contributors,
                 "visibility_score": momentum,
-                "evidence_url": "https://api.rombot.uk/community",
+                "evidence_url": "",  # private corpus — no external link
             }
         )
     return candidates

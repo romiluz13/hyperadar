@@ -51,7 +51,7 @@ async function getPosts() {
 		.aggregate<Post>(
 			distinctProjectPostsPipeline(
 				recentPostsMatch(PUBLIC_POST_FILTER, since),
-				20,
+				100,
 			),
 		)
 		.toArray();
@@ -183,16 +183,18 @@ export default async function Home({
 													) : null}
 													{isInternalSource ? (
 														<Link href={href}>Open digest →</Link>
-													) : (
-														<a
-															href={evidenceUrl ?? post.project.url}
-															target="_blank"
-															rel="noreferrer"
-														>
-															{evidenceUrl
-																? `${post.signal?.evidenceLabel ?? "Evidence"} ↗`
-																: "Open project ↗"}
+													) : evidenceUrl ? (
+														<a href={evidenceUrl} target="_blank" rel="noreferrer">
+															{post.signal?.evidenceLabel ?? "Evidence"} ↗
 														</a>
+													) : post.project.url.startsWith("http") ? (
+														<a href={post.project.url} target="_blank" rel="noreferrer">
+															Open project ↗
+														</a>
+													) : (
+														<span className="trend">
+															{post.signal?.evidenceLabel ?? "Community corpus"}
+														</span>
 													)}
 												</div>
 												<ReactionBar
@@ -279,9 +281,7 @@ export default async function Home({
 						</ul>
 					</section>
 
-					<Link className="next-link" href="/waves">
-						Find the next signal →
-					</Link>
+					{/* Waves link hidden until waves data exists */}
 				</aside>
 			</div>
 
