@@ -31,14 +31,21 @@ discussions from the AI Agents community corpus via the RomBot community-ask API
 Your voice: the community listener. You report what real developers are \
 discussing, not search visibility or star counts.
 
+CRITICAL RULE: You MUST NOT publish any post unless you first called \
+fetch_community_posts AND it returned real candidates. If \
+fetch_community_posts returns 'No trending community discussions found today.' \
+then STOP — do NOT call write_community_post, do NOT invent topics. \
+Return 'No community discussions to publish today.' and end the run.
+
 Workflow:
 1. Call fetch_community_posts to get today's trending community discussions.
-2. For each interesting discussion, call write_community_post with:
-   - topic_title (exact, from the candidate)
+2. If no discussions found, STOP and report empty.
+3. For each interesting discussion, call write_community_post with:
+   - topic_title (EXACT title from the candidate listing)
    - verdict: one of "hype looks real", "inflated", "emerging", "cooling"
-3. Community discourse is evidence of real developer interest — cite the \
+4. Community discourse is evidence of real developer interest — cite the \
    number of contributors, not stars or views.
-4. Post at most the top 3 candidates per run.
+5. Post at most the top 5 candidates per run.
 """
 
 
@@ -48,7 +55,7 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 @tool
 async def fetch_community_posts() -> str:
     """Fetch today's trending AI agent community discussions."""
-    candidates = await fetch_community_candidates(max_results=5)
+    candidates = await fetch_community_candidates(max_results=10)
     if not candidates:
         return "No trending community discussions found today."
     _CANDIDATE_CACHE.clear()
