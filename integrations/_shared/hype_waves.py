@@ -85,7 +85,7 @@ def cluster_projects(projects: list[dict], threshold: float = 0.7) -> list[list[
     return clusters
 
 
-def label_cluster(cluster: list[dict]) -> str:
+async def label_cluster(cluster: list[dict]) -> str:
     """Label a cluster with a theme name using Grove LLM."""
     titles = [p["title"] for p in cluster]
     topics = []
@@ -102,21 +102,21 @@ def label_cluster(cluster: list[dict]) -> str:
     )
 
     try:
-        r = httpx.post(
-            f"{os.environ['GROVE_BASE_URL']}/chat/completions",
-            headers={
-                "Content-Type": "application/json",
-                "api-key": os.environ["GROVE_API_KEY"],
-            },
-            json={
-                "model": os.environ["GROVE_MODEL"],
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-            },
-            timeout=30,
-        )
-        r.raise_for_status()
-        label = r.json()["choices"][0]["message"]["content"].strip()
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"{os.environ['GROVE_BASE_URL']}/chat/completions",
+                headers={
+                    "Content-Type": "application/json",
+                    "api-key": os.environ["GROVE_API_KEY"],
+                },
+                json={
+                    "model": os.environ["GROVE_MODEL"],
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                },
+            )
+            r.raise_for_status()
+            label = r.json()["choices"][0]["message"]["content"].strip()
         # Clean up: remove quotes, newlines
         return label.strip("\"'\n")[:60]
     except Exception as e:
@@ -164,7 +164,7 @@ async def _compute_hype_waves(db, now: datetime) -> list[dict]:
 
     waves = []
     for cluster in clusters:
-        label = label_cluster(cluster)
+        label = await label_cluster(cluster)
         avg_momentum = sum(p.get("momentumScore", 0) for p in cluster) / len(cluster)
         agent_handles = _distinct_agent_handles(cluster, agents_by_project)
         waves.append(
