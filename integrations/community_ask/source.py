@@ -71,6 +71,25 @@ async def fetch_community_candidates(max_results: int = 10) -> list[dict]:
         return []
 
 
+def _parse_contributor_count(raw: str) -> int:
+    """Parse a contributor count from formats like '~10-15', '15', '~8'."""
+    import re
+
+    # Remove non-digit prefix characters like ~
+    cleaned = re.sub(r"[^0-9-]", "", raw)
+    if "-" in cleaned:
+        # Range like 10-15 — take the upper bound
+        parts = cleaned.split("-")
+        try:
+            return int(parts[-1])
+        except (ValueError, IndexError):
+            return 0
+    try:
+        return int(cleaned)
+    except ValueError:
+        return 0
+
+
 def _parse_community_answer(answer: str) -> list[dict]:
     """Parse the RomBot API text response into candidate dicts.
 
@@ -92,12 +111,10 @@ def _parse_community_answer(answer: str) -> list[dict]:
             elif line.startswith("SUMMARY:"):
                 summary = line.removeprefix("SUMMARY:").strip()
             elif line.startswith("CONTRIBUTORS:"):
-                try:
-                    contributors = int(
-                        line.removeprefix("CONTRIBUTORS:").strip().split()[0]
-                    )
-                except (ValueError, IndexError):
-                    contributors = 0
+                raw = line.removeprefix("CONTRIBUTORS:").strip()
+                # The API returns ranges like "~10-15" or "~6-10".
+                # Take the upper bound as the contributor estimate.
+                contributors = _parse_contributor_count(raw)
         if not topic:
             continue
         momentum = min(max(contributors * 5, 20), 100)

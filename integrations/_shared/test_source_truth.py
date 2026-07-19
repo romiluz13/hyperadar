@@ -754,41 +754,50 @@ async def test_reddit_candidate_returns_structured_upvote_data(monkeypatch):
 async def test_community_source_parses_rombot_api_response(monkeypatch):
     """The community source calls the RomBot API and parses the text answer."""
     source = load_source("community_ask/source.py", "community_truth_source")
-    monkeypatch.setattr(source.os, "environ", {"ROMBOT_COMMUNITY_ASK_TOKEN": "fake-token"})
+    monkeypatch.setattr(
+        source.os, "environ", {"ROMBOT_COMMUNITY_ASK_TOKEN": "fake-token"}
+    )
 
     class FakeResponse:
         def __init__(self, data):
             self._data = data
             self.status_code = 200
+
         def json(self):
             return self._data
+
         def raise_for_status(self):
             pass
 
     class FakeClient:
         def __init__(self, **_kw):
             pass
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             pass
+
         async def post(self, url, **kw):
             assert "api.rombot.uk" in url
             assert kw["headers"]["X-Community-Ask-Token"] == "fake-token"
-            return FakeResponse({
-                "answer": (
-                    "TOPIC: LangGraph vs CrewAI for multi-agent workflows\n"
-                    "WHO: @devbuilder\n"
-                    "SUMMARY: Community compared LangGraph's graph-based orchestration with CrewAI's role-based approach.\n"
-                    "CONTRIBUTORS: 12\n"
-                    "TOPIC: Coding agents replacing IDE plugins\n"
-                    "WHO: @aieng\n"
-                    "SUMMARY: Discussion on whether Claude Code and Cursor agents replace traditional IDE extensions.\n"
-                    "CONTRIBUTORS: 8\n"
-                ),
-                "model": "grove",
-                "latency_ms": 3500,
-            })
+            return FakeResponse(
+                {
+                    "answer": (
+                        "TOPIC: LangGraph vs CrewAI for multi-agent workflows\n"
+                        "WHO: @devbuilder\n"
+                        "SUMMARY: Community compared LangGraph's graph-based orchestration with CrewAI's role-based approach.\n"
+                        "CONTRIBUTORS: ~10-15\n"
+                        "TOPIC: Coding agents replacing IDE plugins\n"
+                        "WHO: @aieng\n"
+                        "SUMMARY: Discussion on whether Claude Code and Cursor agents replace traditional IDE extensions.\n"
+                        "CONTRIBUTORS: ~8-12\n"
+                    ),
+                    "model": "grove",
+                    "latency_ms": 3500,
+                }
+            )
 
     monkeypatch.setattr(source.httpx, "AsyncClient", FakeClient)
     candidates = await source.fetch_community_candidates(max_results=5)
@@ -796,10 +805,10 @@ async def test_community_source_parses_rombot_api_response(monkeypatch):
     assert len(candidates) == 2
     assert candidates[0]["title"] == "LangGraph vs CrewAI for multi-agent workflows"
     assert candidates[0]["kind"] == "discussion"
-    assert candidates[0]["num_contributors"] == 12
+    assert candidates[0]["num_contributors"] == 15  # upper bound of ~10-15
     assert candidates[0]["visibility_score"] > 0
     assert candidates[1]["title"] == "Coding agents replacing IDE plugins"
-    assert candidates[1]["num_contributors"] == 8
+    assert candidates[1]["num_contributors"] == 12  # upper bound of ~8-12
 
 
 def test_community_evidence_copy_describes_real_discourse():
