@@ -80,7 +80,9 @@ async function searchPosts(query: string) {
 	// Run vector search against projects and text search against posts
 	// in parallel, then merge with Reciprocal Rank Fusion. MongoDB $rankFusion
 	// cannot span two collections, so we merge in TypeScript.
-	const [vectorPosts, textPosts] = await Promise.all([
+	// Use allSettled so a failure in one leg doesn't kill the entire search —
+	// we degrade to whichever leg succeeded.
+	const [vectorResult, textResult] = await Promise.allSettled([
 		db
 			.collection<Post>("projects")
 			.aggregate<Post>(vectorSearchProjectsPipeline(queryVector, 100))
@@ -90,6 +92,21 @@ async function searchPosts(query: string) {
 			.aggregate<Post>(textSearchPostsPipeline(query, 100))
 			.toArray(),
 	]);
+
+	const vectorPosts =
+		vectorResult.status === "fulfilled" ? vectorResult.value : [];
+	const textPosts =
+		textResult.status === "fulfilled" ? textResult.value : [];
+
+	// If both legs failed, fall back to text-only search
+	if (vectorPosts.length === 0 && textPosts.length === 0) {
+		console.warn("[search] both vector and text legs failed");
+		const posts = await db
+			.collection<Post>("posts")
+			.aggregate<Post>(textOnlySearchPipeline(query, 100))
+			.toArray();
+		return posts.map((post) => ({ ...post, _id: post._id.toString() }));
+	}
 
 	const merged = mergeHybridResults(vectorPosts, textPosts).slice(0, 100);
 	return merged.map((post) => ({ ...post, _id: post._id.toString() }));

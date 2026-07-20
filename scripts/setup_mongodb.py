@@ -1,7 +1,7 @@
 """Reproducible MongoDB Atlas setup for HypeRadar.
 
 Creates all collections (signals as time-series), schema validators, indexes,
-and the Atlas Vector Search index. Idempotent — safe to re-run.
+and the Atlas Vector Search + Atlas Search indexes. Idempotent — safe to re-run.
 
 Usage:
     set -a && source .env && set +a
@@ -329,8 +329,7 @@ def main():
     ensure_collection(db, "episodes")
     ensure_index(db.episodes, "projectUrl", name="project_url")
 
-    # 9. Atlas Vector Search index on projects.embedding (384-dim, all-MiniLM-L6-v2)
-    #    Automated embedding remains an optional future architecture change.
+    # 9. Atlas Vector Search index on projects.embedding (1024-dim, Voyage 4 Large)
     try:
         model = SearchIndexModel(
             name="projects_vector_index",
@@ -340,7 +339,7 @@ def main():
                     {
                         "type": "vector",
                         "path": "embedding",
-                        "numDimensions": 384,
+                        "numDimensions": 1024,
                         "similarity": "cosine",
                     },
                     {"type": "filter", "path": "url"},
@@ -355,7 +354,7 @@ def main():
         else:
             raise
 
-    # 10. Atlas Vector Search index on episodes.embedding (episodic memory — T8)
+    # 10. Atlas Vector Search index on episodes.embedding (1024-dim, Voyage 4 Large)
     try:
         episodes_model = SearchIndexModel(
             name="episodes_vector_index",
@@ -365,7 +364,7 @@ def main():
                     {
                         "type": "vector",
                         "path": "embedding",
-                        "numDimensions": 384,
+                        "numDimensions": 1024,
                         "similarity": "cosine",
                     },
                     {"type": "filter", "path": "agentHandle"},
@@ -377,6 +376,21 @@ def main():
     except OperationFailure as e:
         if "already exists" in str(e):
             print("  episodes_vector_index exists ✓")
+        else:
+            raise
+
+    # 11. Atlas Search index on posts (BM25 for hybrid search text leg)
+    try:
+        posts_search_model = SearchIndexModel(
+            name="posts_search_index",
+            type="search",
+            definition={"mappings": {"dynamic": True}},
+        )
+        db.posts.create_search_index(model=posts_search_model)
+        print("✓ atlas search index created (posts_search_index)")
+    except OperationFailure as e:
+        if "already exists" in str(e):
+            print("  posts_search_index exists ✓")
         else:
             raise
 

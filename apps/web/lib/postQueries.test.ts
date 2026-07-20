@@ -43,6 +43,20 @@ test("vector search pipeline uses $vectorSearch with the projects index", () => 
 	assert.equal(vectorSearch.queryVector, fakeVector);
 });
 
+test("vector search pipeline uses 20x numCandidates per MongoDB best practice", () => {
+	const fakeVector = Array.from({ length: 1024 }, () => 0.1);
+	const pipeline = vectorSearchProjectsPipeline(fakeVector, 20);
+	const vectorSearch = (
+		pipeline.find((s) => "$vectorSearch" in s) as {
+			$vectorSearch: { numCandidates: number; limit: number };
+		}
+	).$vectorSearch;
+
+	// numCandidates should be at least 10x the limit (MongoDB recommends 20x)
+	const ratio = vectorSearch.numCandidates / vectorSearch.limit;
+	assert.ok(ratio >= 10, `numCandidates ratio ${ratio} should be >= 10`);
+});
+
 test("vector search pipeline joins posts via $lookup", () => {
 	const fakeVector = Array.from({ length: 1024 }, () => 0.1);
 	const pipeline = vectorSearchProjectsPipeline(fakeVector, 20);
@@ -62,6 +76,30 @@ test("text search pipeline uses $search with the posts index", () => {
 	assert.equal(search.index, "posts_search_index");
 });
 
+test("text search pipeline uses Atlas Search text operator for filter, not MQL $eq", () => {
+	const pipeline = textSearchPostsPipeline("agent security", 20);
+	const searchStage = pipeline.find((s) => "$search" in s) as {
+		$search: { compound: { filter: unknown[] } };
+	};
+	const filterClauses = searchStage.$search.compound.filter;
+
+	// Each filter clause must use Atlas Search operators (text, equals, range)
+	// NOT MQL operators like $eq
+	for (const clause of filterClauses) {
+		const keys = Object.keys(clause as Record<string, unknown>);
+		assert.ok(
+			keys.includes("text") || keys.includes("equals") || keys.includes("range"),
+			`filter clause must use Atlas Search operator, got keys: ${keys.join(",")}`,
+		);
+	}
+});
+
+test("text search pipeline deduplicates by project URL", () => {
+	const pipeline = textSearchPostsPipeline("test", 20);
+	const hasGroup = pipeline.some((s) => "$group" in s);
+	assert.ok(hasGroup, "text search pipeline must deduplicate via $group");
+});
+
 test("text-only fallback pipeline uses $search without $vectorSearch", () => {
 	const pipeline = textOnlySearchPipeline("test query", 20);
 
@@ -72,6 +110,22 @@ test("text-only fallback pipeline uses $search without $vectorSearch", () => {
 
 	assert.ok(searchIndex >= 0, "text-only pipeline must include $search");
 	assert.equal(vectorIndex, -1, "text-only pipeline must NOT include $vectorSearch");
+});
+
+test("text-only fallback uses Atlas Search text operator for filter", () => {
+	const pipeline = textOnlySearchPipeline("test", 20);
+	const searchStage = pipeline.find((s) => "$search" in s) as {
+		$search: { compound: { filter: unknown[] } };
+	};
+	const filterClauses = searchStage.$search.compound.filter;
+
+	for (const clause of filterClauses) {
+		const keys = Object.keys(clause as Record<string, unknown>);
+		assert.ok(
+			keys.includes("text") || keys.includes("equals") || keys.includes("range"),
+			`filter clause must use Atlas Search operator, got keys: ${keys.join(",")}`,
+		);
+	}
 });
 
 test("mergeHybridResults fuses vector and text results by RRF score", () => {
