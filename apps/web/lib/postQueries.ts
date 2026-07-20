@@ -31,20 +31,23 @@ export function distinctProjectPostsPipeline(
  *
  * Uses $vectorSearch on projects_vector_index (1024-dim Voyage 4 Large),
  * then $lookup to join synced posts. Returns the best post per project.
+ *
+ * numCandidates is set to 20x the limit per MongoDB best practice
+ * for high ANN/ENN recall overlap.
  */
 export function vectorSearchProjectsPipeline(
 	queryVector: number[],
 	limit: number,
 ): Document[] {
-	const candidateLimit = Math.min(limit * 2, 40);
+	const numCandidates = Math.min(limit * 20, 400);
 	return [
 		{
 			$vectorSearch: {
 				index: "projects_vector_index",
 				path: "embedding",
 				queryVector,
-				numCandidates: candidateLimit * 2,
-				limit: candidateLimit,
+				numCandidates,
+				limit,
 			},
 		},
 		{
@@ -62,21 +65,25 @@ export function vectorSearchProjectsPipeline(
 		},
 		{ $match: { posts: { $ne: [] } } },
 		{ $replaceRoot: { newRoot: { $first: "$posts" } } },
-		{ $limit: candidateLimit },
 	];
 }
 
 /**
  * Text search pipeline — runs against the `posts` collection.
  *
- * Uses Atlas Search ($search with BM25) on posts_search_index,
- * with per-project deduplication.
+ * Uses Atlas Search ($search with BM25) on posts_search_index.
+ * Deduplicates per project URL so mergeHybridResults doesn't inflate
+ * scores for projects with multiple matching posts.
+ *
+ * Note: compound.filter uses the Atlas Search `text` operator (not MQL
+ * $eq) because $search compound clauses require Atlas Search operators.
+ * Using `text` in `filter` zeroes its score contribution, which is correct
+ * for a pure filter.
  */
 export function textSearchPostsPipeline(
 	queryText: string,
 	limit: number,
 ): Document[] {
-	const candidateLimit = Math.min(limit * 2, 40);
 	return [
 		{
 			$search: {
@@ -90,11 +97,16 @@ export function textSearchPostsPipeline(
 							},
 						},
 					],
-					filter: [{ portSyncStatus: { $eq: "synced" } }],
+					filter: [
+						{ text: { query: "synced", path: "portSyncStatus" } },
+					],
 				},
 			},
 		},
-		{ $limit: candidateLimit },
+		{ $sort: { rankScore: -1, postedAt: -1 } },
+		{ $group: { _id: "$project.url", post: { $first: "$$ROOT" } } },
+		{ $replaceRoot: { newRoot: "$post" } },
+		{ $limit: limit },
 	];
 }
 
@@ -109,7 +121,7 @@ export function textSearchPostsPipeline(
  * but MongoDB $rankFusion can't span two collections, so we merge in TS.
  *
  * @param vectorResults - posts from vector search (already deduped per project)
- * @param textResults - posts from text search
+ * @param textResults - posts from text search (already deduped per project)
  * @param vectorWeight - weight for the vector leg (default 0.6)
  * @param textWeight - weight for the text leg (default 0.4)
  * @param k - RRF constant (default 60, standard value)
@@ -130,12 +142,7 @@ export function mergeHybridResults<
 		const key = post.project.url;
 		const rank = i + 1;
 		const score = vectorWeight / (k + rank);
-		const existing = scores.get(key);
-		if (existing) {
-			existing.score += score;
-		} else {
-			scores.set(key, { score, post });
-		}
+		scores.set(key, { score, post });
 	}
 
 	for (let i = 0; i < textResults.length; i++) {
@@ -179,7 +186,9 @@ export function textOnlySearchPipeline(
 							},
 						},
 					],
-					filter: [{ portSyncStatus: { $eq: "synced" } }],
+					filter: [
+						{ text: { query: "synced", path: "portSyncStatus" } },
+					],
 				},
 			},
 		},
