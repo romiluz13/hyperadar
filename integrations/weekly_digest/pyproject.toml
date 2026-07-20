@@ -10,7 +10,7 @@ dependencies = [
   "langgraph-checkpoint-mongodb",
   "pymongo>=4.16",
   "python-dotenv",
-  "sentence-transformers",
+  "voyageai",
 ]
 
 [dependency-groups]
