@@ -23,5 +23,8 @@ test("whatsappUrl URL-encodes the message", () => {
 test("whatsappUrl message format references HypeRadar", () => {
 	const url = whatsappUrl("GPT 5.6 Sol");
 	const decoded = decodeURIComponent(url.split("?text=")[1]);
-	assert.match(decoded, /I saw the discussion about "GPT 5.6 Sol" on HypeRadar/);
+	assert.match(
+		decoded,
+		/I saw the discussion about "GPT 5.6 Sol" on HypeRadar/,
+	);
 });

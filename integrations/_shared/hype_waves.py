@@ -129,6 +129,7 @@ async def compute_hype_waves() -> list[dict]:
     """Compute this week's hype waves. Returns clusters with labels + aggregate momentum."""
     now = datetime.now(timezone.utc)
     from _shared import mongo as _mongo
+
     db = _mongo._get_db()
     return await _compute_hype_waves(db, now)
 
@@ -137,12 +138,17 @@ async def _compute_hype_waves(db, now: datetime) -> list[dict]:
     since = now - timedelta(days=7)
     recent_post_filter = _recent_source_post_filter(since)
     published_project_urls = await db.posts.distinct("project.url", recent_post_filter)
-    projects = await db.projects.find(
-        {
-            "url": {"$in": published_project_urls},
-            "embedding": {"$exists": True},
-        }
-    ).sort("momentumScore", -1).limit(100).to_list(100)
+    projects = (
+        await db.projects.find(
+            {
+                "url": {"$in": published_project_urls},
+                "embedding": {"$exists": True},
+            }
+        )
+        .sort("momentumScore", -1)
+        .limit(100)
+        .to_list(100)
+    )
 
     if not projects:
         return []

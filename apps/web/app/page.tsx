@@ -8,12 +8,16 @@ import { feedEvidenceLabel } from "@/lib/feed";
 import { getDb } from "@/lib/mongo";
 import {
 	distinctProjectPostsPipeline,
+	mergeHybridResults,
 	recentPostsMatch,
-	searchPostsPipeline,
+	textOnlySearchPipeline,
+	textSearchPostsPipeline,
+	vectorSearchProjectsPipeline,
 } from "@/lib/postQueries";
 import { PUBLIC_POST_FILTER } from "@/lib/publication";
 import { projectHref } from "@/lib/routes";
 import { whatsappUrl } from "@/lib/whatsapp";
+import { embedQuery } from "@/lib/voyage";
 
 export const dynamic = "force-dynamic";
 
@@ -63,11 +67,32 @@ async function getPosts() {
 
 async function searchPosts(query: string) {
 	const db = await getDb();
-	const posts = await db
-		.collection<Post>("posts")
-		.aggregate<Post>(searchPostsPipeline(query, 100))
-		.toArray();
-	return posts.map((post) => ({ ...post, _id: post._id.toString() }));
+	const queryVector = await embedQuery(query);
+
+	if (!queryVector) {
+		const posts = await db
+			.collection<Post>("posts")
+			.aggregate<Post>(textOnlySearchPipeline(query, 100))
+			.toArray();
+		return posts.map((post) => ({ ...post, _id: post._id.toString() }));
+	}
+
+	// Run vector search against projects and text search against posts
+	// in parallel, then merge with Reciprocal Rank Fusion. MongoDB $rankFusion
+	// cannot span two collections, so we merge in TypeScript.
+	const [vectorPosts, textPosts] = await Promise.all([
+		db
+			.collection<Post>("projects")
+			.aggregate<Post>(vectorSearchProjectsPipeline(queryVector, 100))
+			.toArray(),
+		db
+			.collection<Post>("posts")
+			.aggregate<Post>(textSearchPostsPipeline(query, 100))
+			.toArray(),
+	]);
+
+	const merged = mergeHybridResults(vectorPosts, textPosts).slice(0, 100);
+	return merged.map((post) => ({ ...post, _id: post._id.toString() }));
 }
 
 export default async function Home({
@@ -142,9 +167,7 @@ export default async function Home({
 								aria-label="Search posts"
 							/>
 							<button type="submit">Search</button>
-							{searchQuery ? (
-								<Link href="/">Clear ×</Link>
-							) : null}
+							{searchQuery ? <Link href="/">Clear ×</Link> : null}
 						</form>
 					</header>
 
@@ -208,17 +231,17 @@ export default async function Home({
 													{evidence ? (
 														<span className="trend">{evidence}</span>
 													) : null}
-											{isInternalSource ? (
-												<Link href={href}>Open digest →</Link>
-											) : post.agentHandle === "@community-radar" ? (
-												<a
-													href={whatsappUrl(post.project.title)}
-													target="_blank"
-													rel="noreferrer"
-												>
-													💬 Talk to RomBot on WhatsApp →
-												</a>
-											) : evidenceUrl ? (
+													{isInternalSource ? (
+														<Link href={href}>Open digest →</Link>
+													) : post.agentHandle === "@community-radar" ? (
+														<a
+															href={whatsappUrl(post.project.title)}
+															target="_blank"
+															rel="noreferrer"
+														>
+															💬 Talk to RomBot on WhatsApp →
+														</a>
+													) : evidenceUrl ? (
 														<a
 															href={evidenceUrl}
 															target="_blank"
@@ -330,14 +353,26 @@ export default async function Home({
 
 			<footer className="site-footer">
 				<div className="footer-section">
-					<span className="brand-mark" aria-hidden="true">✦</span> HypeRadar —
-					<Link href="https://github.com/romiluz13/hyperadar" target="_blank" rel="noreferrer">Open source</Link>
+					<span className="brand-mark" aria-hidden="true">
+						✦
+					</span>{" "}
+					HypeRadar —
+					<Link
+						href="https://github.com/romiluz13/hyperadar"
+						target="_blank"
+						rel="noreferrer"
+					>
+						Open source
+					</Link>
 					{" · "}
 					<Link href="/LICENSE">MIT</Link>
 				</div>
 				<div className="footer-section">
 					{AGENT_CATALOG.map((agent) => (
-						<Link key={agent.handle} href={`/agent/${agent.handle.replace("@", "")}`}>
+						<Link
+							key={agent.handle}
+							href={`/agent/${agent.handle.replace("@", "")}`}
+						>
 							{agent.handle}
 						</Link>
 					)).reduce<ReactNode[]>((acc, el, i) => {
@@ -348,11 +383,21 @@ export default async function Home({
 				</div>
 				<div className="footer-section">
 					Built with{" "}
-					<a href="https://www.port.io" target="_blank" rel="noreferrer">Port.io</a>
+					<a href="https://www.port.io" target="_blank" rel="noreferrer">
+						Port.io
+					</a>
 					{" · "}
-					<a href="https://www.mongodb.com/atlas" target="_blank" rel="noreferrer">MongoDB Atlas</a>
+					<a
+						href="https://www.mongodb.com/atlas"
+						target="_blank"
+						rel="noreferrer"
+					>
+						MongoDB Atlas
+					</a>
 					{" · "}
-					<a href="https://brightdata.com" target="_blank" rel="noreferrer">Bright Data</a>
+					<a href="https://brightdata.com" target="_blank" rel="noreferrer">
+						Bright Data
+					</a>
 				</div>
 			</footer>
 		</main>

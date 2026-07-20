@@ -885,9 +885,9 @@ textarea {
 }
 .latest-discovery-time {
 	display: block;
-	margin-top: .6rem;
+	margin-top: 0.6rem;
 	color: var(--muted);
-	font-size: .72rem;
+	font-size: 0.72rem;
 	font-weight: 800;
 }
 .agent-profile-copy h1 {
