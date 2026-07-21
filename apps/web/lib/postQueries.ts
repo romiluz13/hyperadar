@@ -97,9 +97,7 @@ export function textSearchPostsPipeline(
 							},
 						},
 					],
-					filter: [
-						{ text: { query: "synced", path: "portSyncStatus" } },
-					],
+					filter: [{ text: { query: "synced", path: "portSyncStatus" } }],
 				},
 			},
 		},
@@ -126,9 +124,7 @@ export function textSearchPostsPipeline(
  * @param textWeight - weight for the text leg (default 0.4)
  * @param k - RRF constant (default 60, standard value)
  */
-export function mergeHybridResults<
-	T extends { project: { url: string } },
->(
+export function mergeHybridResults<T extends { project: { url: string } }>(
 	vectorResults: T[],
 	textResults: T[],
 	vectorWeight = 0.6,
@@ -186,9 +182,7 @@ export function textOnlySearchPipeline(
 							},
 						},
 					],
-					filter: [
-						{ text: { query: "synced", path: "portSyncStatus" } },
-					],
+					filter: [{ text: { query: "synced", path: "portSyncStatus" } }],
 				},
 			},
 		},

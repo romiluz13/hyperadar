@@ -13,9 +13,10 @@ from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 
 from _shared.agent_catalog import agent_identity
-from _shared.evidence_copy import hidden_gem_evidence_copy
+from _shared.evidence_copy import hidden_gem_evidence_copy, hidden_gem_momentum_copy
+from _shared.mongo import _get_db
 from _shared.write_post import write_post
-from source import fetch_hidden_gems
+from source import fetch_breakout_candidates, fetch_hn_candidates
 
 AGENT_HANDLE = "@hidden-gems"
 _IDENTITY = agent_identity(AGENT_HANDLE)
@@ -28,12 +29,14 @@ You are @hidden-gems, an AI dev hype tracker that finds hidden gems BEFORE they 
 
 Your voice: the scout. You find things before they trend, while naming exactly what was observed.
 
+Only publish repos that pass the breakout gate. Each post must include the Momentum Score and velocity in the evidence. Do NOT post repos that don't pass the gate — if no repos pass, post nothing.
+
 Workflow:
-1. Call fetch_hidden_gems to get today's hidden gems (HN discoveries + recently created, recently updated low-star GitHub repos).
-2. For EACH gem that looks like it has real potential (even if small), call write_hidden_gem with:
+1. Call fetch_hidden_gem_candidates to get today's breakout candidates (repos that passed the momentum-score gate) and HN Show HN discoveries.
+2. For EACH candidate that passes the gate (has a momentumScore field), call write_hidden_gem with:
    - gem_url (exact, from the candidate)
-   - verdict: "emerging" for most gems (they're early), or "hype looks real" if you see breakout signs
-3. Post at most the top 20 gems per run.
+   - verdict: "emerging" for most gems, or "hype looks real" if you see strong breakout signs
+3. If no candidates pass the gate, post nothing.
 """
 
 
@@ -42,8 +45,11 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 
 @tool
 async def fetch_hidden_gem_candidates() -> str:
-    """Fetch today's hidden gems: HN Show HN posts + low-star-rising GitHub repos."""
-    candidates = await fetch_hidden_gems(max_results=20)
+    """Fetch today's hidden gems: breakout candidates that passed the momentum gate + HN Show HN posts."""
+    db = _get_db()
+    breakout = await fetch_breakout_candidates(db)
+    hn = await fetch_hn_candidates(max_results=10)
+    candidates = breakout + hn
     if not candidates:
         return "No hidden gems found today."
     _CANDIDATE_CACHE.clear()
@@ -52,12 +58,18 @@ async def fetch_hidden_gem_candidates() -> str:
     for c in candidates:
         if c["discovery_source"] == "hacker_news":
             evidence = f"HN points={c['hn_points']} | HN comments={c['hn_comments']}"
+        elif c["discovery_source"] == "breakout":
+            evidence = (
+                f"Momentum Score={c['momentumScore']}/100 | "
+                f"velocity={c['velocity']} stars/week | "
+                f"GitHub stars={c['github_stars']}"
+            )
         else:
-            evidence = f"GitHub stars={c['github_stars']}"
+            evidence = f"GitHub stars={c.get('github_stars', '?')}"
         lines.append(
             f"- {c['title']} | {c['url']}\n"
             f"  discovered_via={c['discovery_source']} | {evidence} | kind={c['kind']}\n"
-            f"  desc: {c['description'][:120]}"
+            f"  desc: {c.get('description', '')[:120]}"
         )
     return "\n".join(lines)
 
@@ -82,13 +94,23 @@ async def write_hidden_gem(gem_url: str, verdict: str) -> str:
         source = "hacker_news"
         evidence = f"HN points={value}; HN comments={c['hn_comments']}"
         momentum = min(35 + value / 10, 70)
+        blurb = hidden_gem_evidence_copy(c["discovery_source"], value)
+    elif c["discovery_source"] == "breakout":
+        value = c["github_stars"]
+        metric = "github_stars"
+        source = "github"
+        momentum = c["momentumScore"]
+        blurb = hidden_gem_momentum_copy(
+            c["momentumScore"], c["velocity"], c["acceleration"]
+        )
+        evidence = blurb
     else:
         value = c["github_stars"]
         metric = "github_stars"
         source = "github"
         evidence = f"GitHub stars={value}; discovered in recent-repository search"
         momentum = min(40 + value / 10, 70)
-    blurb = hidden_gem_evidence_copy(c["discovery_source"], value)
+        blurb = hidden_gem_evidence_copy(c["discovery_source"], value)
     project = {
         "url": c["url"],
         "title": c["title"],

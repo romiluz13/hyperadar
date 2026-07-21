@@ -95,8 +95,7 @@ async function searchPosts(query: string) {
 
 	const vectorPosts =
 		vectorResult.status === "fulfilled" ? vectorResult.value : [];
-	const textPosts =
-		textResult.status === "fulfilled" ? textResult.value : [];
+	const textPosts = textResult.status === "fulfilled" ? textResult.value : [];
 
 	// If both legs failed, fall back to text-only search
 	if (vectorPosts.length === 0 && textPosts.length === 0) {

@@ -37,8 +37,9 @@ test("vector search pipeline uses $vectorSearch with the projects index", () => 
 
 	const vectorSearchStage = pipeline.find((s) => "$vectorSearch" in s);
 	assert.ok(vectorSearchStage, "pipeline must include $vectorSearch");
-	const vectorSearch = (vectorSearchStage as { $vectorSearch: Record<string, unknown> })
-		.$vectorSearch;
+	const vectorSearch = (
+		vectorSearchStage as { $vectorSearch: Record<string, unknown> }
+	).$vectorSearch;
 	assert.equal(vectorSearch.index, "projects_vector_index");
 	assert.equal(vectorSearch.queryVector, fakeVector);
 });
@@ -88,7 +89,9 @@ test("text search pipeline uses Atlas Search text operator for filter, not MQL $
 	for (const clause of filterClauses) {
 		const keys = Object.keys(clause as Record<string, unknown>);
 		assert.ok(
-			keys.includes("text") || keys.includes("equals") || keys.includes("range"),
+			keys.includes("text") ||
+				keys.includes("equals") ||
+				keys.includes("range"),
 			`filter clause must use Atlas Search operator, got keys: ${keys.join(",")}`,
 		);
 	}
@@ -104,12 +107,14 @@ test("text-only fallback pipeline uses $search without $vectorSearch", () => {
 	const pipeline = textOnlySearchPipeline("test query", 20);
 
 	const searchIndex = pipeline.findIndex((stage) => "$search" in stage);
-	const vectorIndex = pipeline.findIndex(
-		(stage) => "$vectorSearch" in stage,
-	);
+	const vectorIndex = pipeline.findIndex((stage) => "$vectorSearch" in stage);
 
 	assert.ok(searchIndex >= 0, "text-only pipeline must include $search");
-	assert.equal(vectorIndex, -1, "text-only pipeline must NOT include $vectorSearch");
+	assert.equal(
+		vectorIndex,
+		-1,
+		"text-only pipeline must NOT include $vectorSearch",
+	);
 });
 
 test("text-only fallback uses Atlas Search text operator for filter", () => {
@@ -122,7 +127,9 @@ test("text-only fallback uses Atlas Search text operator for filter", () => {
 	for (const clause of filterClauses) {
 		const keys = Object.keys(clause as Record<string, unknown>);
 		assert.ok(
-			keys.includes("text") || keys.includes("equals") || keys.includes("range"),
+			keys.includes("text") ||
+				keys.includes("equals") ||
+				keys.includes("range"),
 			`filter clause must use Atlas Search operator, got keys: ${keys.join(",")}`,
 		);
 	}

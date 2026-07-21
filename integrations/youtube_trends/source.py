@@ -2,16 +2,17 @@
 
 Instead of generic `ytsearch` (which surfaces old popular videos), this scans
 a curated allowlist of AI-dev YouTube channels for recent uploads, preserving
-channel identity and view counts. View velocity is approximated by
-views/days-since-upload when no snapshot history exists.
+channel identity and view counts. View velocity is computed from daily view
+snapshots stored in MongoDB (see view_velocity.py).
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
-import signal
 import shutil
+import signal
 from datetime import datetime, timedelta, timezone
 
 # Curated AI-dev channel allowlist (verified handles from research).
@@ -40,15 +41,11 @@ async def _stop_source_process(proc, communication) -> None:
             except ProcessLookupError:
                 pass
             except PermissionError:
-                try:
+                with contextlib.suppress(ProcessLookupError):
                     proc.kill()
-                except ProcessLookupError:
-                    pass
         else:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            except ProcessLookupError:
-                pass
     try:
         await asyncio.wait_for(
             asyncio.shield(communication),
@@ -133,6 +130,8 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
                 if view_count == 0:
                     continue
 
+                upload_date = str(metadata.get("upload_date") or "").strip()
+
                 candidates.append(
                     {
                         "url": f"https://www.youtube.com/watch?v={vid_id}",
@@ -147,6 +146,7 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
                         ],
                         "channel": channel,
                         "viewCount": view_count,
+                        "uploadDate": upload_date,
                         "channel_url": channel_url,
                     }
                 )
@@ -163,3 +163,52 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
             unique.append(c)
     unique.sort(key=lambda x: x.get("viewCount", 0), reverse=True)
     return unique[:max_results]
+
+
+async def fetch_youtube_candidates_with_velocity(
+    max_results: int = 8,
+) -> list[dict]:
+    """Discover recent AI-dev videos, filtering for view velocity > 0.
+
+    Wraps fetch_youtube_candidates with view velocity tracking:
+    1. Fetch raw candidates via yt-dlp.
+    2. Save a daily view snapshot for each discovered video.
+    3. Compute view velocity (views gained in last 7 days) from snapshots.
+    4. Only include videos with velocity > 0.
+
+    First discovery (no prior snapshots) passes through — the snapshot is
+    saved as a baseline for future velocity computation.
+    """
+    from _shared.mongo import _get_db
+    from view_velocity import compute_view_velocity, save_view_snapshot
+
+    candidates = await fetch_youtube_candidates(max_results=max_results)
+    if not candidates:
+        return []
+
+    result = []
+    for c in candidates:
+        url = c["url"]
+        view_count = c.get("viewCount", 0)
+        # Read prior snapshots BEFORE saving today's so today's snapshot
+        # does not become the "current" baseline.
+        db = _get_db()
+        cursor = (
+            db.youtube_view_snapshots.find({"url": url})
+            .sort("capturedAt", -1)
+            .limit(100)
+        )
+        prior_snapshots = await cursor.to_list(length=100)
+        velocity = compute_view_velocity(view_count, prior_snapshots)
+        # Save today's snapshot for every discovered video.
+        await save_view_snapshot(url, view_count)
+        if velocity > 0:
+            c["viewVelocity"] = velocity
+            result.append(c)
+        elif not prior_snapshots:
+            # First discovery — allow through as baseline.
+            c["viewVelocity"] = 0
+            result.append(c)
+        # Flat views (prior snapshot exists, no growth) — skip.
+
+    return result[:max_results]

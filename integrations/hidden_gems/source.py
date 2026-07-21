@@ -1,7 +1,7 @@
-"""Hidden gems source — HN API + GitHub Search for recent low-star repos.
+"""Hidden gems source — HN candidates + breakout prediction pipeline.
 
 @hidden-gems finds things BEFORE they blow up: HN Show HN posts linking to
-novel repos, and recently created low-star repos sorted by recent updates.
+novel repos, and repos identified by the momentum-score breakout gate.
 """
 
 import os
@@ -9,12 +9,24 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from _shared.momentum import (
+    _acceleration,
+    _engagement_depth,
+    _velocity,
+    compute_momentum_score,
+    passes_fake_star_filter,
+    should_publish_hidden_gem,
+)
+from hidden_gems.tracker import track_daily_snapshots
+
 _github_token = os.environ.get("GITHUB_TOKEN", "")
 _headers = (
     {"Authorization": f"token {_github_token}", "Accept": "application/vnd.github+json"}
     if _github_token
     else {}
 )
+
+_MIN_HISTORY_DAYS = 7
 
 
 def normalize_hn_story(story: dict, story_id: int) -> dict:
@@ -132,8 +144,105 @@ async def fetch_low_star_github_candidates(max_results: int = 15) -> list[dict]:
     return unique[:max_results]
 
 
+async def _last_published_days(db, project_url: str) -> int:
+    """Days since the most recent post for this project URL. 999 if never posted."""
+    post = await db.posts.find_one(
+        {"project.url": project_url},
+        {"postedAt": 1},
+    )
+    if not post or not post.get("postedAt"):
+        return 999
+    posted = post["postedAt"]
+    if posted.tzinfo is None:
+        posted = posted.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - posted
+    return max(0, delta.days)
+
+
+async def fetch_breakout_candidates(db) -> list[dict]:
+    """Find repos that pass the breakout prediction gate.
+
+    1. Store today's snapshots via track_daily_snapshots.
+    2. Query the signals time-series for repos with >=7 days of history.
+    3. For each, compute the Momentum Score and check the publishing gate.
+    4. Return only repos that pass, with score and velocity included.
+    """
+    await track_daily_snapshots(db)
+
+    # Find all projectIds with >=7 days of pre-publication snapshots.
+    pipeline = [
+        {"$match": {"postId": ""}},
+        {
+            "$group": {
+                "_id": "$projectId",
+                "count": {"$sum": 1},
+            }
+        },
+        {"$match": {"count": {"$gte": _MIN_HISTORY_DAYS}}},
+    ]
+    candidates_with_history = await (await db.signals.aggregate(pipeline)).to_list(
+        length=None
+    )
+
+    results: list[dict] = []
+    for doc in candidates_with_history:
+        project_url = doc["_id"]
+
+        # Fetch the full history sorted by capturedAt ascending.
+        cursor = db.signals.find(
+            {"projectId": project_url, "postId": ""},
+            {"capturedAt": 1, "github_stars": 1, "github_forks": 1, "_id": 0},
+        ).sort("capturedAt", 1)
+        history = await cursor.to_list(length=None)
+
+        if len(history) < _MIN_HISTORY_DAYS:
+            continue
+
+        score = compute_momentum_score(history)
+        velocity = _velocity(history, 7)
+        acceleration = _acceleration(history)
+        stars = history[-1].get("github_stars", 0)
+        forks = history[-1].get("github_forks", 0)
+        fork_star_ratio = _engagement_depth(history)
+
+        if not passes_fake_star_filter(stars, forks):
+            continue
+
+        last_pub_days = await _last_published_days(db, project_url)
+
+        if not should_publish_hidden_gem(
+            score,
+            velocity,
+            acceleration,
+            fork_star_ratio,
+            last_pub_days,
+        ):
+            continue
+
+        results.append(
+            {
+                "url": project_url,
+                "title": project_url.rsplit("/", 1)[-1],
+                "kind": "repo",
+                "description": "",
+                "topics": ["ai", "hidden-gem"],
+                "discovery_source": "breakout",
+                "evidence_url": project_url,
+                "github_stars": stars,
+                "github_forks": forks,
+                "momentumScore": score,
+                "velocity": velocity,
+                "acceleration": acceleration,
+            }
+        )
+    return results
+
+
 async def fetch_hidden_gems(max_results: int = 8) -> list[dict]:
-    """Combine HN + low-star GitHub to find hidden gems before they blow up."""
+    """Combine HN + low-star GitHub to find hidden gems before they blow up.
+
+    Kept for backward compatibility — prefer fetch_breakout_candidates.
+    """
     hn = await fetch_hn_candidates(max_results=10)
     gh = await fetch_low_star_github_candidates(max_results=15)
     return (hn + gh)[:max_results]
