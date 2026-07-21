@@ -29,7 +29,9 @@ def main() -> int:
     client = pymongo.MongoClient(uri)
     db = client[db_name]
 
-    projects = list(db.projects.find({}, {"url": 1, "title": 1, "description": 1, "topics": 1}))
+    projects = list(
+        db.projects.find({}, {"url": 1, "title": 1, "description": 1, "topics": 1})
+    )
     total = len(projects)
     print(f"Migrating {total} projects to Voyage 4 Large (1024-dim)...")
 
@@ -67,7 +69,9 @@ def main() -> int:
     # Verify
     count_1024 = db.projects.count_documents({"embedding": {"$size": 1024}})
     count_384 = db.projects.count_documents({"embedding": {"$size": 384}})
-    print(f"Verification: {count_1024} projects with 1024-dim, {count_384} with 384-dim")
+    print(
+        f"Verification: {count_1024} projects with 1024-dim, {count_384} with 384-dim"
+    )
 
     client.close()
 

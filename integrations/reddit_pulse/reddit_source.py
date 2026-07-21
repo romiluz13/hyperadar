@@ -16,11 +16,11 @@ import shutil
 
 # Target subreddits for AI developer discourse.
 SUBREDDITS = [
-    "https://www.reddit.com/r/LocalLLaMA/hot/",
-    "https://www.reddit.com/r/MachineLearning/hot/",
-    "https://www.reddit.com/r/singularity/hot/",
-    "https://www.reddit.com/r/artificial/hot/",
-    "https://www.reddit.com/r/OpenAI/hot/",
+    "https://www.reddit.com/r/LocalLLaMA/rising/",
+    "https://www.reddit.com/r/MachineLearning/rising/",
+    "https://www.reddit.com/r/singularity/rising/",
+    "https://www.reddit.com/r/artificial/rising/",
+    "https://www.reddit.com/r/OpenAI/rising/",
 ]
 SOURCE_COMMAND_TIMEOUT_SECONDS = 180
 SOURCE_COMMAND_CLEANUP_TIMEOUT_SECONDS = 5
@@ -67,7 +67,7 @@ async def _stop_source_process(proc, communication) -> None:
 async def fetch_reddit_candidates(max_results: int = 10) -> list[dict]:
     """Discover trending Reddit AI posts via bdata pipelines reddit_posts.
 
-        Pulls hot posts from curated AI subreddits with structured upvote/comment
+        Pulls rising posts from curated AI subreddits with structured upvote/comment
     data. Raises RuntimeError if bdata is not in PATH.
     """
     if not shutil.which("bdata"):

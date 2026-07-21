@@ -19,7 +19,12 @@ def github_evidence_copy(
     )
 
 
-def youtube_evidence_copy(views: int) -> str:
+def youtube_evidence_copy(views: int, velocity: int = 0) -> str:
+    if velocity > 0:
+        return (
+            f"{views:,} YouTube views observed; {velocity:,} views gained in "
+            "the last 7 days (measured from daily view snapshots)."
+        )
     return (
         f"{views:,} YouTube views observed. Search surfaced this video; "
         "upload-age view velocity was not measured."
@@ -36,6 +41,18 @@ def hidden_gem_evidence_copy(source: str, value: int | float) -> str:
     return (
         f"{observed} GitHub stars observed in recent-repository search; growth "
         "trajectory was not measured."
+    )
+
+
+def hidden_gem_momentum_copy(score: int, velocity: int, acceleration: int) -> str:
+    """Evidence copy for a breakout-pipeline hidden gem.
+
+    Includes the Momentum Score, weekly velocity, and acceleration signal.
+    """
+    accel_clause = "accelerating" if acceleration > 0 else "decelerating"
+    return (
+        f"Momentum {score}/100. {velocity} stars this week, {accel_clause}. "
+        "Breakout signal detected."
     )
 
 

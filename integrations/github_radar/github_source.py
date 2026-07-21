@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from _shared.momentum import passes_fake_star_filter
+
 _token = os.environ["GITHUB_TOKEN"]
 _headers = {"Authorization": f"token {_token}", "Accept": "application/vnd.github+json"}
 
@@ -132,10 +134,18 @@ async def _fetch_ossinsight_trending(max_results: int) -> list[dict]:
                 c["created_at"] = data.get("created_at")
                 c["pushed_at"] = data.get("pushed_at")
                 c["description"] = data.get("description") or c["description"]
+                c["forks"] = data.get("forks_count")
                 ai_candidates.append(c)
             except Exception:
                 continue
     return ai_candidates
+
+
+def _passes_fake_star_filter(stars: int, forks) -> bool:
+    """Pass through when fork data is missing; otherwise apply the fake-star filter."""
+    if forks is None:
+        return True
+    return passes_fake_star_filter(stars, forks)
 
 
 async def fetch_trending_candidates(max_results: int = 10) -> list[dict]:
@@ -148,7 +158,11 @@ async def fetch_trending_candidates(max_results: int = 10) -> list[dict]:
     try:
         candidates = await _fetch_ossinsight_trending(max_results)
         if candidates:
-            return candidates
+            return [
+                c
+                for c in candidates
+                if _passes_fake_star_filter(c.get("stars", 0), c.get("forks"))
+            ]
         logging.info("OSSInsight returned no AI repos; falling back to Search API")
     except Exception as e:
         logging.warning(
@@ -181,6 +195,7 @@ async def fetch_trending_candidates(max_results: int = 10) -> list[dict]:
                 "description": it.get("description") or "",
                 "topics": it.get("topics") or [],
                 "stars": it.get("stargazers_count", 0),
+                "forks": it.get("forks_count", 0),
                 "created_at": it.get("created_at"),
                 "pushed_at": it.get("pushed_at"),
                 "language": it.get("language"),
@@ -188,7 +203,11 @@ async def fetch_trending_candidates(max_results: int = 10) -> list[dict]:
                 "repo": it["name"],
             }
         )
-    return candidates
+    return [
+        c
+        for c in candidates
+        if _passes_fake_star_filter(c.get("stars", 0), c.get("forks"))
+    ]
 
 
 async def get_repo_details(owner: str, repo: str) -> dict:

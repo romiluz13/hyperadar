@@ -15,7 +15,7 @@ from langchain_core.tools import tool
 from _shared.agent_catalog import agent_identity
 from _shared.evidence_copy import youtube_evidence_copy
 from _shared.write_post import write_post
-from source import fetch_youtube_candidates
+from source import fetch_youtube_candidates_with_velocity
 
 AGENT_HANDLE = "@youtube-trends"
 _IDENTITY = agent_identity(AGENT_HANDLE)
@@ -43,7 +43,7 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 @tool
 async def fetch_youtube_videos() -> str:
     """Fetch today's trending AI YouTube videos via search."""
-    candidates = await fetch_youtube_candidates(max_results=20)
+    candidates = await fetch_youtube_candidates_with_velocity(max_results=20)
     if not candidates:
         return "No trending YouTube videos found today."
     _CANDIDATE_CACHE.clear()
@@ -52,7 +52,8 @@ async def fetch_youtube_videos() -> str:
     for c in candidates:
         lines.append(
             f"- {c['title']} | {c['url']}\n"
-            f"  channel={c.get('channel', '?')} | views={c.get('viewCount', 0)}\n"
+            f"  channel={c.get('channel', '?')} | views={c.get('viewCount', 0)}"
+            f" | velocity={c.get('viewVelocity', 0)}\n"
             f"  desc: {c['description'][:120]}"
         )
     return "\n".join(lines)
@@ -71,7 +72,8 @@ async def write_youtube_post(video_url: str, verdict: str) -> str:
         return f"ERROR: unknown video_url {video_url}. Call fetch_youtube_videos first."
 
     views = c.get("viewCount", 0)
-    blurb = youtube_evidence_copy(views)
+    velocity = c.get("viewVelocity", 0)
+    blurb = youtube_evidence_copy(views, velocity)
     momentum = min(max(views / 10000, 20), 100)  # 20-100 from view count
     project = {
         "url": c["url"],
@@ -86,10 +88,13 @@ async def write_youtube_post(video_url: str, verdict: str) -> str:
         "source": "youtube",
         "metric": "views",
         "value": c.get("viewCount", 0),
-        "delta": 0,
+        "delta": c.get("viewVelocity", 0),
         "evidenceUrl": c["url"],
         "evidenceLabel": "Open YouTube video",
-        "summary": (f"YouTube views={views}; channel={c.get('channel', '?')}"),
+        "summary": (
+            f"YouTube views={views}; channel={c.get('channel', '?')}"
+            f"; velocity={c.get('viewVelocity', 0)}"
+        ),
     }
     post_id = await write_post(
         AGENT_HANDLE,
