@@ -39,8 +39,8 @@ async def test_momentum_returns_candidates_with_score(db, monkeypatch):
     async_db = mongo._get_db()
     repo_url = "https://github.com/test/trending-accelerating"
 
-    # Accelerating repo: 14 days, stars growing from 200→256 (4/day)
-    accel_stars = [200 + i * 4 for i in range(14)]
+    # Accelerating repo: 14 days, stars growing from 200→278 (6/day)
+    accel_stars = [200 + i * 6 for i in range(14)]
     accel_snaps = _snapshots(accel_stars, forks=30)
     for s in accel_snaps:
         s["projectId"] = repo_url
@@ -107,13 +107,13 @@ async def test_momentum_filters_suspicious_fork_star_ratio(db, monkeypatch):
     suspicious_url = "https://github.com/test/trending-suspicious"
 
     # Healthy repo: 14 days growth, good fork ratio
-    healthy_stars = [200 + i * 4 for i in range(14)]
+    healthy_stars = [200 + i * 6 for i in range(14)]
     healthy_snaps = _snapshots(healthy_stars, forks=100)
     for s in healthy_snaps:
         s["projectId"] = healthy_url
 
-    # Suspicious repo: 14 days growth, bad fork ratio (forks=1, stars=256, ratio ~0.004)
-    suspicious_stars = [200 + i * 4 for i in range(14)]
+    # Suspicious repo: 14 days growth, bad fork ratio (forks=1, stars=278, ratio ~0.004)
+    suspicious_stars = [200 + i * 6 for i in range(14)]
     suspicious_snaps = _snapshots(suspicious_stars, forks=1)
     for s in suspicious_snaps:
         s["projectId"] = suspicious_url

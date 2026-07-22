@@ -5,6 +5,7 @@ Pure function tests — no network, no database.
 """
 
 from _shared.momentum import (
+    _consistency,
     _is_monotonic_growth,
     _velocity,
     compute_momentum_score,
@@ -266,3 +267,34 @@ def test_publishing_gate_rejects_non_monotonic_growth():
 def test_publishing_gate_accepts_monotonic_default():
     """Default is_monotonic=True preserves backward compatibility."""
     assert should_publish_hidden_gem(70, 10, 5, 0.1, 30)
+
+
+# --- Consistency window-count tests ---
+
+
+def test_consistency_does_not_inflate_for_short_history():
+    """A 5-day repo should get at most 1 window of consistency, not 3.
+
+    Before the fix, all 3 windows (7d, 14d, 30d) fell back to the same
+    _velocity(history, len(history)-1) value, inflating the count to 3.
+    After the fix, a window only counts if the history is long enough for it.
+    """
+    # 5 entries (5 days) with positive growth
+    history = [_snapshot(100 + i * 5, max(1, (100 + i * 5) // 10)) for i in range(5)]
+    count = _consistency(history)
+    assert count <= 1, f"5-day history should get at most 1 window, got {count}"
+    assert count < 3, f"5-day history should not get 3 windows, got {count}"
+
+
+def test_consistency_8_day_history_at_most_1_window():
+    """An 8-day history can only support the 7d window, not 14d or 30d."""
+    history = [_snapshot(100 + i * 5, max(1, (100 + i * 5) // 10)) for i in range(8)]
+    count = _consistency(history)
+    assert count <= 1, f"8-day history should get at most 1 window, got {count}"
+
+
+def test_consistency_31_day_history_can_get_3_windows():
+    """A 31-day history with positive growth can support all 3 windows."""
+    history = [_snapshot(100 + i * 5, max(1, (100 + i * 5) // 10)) for i in range(31)]
+    count = _consistency(history)
+    assert count == 3, f"31-day history with growth should get 3 windows, got {count}"
