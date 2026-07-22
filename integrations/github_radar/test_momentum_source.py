@@ -143,3 +143,103 @@ async def test_momentum_returns_empty_when_no_history(db, monkeypatch):
     async_db = mongo._get_db()
     results = await github_source.fetch_trending_candidates_with_momentum(async_db)
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_momentum_excludes_non_monotonic_repos(db, monkeypatch):
+    """A repo with a dip in star history is excluded even if it passes every
+    other gate.  Locks the ``is_monotonic`` wiring: if someone drops the
+    ``is_monotonic=`` argument in a refactor the default ``True`` would let
+    this repo through.
+    """
+    from github_radar import github_source
+
+    async def fake_track(db):
+        return 0
+
+    monkeypatch.setattr(github_source, "track_daily_snapshots", fake_track)
+
+    async_db = mongo._get_db()
+    repo_url = "https://github.com/test/non-monotonic-dip"
+
+    # 14 days, dip at day 4 (215 < 220).  Otherwise strong growth:
+    # velocity=50, acceleration=5, fork/star=30/315 ≈ 0.095, score ≈ 68.
+    stars = [200, 210, 220, 215, 225, 235, 245, 255, 265, 275, 285, 295, 305, 315]
+    snaps = _snapshots(stars, forks=30)
+    for s in snaps:
+        s["projectId"] = repo_url
+
+    db.signals.delete_many({"projectId": repo_url})
+    db.posts.delete_many({"project.url": repo_url})
+    db.signals.insert_many(snaps)
+
+    try:
+        results = await github_source.fetch_trending_candidates_with_momentum(async_db)
+        result_urls = [r["url"] for r in results]
+        assert repo_url not in result_urls, (
+            "Non-monotonic repo must be excluded by the is_monotonic gate"
+        )
+    finally:
+        db.signals.delete_many({"projectId": repo_url})
+        db.posts.delete_many({"project.url": repo_url})
+
+
+@pytest.mark.asyncio
+async def test_momentum_novelty_bonus_uses_prior_post_count(db, monkeypatch):
+    """A repo with a prior post gets a lower novelty bonus (+3) than one
+    without (+5).  Locks the ``prior_post_count`` wiring: if the arg is
+    dropped, ``compute_momentum_score`` defaults to 0 and both repos get +5.
+    """
+    from github_radar import github_source
+
+    async def fake_track(db):
+        return 0
+
+    monkeypatch.setattr(github_source, "track_daily_snapshots", fake_track)
+
+    async_db = mongo._get_db()
+    fresh_url = "https://github.com/test/novelty-fresh"
+    prior_url = "https://github.com/test/novelty-prior"
+
+    # Identical 14-day monotonic history for both repos.
+    stars = [20 + i * 4 for i in range(14)]
+    fresh_snaps = _snapshots(stars, forks=10)
+    for s in fresh_snaps:
+        s["projectId"] = fresh_url
+    prior_snaps = _snapshots(stars, forks=10)
+    for s in prior_snaps:
+        s["projectId"] = prior_url
+
+    # Insert a post for prior_url >14 days ago so the cooldown gate passes
+    # but prior_count=1 (novelty bonus +3 instead of +5).
+    old_post = {
+        "agentHandle": "@github-radar",
+        "body": "previous post",
+        "postedAt": datetime.now(timezone.utc) - timedelta(days=20),
+        "project": {"url": prior_url, "title": "Prior Repo"},
+        "portSyncStatus": "synced",
+    }
+
+    db.signals.delete_many({"projectId": {"$in": [fresh_url, prior_url]}})
+    db.posts.delete_many({"project.url": {"$in": [fresh_url, prior_url]}})
+    db.signals.insert_many(fresh_snaps + prior_snaps)
+    db.posts.insert_one(old_post)
+
+    try:
+        results = await github_source.fetch_trending_candidates_with_momentum(async_db)
+        by_url = {r["url"]: r for r in results}
+
+        assert fresh_url in by_url, "Fresh repo should pass the gate"
+        assert prior_url in by_url, (
+            "Repo with old prior post should still pass the cooldown gate"
+        )
+
+        fresh_score = by_url[fresh_url]["momentumScore"]
+        prior_score = by_url[prior_url]["momentumScore"]
+        assert fresh_score > prior_score, (
+            f"Fresh repo ({fresh_score}) should out-score prior-post repo "
+            f"({prior_score}) — novelty bonus +5 vs +3"
+        )
+    finally:
+        db.signals.delete_many({"projectId": {"$in": [fresh_url, prior_url]}})
+        db.posts.delete_many({"project.url": {"$in": [fresh_url, prior_url]}})
