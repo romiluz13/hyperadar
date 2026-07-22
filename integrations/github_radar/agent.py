@@ -18,8 +18,10 @@ from langchain_core.tools import tool
 from _shared import mongo
 from _shared.agent_catalog import agent_identity
 from _shared.evidence_copy import github_evidence_copy
+from _shared.momentum import passes_fake_star_filter
 from _shared.write_post import write_post
 from github_source import (
+    _last_published_days,
     compute_momentum,
     fetch_trending_candidates,
     fetch_trending_candidates_with_momentum,
@@ -73,6 +75,30 @@ async def fetch_trending_repos() -> str:
         candidates = await fetch_trending_candidates(max_results=25)
         if not candidates:
             return "No trending candidates found today."
+
+        # Apply fake-star filter (defense-in-depth even though
+        # fetch_trending_candidates already applies a lenient version).
+        candidates = [
+            c
+            for c in candidates
+            if passes_fake_star_filter(c.get("stars", 0), c.get("forks", 0) or 0)
+        ]
+        if not candidates:
+            return "No trending candidates passed the fake-star filter today."
+
+        # Apply 7-day cooldown: skip repos posted < 7 days ago.
+        try:
+            async_db = mongo._get_db()
+            cooled: list[dict] = []
+            for c in candidates:
+                last_pub = await _last_published_days(async_db, c["url"])
+                if last_pub >= 7:
+                    cooled.append(c)
+            candidates = cooled
+        except Exception as exc:
+            logging.warning("Cooldown check unavailable for legacy path: %s", exc)
+        if not candidates:
+            return "No trending candidates passed the cooldown filter today."
 
         lines = []
         for c in candidates:

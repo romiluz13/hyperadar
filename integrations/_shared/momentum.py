@@ -108,17 +108,19 @@ def _engagement_depth(history: Sequence[dict]) -> float:
 
 
 def _consistency(history: Sequence[dict]) -> int:
-    """Count of windows (7d, 14d, 30d) with positive velocity (0–3)."""
+    """Count of windows (7d, 14d, 30d) with positive velocity (0–3).
+
+    A window only counts if the history is long enough to actually measure it.
+    A 5-day repo can't have 14d or 30d consistency.
+    """
     if len(history) < 2:
         return 0
     windows = [7, 14, 30]
     count = 0
     for w in windows:
-        vel = (
-            _velocity(history, w)
-            if len(history) > w
-            else _velocity(history, len(history) - 1)
-        )
+        if len(history) < w + 1:
+            break  # not enough history for this window or any larger one
+        vel = _velocity(history, w)
         if vel > 0:
             count += 1
     return count
