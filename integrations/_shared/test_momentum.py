@@ -5,6 +5,7 @@ Pure function tests — no network, no database.
 """
 
 from _shared.momentum import (
+    _velocity,
     compute_momentum_score,
     passes_fake_star_filter,
     should_publish_hidden_gem,
@@ -14,6 +15,54 @@ from _shared.momentum import (
 def _snapshot(stars: int, forks: int = 0) -> dict:
     """Build a daily snapshot dict."""
     return {"github_stars": stars, "github_forks": forks}
+
+
+def test_velocity_gravity_decay_weights_recent_days_more():
+    """_velocity should weight recent daily gains higher than older ones."""
+    # 8 snapshots: stars go 100, 105, 110, 115, 120, 125, 130, 135
+    # Each day gains 5 stars. With gravity decay over 7 days:
+    # i=1: 5*1.0, i=2: 5*0.87, i=3: 5*0.77, i=4: 5*0.69, i=5: 5*0.625,
+    # i=6: 5*0.57, i=7: 5*0.53
+    history = [_snapshot(100 + 5 * d) for d in range(8)]
+    vel = _velocity(history, 7)
+    # Weighted sum: 5*(1.0+0.8696+0.7692+0.6897+0.625+0.5714+0.5333) ≈ 25.3
+    # Simple sum would be 35
+    assert 20 < vel < 35, (
+        f"Gravity decay should reduce total below simple sum, got {vel}"
+    )
+
+
+def test_velocity_gravity_decay_zero_for_flat_history():
+    """_velocity should return 0 when no stars are gained."""
+    history = [_snapshot(100, 10) for _ in range(8)]
+    assert _velocity(history, 7) == 0
+
+
+def test_velocity_gravity_decay_only_counts_positive_gains():
+    """_velocity should not count negative daily gains (star loss)."""
+    # Stars: 100, 105, 110, 100, 100, 100, 100, 100
+    history = [
+        _snapshot(100),
+        _snapshot(105),
+        _snapshot(110),
+        _snapshot(100),
+        _snapshot(100),
+        _snapshot(100),
+        _snapshot(100),
+        _snapshot(100),
+    ]
+    vel = _velocity(history, 7)
+    # Only gains counted: day i=1: 0 (100->100), i=2: 0, i=3: 0, i=4: -10→0,
+    # i=5: 5*0.625=3.125, i=6: 5*0.57=2.857, i=7: 5*0.53=2.667
+    # Wait — i=1 is most recent (index -1 vs -2): history[-1]=100, history[-2]=100 → 0
+    # i=2: history[-2]=100, history[-3]=100 → 0
+    # i=3: history[-3]=100, history[-4]=100 → 0
+    # i=4: history[-4]=100, history[-5]=110 → -10 → 0
+    # i=5: history[-5]=110, history[-6]=105 → 5*0.625 = 3.125
+    # i=6: history[-6]=105, history[-7]=100 → 5*0.571 = 2.857
+    # i=7: history[-7]=100, history[-8]=100 → 0
+    # Total ≈ 5.98 → int(5.98) = 5
+    assert vel == 5, f"Only positive gains counted with decay, got {vel}"
 
 
 def test_momentum_score_returns_zero_for_empty_history():

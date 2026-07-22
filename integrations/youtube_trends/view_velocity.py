@@ -3,6 +3,10 @@
 Stores daily view count snapshots in MongoDB (youtube_view_snapshots collection)
 and computes view velocity = views gained in the last 7 days. Only videos with
 velocity > 0 (or first discovery with no prior history) are published.
+
+Channel-relative velocity normalizes by channel subscriber count so a 5K-view
+video from a 1K-subscriber channel scores higher than a 5K-view video from a
+100K-subscriber channel.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -10,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from _shared.mongo import _get_db
 
 VELOCITY_WINDOW_DAYS = 7
+# Default subscriber count when channel data is unavailable.
+_DEFAULT_CHANNEL_SUBSCRIBERS = 10000
 
 
 def _to_utc(dt: datetime) -> datetime:
@@ -29,13 +35,32 @@ def compute_view_velocity(current_views: int, snapshots: list[dict]) -> int:
         return 0
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=VELOCITY_WINDOW_DAYS)
-    # Snapshots at or before the cutoff (≥7 days old), most recent first.
     eligible = [s for s in snapshots if _to_utc(s.get("capturedAt", now)) <= cutoff]
     if not eligible:
         return 0
     eligible.sort(key=lambda s: _to_utc(s["capturedAt"]), reverse=True)
     baseline = eligible[0].get("viewCount", 0)
     return max(0, current_views - baseline)
+
+
+def channel_relative_velocity(
+    view_velocity: int,
+    channel_subscribers: int,
+) -> float:
+    """Normalize view velocity by channel subscriber count.
+
+    A video gaining 5K views/week on a 1K-subscriber channel = 5.0 (breakout).
+    A video gaining 5K views/week on a 100K-subscriber channel = 0.05 (nothing).
+
+    Falls back to a default subscriber count when channel data is unavailable
+    or zero — avoids division by zero while giving a reasonable baseline.
+    """
+    if view_velocity <= 0:
+        return 0.0
+    subs = (
+        channel_subscribers if channel_subscribers > 0 else _DEFAULT_CHANNEL_SUBSCRIBERS
+    )
+    return view_velocity / subs
 
 
 async def save_view_snapshot(url: str, view_count: int) -> None:

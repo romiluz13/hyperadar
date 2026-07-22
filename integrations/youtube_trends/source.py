@@ -4,6 +4,10 @@ Instead of generic `ytsearch` (which surfaces old popular videos), this scans
 a curated allowlist of AI-dev YouTube channels for recent uploads, preserving
 channel identity and view counts. View velocity is computed from daily view
 snapshots stored in MongoDB (see view_velocity.py).
+
+Channel-relative velocity normalizes by channel subscriber count so a
+5K-view video from a 1K-subscriber channel scores higher than a 5K-view
+video from a 100K-subscriber channel.
 """
 
 import asyncio
@@ -60,9 +64,9 @@ async def _stop_source_process(proc, communication) -> None:
 async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
     """Discover recent AI-dev videos from a curated channel allowlist.
 
-        Scans each channel's /videos page for recent uploads via yt-dlp, preserving
-    channel identity and real view counts. Raises RuntimeError if yt-dlp is not
-    in PATH.
+    Scans each channel's /videos page for recent uploads via yt-dlp, preserving
+    channel identity, view counts, and channel subscriber count. Raises
+    RuntimeError if yt-dlp is not in PATH.
     """
     if not shutil.which("yt-dlp"):
         raise RuntimeError(
@@ -132,6 +136,13 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
 
                 upload_date = str(metadata.get("upload_date") or "").strip()
 
+                # Channel subscriber count for per-channel baselines.
+                subs = metadata.get("channel_subscriber_count")
+                try:
+                    channel_subscribers = int(subs or 0)
+                except (TypeError, ValueError):
+                    channel_subscribers = 0
+
                 candidates.append(
                     {
                         "url": f"https://www.youtube.com/watch?v={vid_id}",
@@ -148,6 +159,7 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
                         "viewCount": view_count,
                         "uploadDate": upload_date,
                         "channel_url": channel_url,
+                        "channel_subscribers": channel_subscribers,
                     }
                 )
         except Exception as e:
@@ -174,13 +186,18 @@ async def fetch_youtube_candidates_with_velocity(
     1. Fetch raw candidates via yt-dlp.
     2. Save a daily view snapshot for each discovered video.
     3. Compute view velocity (views gained in last 7 days) from snapshots.
-    4. Only include videos with velocity > 0.
+    4. Compute channel-relative velocity (normalized by subscriber count).
+    5. Only include videos with velocity > 0.
 
     First discovery (no prior snapshots) passes through — the snapshot is
     saved as a baseline for future velocity computation.
     """
     from _shared.mongo import _get_db
-    from view_velocity import compute_view_velocity, save_view_snapshot
+    from view_velocity import (
+        channel_relative_velocity,
+        compute_view_velocity,
+        save_view_snapshot,
+    )
 
     candidates = await fetch_youtube_candidates(max_results=max_results)
     if not candidates:
@@ -190,6 +207,7 @@ async def fetch_youtube_candidates_with_velocity(
     for c in candidates:
         url = c["url"]
         view_count = c.get("viewCount", 0)
+        channel_subs = c.get("channel_subscribers", 0)
         # Read prior snapshots BEFORE saving today's so today's snapshot
         # does not become the "current" baseline.
         db = _get_db()
@@ -204,10 +222,14 @@ async def fetch_youtube_candidates_with_velocity(
         await save_view_snapshot(url, view_count)
         if velocity > 0:
             c["viewVelocity"] = velocity
+            c["channelRelativeVelocity"] = channel_relative_velocity(
+                velocity, channel_subs
+            )
             result.append(c)
         elif not prior_snapshots:
             # First discovery — allow through as baseline.
             c["viewVelocity"] = 0
+            c["channelRelativeVelocity"] = 0.0
             result.append(c)
         # Flat views (prior snapshot exists, no growth) — skip.
 
