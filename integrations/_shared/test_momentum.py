@@ -171,3 +171,5 @@ def test_publishing_gate_rejects_recently_published():
 def test_publishing_gate_accepts_all_conditions_met():
     assert should_publish_hidden_gem(70, 10, 5, 0.1, 30)
     assert should_publish_hidden_gem(55, 1, 1, 0.02, 14)
+    assert should_publish_hidden_gem(48, 1, 1, 0.02, 14)
+    assert not should_publish_hidden_gem(47, 1, 1, 0.02, 14)

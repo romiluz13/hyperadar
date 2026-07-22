@@ -19,7 +19,11 @@ _CONSISTENCY_WEIGHT = 10
 _VIRAL_BONUS = 10
 
 # Thresholds
-_PUBLISH_SCORE_THRESHOLD = 55
+# NOTE: 48 is temporary — lower than the original 55 to account for the
+# gravity-decay weighted velocity being ~72% of raw for uniform growth.
+# Replace with a data-driven threshold (80th percentile of tracked repos)
+# once 7+ days of snapshot data exist (see roadmap task #8).
+_PUBLISH_SCORE_THRESHOLD = 48
 _MIN_FORK_STAR_RATIO = 0.02
 _REPUBLISH_COOLDOWN_DAYS = 14
 _SUSPICIOUS_FORK_STAR_RATIO = 0.02
@@ -30,6 +34,20 @@ def _stars_at(history: Sequence[dict], days_ago: int) -> int:
     if len(history) <= days_ago:
         return history[0].get("github_stars", 0) if history else 0
     return history[-(days_ago + 1)].get("github_stars", 0)
+
+
+def _raw_velocity(history: Sequence[dict], days: int) -> int:
+    """Simple cumulative stars gained in the last `days` days (no decay).
+
+    Used by _acceleration for apples-to-apples week-over-week comparison.
+    The velocity *score component* uses gravity-decayed _velocity; the
+    acceleration *comparison* uses raw deltas to avoid mixing scales.
+    """
+    if len(history) < 2:
+        return 0
+    current = history[-1].get("github_stars", 0)
+    past = _stars_at(history, days)
+    return max(0, current - past)
 
 
 def _velocity(history: Sequence[dict], days: int) -> int:
@@ -52,10 +70,15 @@ def _velocity(history: Sequence[dict], days: int) -> int:
 
 
 def _acceleration(history: Sequence[dict]) -> int:
-    """Change in weekly velocity (this week minus last week)."""
+    """Change in weekly velocity (this week minus last week).
+
+    Uses _raw_velocity for both weeks to ensure apples-to-apples comparison.
+    The gravity-decayed _velocity is used for the velocity score component,
+    not for the acceleration comparison.
+    """
     if len(history) < 14:
         return 0
-    this_week = _velocity(history, 7)
+    this_week = _raw_velocity(history, 7)
     last_week_start = _stars_at(history, 14)
     seven_ago = _stars_at(history, 7)
     last_week = max(0, seven_ago - last_week_start)
@@ -105,7 +128,7 @@ def _viral_bonus(history: Sequence[dict]) -> int:
     """+10 if >5× baseline spike in the last 7 days."""
     if len(history) < 8:
         return 0
-    recent = _velocity(history, 7)
+    recent = _raw_velocity(history, 7)
     baseline_start = _stars_at(history, 14)
     seven_ago = _stars_at(history, 7)
     baseline = max(1, seven_ago - baseline_start)
@@ -123,8 +146,8 @@ def compute_momentum_score(history: Sequence[dict]) -> int:
     - github_forks: current fork count
 
     Score components:
-    - Velocity (35%): 7-day star gain, scaled
-    - Acceleration (25%): week-over-week velocity change, scaled
+    - Velocity (35%): 7-day star gain with gravity decay, scaled
+    - Acceleration (25%): week-over-week raw velocity change, scaled
     - Relative Growth (20%): new stars / total stars, scaled
     - Engagement Depth (10%): fork/star ratio, scaled
     - Consistency (10%): positive velocity across multiple windows
@@ -198,10 +221,10 @@ def should_publish_hidden_gem(
     """Gate whether a repo should be published as a hidden gem.
 
     All conditions must be met:
-    - score >= 55 (Momentum Score threshold)
+    - score >= threshold (Momentum Score — currently 48, temporary)
     - velocity > 0 (currently growing)
     - acceleration > 0 (growth is accelerating)
-    - fork_star_ratio >= 0.02 (passes fake-star filter)
+    - fork/star_ratio >= 0.02 (passes fake-star filter)
     - last_published_days >= 14 (not recently published)
     """
     return (

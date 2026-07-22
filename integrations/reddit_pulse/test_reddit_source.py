@@ -34,6 +34,26 @@ class HangingProcess:
         self._released.set()
 
 
+def test_normalize_reddit_url_strips_query_params():
+    source = load_source()
+    assert (
+        source._normalize_reddit_url(
+            "https://www.reddit.com/r/LocalLLaMA/comments/abc/?utm_source=share"
+        )
+        == "https://www.reddit.com/r/LocalLLaMA/comments/abc"
+    )
+    assert (
+        source._normalize_reddit_url(
+            "https://www.reddit.com/r/LocalLLaMA/comments/abc/"
+        )
+        == "https://www.reddit.com/r/LocalLLaMA/comments/abc"
+    )
+    assert (
+        source._normalize_reddit_url("https://www.reddit.com/r/LocalLLaMA/comments/abc")
+        == "https://www.reddit.com/r/LocalLLaMA/comments/abc"
+    )
+
+
 def load_source():
     path = Path(__file__).parent / "reddit_source.py"
     spec = importlib.util.spec_from_file_location("reddit_test_source", path)
@@ -73,7 +93,12 @@ class FakePosts:
 
     async def find_one(self, query, *_args, **_kwargs):
         url = query.get("project.url", "")
-        return self._url_to_post.get(url)
+        # Normalize keys so trailing-slash / query-param variants match
+        for stored_url, value in self._url_to_post.items():
+            normalized_stored = stored_url.split("?")[0].rstrip("/")
+            if normalized_stored == url:
+                return value
+        return None
 
 
 class FakeDb:

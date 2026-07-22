@@ -8,11 +8,12 @@ Requires: bdata CLI in PATH (installed via npm, part of Bright Data).
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
-import signal
 import shutil
+import signal
 from datetime import datetime, timezone
 
 from _shared.mongo import _get_db
@@ -39,8 +40,30 @@ def _visibility_from_upvotes(upvotes: int, comments: int) -> float:
     return round(max(score, 20), 1)
 
 
+def _normalize_reddit_url(url: str) -> str:
+    """Normalize a Reddit URL for dedup/cooldown matching.
+
+    Strips query params and trailing slashes so that:
+    - https://www.reddit.com/r/LocalLLaMA/comments/abc/
+    - https://www.reddit.com/r/LocalLLaMA/comments/abc/?utm_source=share
+    - https://www.reddit.com/r/LocalLLaMA/comments/abc
+    all match the same post.
+    """
+    # Strip query params
+    if "?" in url:
+        url = url.split("?")[0]
+    # Strip trailing slash
+    url = url.rstrip("/")
+    return url
+
+
 def _post_age_hours(post: dict) -> float:
-    """Hours since the Reddit post was created. Falls back to 1 if unknown."""
+    """Hours since the Reddit post was created. Falls back to 1 if unknown.
+
+    If Bright Data doesn't return created_utc/created_at, engagement_velocity
+    defaults to upvotes/1 = upvotes. This is a known limitation — the ranking
+    becomes sort-by-upvotes, which is still better than no sorting.
+    """
     for key in ("created_utc", "created_at"):
         raw = post.get(key)
         if raw is None:
@@ -60,8 +83,9 @@ def _post_age_hours(post: dict) -> float:
 
 async def _last_posted_days(db, project_url: str) -> int:
     """Days since the most recent post for this project URL. 999 if never posted."""
+    normalized = _normalize_reddit_url(project_url)
     post = await db.posts.find_one(
-        {"project.url": project_url},
+        {"project.url": normalized},
         {"postedAt": 1},
     )
     if not post or not post.get("postedAt"):
@@ -78,19 +102,14 @@ async def _stop_source_process(proc, communication) -> None:
         pid = getattr(proc, "pid", None)
         if isinstance(pid, int):
             try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(pid, signal.SIGKILL)
             except PermissionError:
-                try:
+                with contextlib.suppress(ProcessLookupError):
                     proc.kill()
-                except ProcessLookupError:
-                    pass
         else:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            except ProcessLookupError:
-                pass
     try:
         await asyncio.wait_for(
             asyncio.shield(communication),
