@@ -4,6 +4,7 @@
 novel repos, and repos identified by the momentum-score breakout gate.
 """
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -115,7 +116,8 @@ async def fetch_low_star_github_candidates(max_results: int = 15) -> list[dict]:
                 )
                 r.raise_for_status()
                 items = r.json().get("items", [])
-            except Exception:
+            except Exception as e:
+                logging.warning("GitHub search failed for topic '%s': %s", topic, e)
                 continue
             for it in items:
                 stars = it.get("stargazers_count", 0)
