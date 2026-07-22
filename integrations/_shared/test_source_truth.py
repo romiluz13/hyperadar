@@ -737,7 +737,15 @@ async def test_reddit_candidate_returns_structured_upvote_data(monkeypatch):
         source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
     )
 
-    candidates = await source.fetch_reddit_candidates(max_results=1)
+    # Mock db so cooldown filtering works without a live MongoDB connection.
+    class FakePosts:
+        async def find_one(self, *_args, **_kwargs):
+            return None
+
+    class FakeDb:
+        posts = FakePosts()
+
+    candidates = await source.fetch_reddit_candidates(max_results=1, db=FakeDb())
 
     assert "reddit_posts" in subprocess_calls[0]
     assert "--format" in subprocess_calls[0]
@@ -747,6 +755,7 @@ async def test_reddit_candidate_returns_structured_upvote_data(monkeypatch):
     assert candidates[0]["num_comments"] == 89
     assert candidates[0]["subreddit"] == "LocalLLaMA"
     assert candidates[0]["visibility_score"] > 0
+    assert candidates[0]["engagement_velocity"] > 0
     assert candidates[0]["evidence_url"] == full_url
 
 

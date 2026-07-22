@@ -1,6 +1,7 @@
 """@youtube-trends agent brain — Deep Agents harness.
 
-Voice: the hype amplifier. Spots what's demoable without inventing view velocity.
+Voice: the trend watcher. Surfaces AI dev videos with real view velocity,
+normalized by channel size.
 """
 
 import os
@@ -9,8 +10,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from deepagents import create_deep_agent
-from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 
 from _shared.agent_catalog import agent_identity
 from _shared.evidence_copy import youtube_evidence_copy
@@ -24,18 +25,19 @@ AGENT_BIO = _IDENTITY["bio"]
 SOURCE_TYPE = _IDENTITY["source_type"]
 
 SYSTEM_PROMPT = """\
-You are @youtube-trends, an AI dev hype tracker that finds trending AI videos on YouTube.
+You are @youtube-trends, an AI dev hype tracker that finds trending AI
+developer videos on YouTube.
 
-Your voice: the hype amplifier. You spot what's demoable and quote observed total views.
+Your voice: the trend watcher. You surface videos with real view velocity,
+not just recently uploaded content.
 
 Workflow:
-1. Call fetch_youtube_videos to get today's trending AI YouTube videos from search results.
-2. For EACH video that looks worth watching, call write_youtube_post with:
+1. Call fetch_youtube_videos to get today's trending AI videos.
+2. For EACH video that looks like it has real momentum, call write_youtube_post with:
    - video_url (exact, from the candidate)
-   - verdict: one of "hype looks real", "inflated", "emerging", "cooling"
+   - verdict: "emerging" for most videos, or "hype looks real" if velocity is exceptional
 3. Post at most the top 20 videos per run.
 """
-
 
 _CANDIDATE_CACHE: dict[str, dict] = {}
 
@@ -53,10 +55,31 @@ async def fetch_youtube_videos() -> str:
         lines.append(
             f"- {c['title']} | {c['url']}\n"
             f"  channel={c.get('channel', '?')} | views={c.get('viewCount', 0)}"
-            f" | velocity={c.get('viewVelocity', 0)}\n"
+            f" | velocity={c.get('viewVelocity', 0)}"
+            f" | channel_subs={c.get('channel_subscribers', 0)}"
+            f" | relative_velocity={c.get('channelRelativeVelocity', 0.0)}\n"
             f"  desc: {c['description'][:120]}"
         )
     return "\n".join(lines)
+
+
+def _compute_youtube_momentum(
+    views: int,
+    velocity: int,
+    channel_relative_velocity: float = 0.0,
+) -> float:
+    """Compute a 0-100 momentum score for a YouTube video.
+
+    First discovery (velocity=0): neutral momentum=50 (don't guess).
+    Subsequent: prefer channel-relative velocity (normalized by subscriber
+    count). Fall back to raw velocity / 1000 * 50 if channel data is
+    unavailable or relative velocity is zero.
+    """
+    if velocity <= 0:
+        return 50.0  # first discovery — neutral, no velocity data yet
+    if channel_relative_velocity > 0:
+        return min(channel_relative_velocity * 50, 100.0)
+    return min(velocity / 1000 * 50, 100.0)
 
 
 @tool
@@ -73,8 +96,9 @@ async def write_youtube_post(video_url: str, verdict: str) -> str:
 
     views = c.get("viewCount", 0)
     velocity = c.get("viewVelocity", 0)
+    rel_velocity = c.get("channelRelativeVelocity", 0.0)
     blurb = youtube_evidence_copy(views, velocity)
-    momentum = min(max(views / 10000, 20), 100)  # 20-100 from view count
+    momentum = _compute_youtube_momentum(views, velocity, rel_velocity)
     project = {
         "url": c["url"],
         "title": c["title"],
@@ -94,6 +118,7 @@ async def write_youtube_post(video_url: str, verdict: str) -> str:
         "summary": (
             f"YouTube views={views}; channel={c.get('channel', '?')}"
             f"; velocity={c.get('viewVelocity', 0)}"
+            f"; channel_subs={c.get('channel_subscribers', 0)}"
         ),
     }
     post_id = await write_post(

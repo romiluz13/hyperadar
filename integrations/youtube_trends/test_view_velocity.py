@@ -10,12 +10,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from source import fetch_youtube_candidates_with_velocity
 from view_velocity import (
+    channel_relative_velocity,
     compute_view_velocity,
     get_view_velocity,
     save_view_snapshot,
 )
-from source import fetch_youtube_candidates_with_velocity
 
 
 # ---------------------------------------------------------------------------
@@ -235,3 +236,31 @@ async def test_fetch_youtube_candidates_with_velocity_includes_first_discovery(d
     docs = list(db.youtube_view_snapshots.find({"url": raw_candidates[0]["url"]}))
     assert len(docs) == 1
     assert docs[0]["viewCount"] == 300
+
+
+# ---------------------------------------------------------------------------
+# Channel-relative velocity
+# ---------------------------------------------------------------------------
+
+
+def test_channel_relative_velocity_normalizes_by_subscribers():
+    """5K views/week on 1K subs = 5.0 (breakout)."""
+    assert channel_relative_velocity(5000, 1000) == 5.0
+
+
+def test_channel_relative_velocity_small_channel_scores_higher():
+    """Same velocity on smaller channel = higher relative score."""
+    small = channel_relative_velocity(5000, 1000)
+    large = channel_relative_velocity(5000, 100000)
+    assert small > large
+
+
+def test_channel_relative_velocity_zero_for_zero_velocity():
+    """No velocity → 0.0."""
+    assert channel_relative_velocity(0, 1000) == 0.0
+
+
+def test_channel_relative_velocity_falls_back_for_zero_subs():
+    """Zero subscribers → use default (10000), don't divide by zero."""
+    result = channel_relative_velocity(5000, 0)
+    assert result == 0.5  # 5000 / 10000

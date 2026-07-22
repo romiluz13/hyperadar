@@ -33,12 +33,22 @@ def _stars_at(history: Sequence[dict], days_ago: int) -> int:
 
 
 def _velocity(history: Sequence[dict], days: int) -> int:
-    """Stars gained in the last `days` days."""
+    """Stars gained in the last `days` days, with HN-style gravity decay.
+
+    Recent days are weighted higher than older days. Weight for day i
+    (1 = most recent) is ``1.0 / (1 + (i - 1) * 0.15)`` so the most recent
+    day gets weight 1.0 and decays to ~0.53 for 7 days ago.
+    """
     if len(history) < 2:
         return 0
-    current = history[-1].get("github_stars", 0)
-    past = _stars_at(history, days)
-    return max(0, current - past)
+    total = 0
+    for i in range(1, min(days, len(history) - 1) + 1):
+        daily_gain = history[-i].get("github_stars", 0) - history[-(i + 1)].get(
+            "github_stars", 0
+        )
+        weight = 1.0 / (1 + (i - 1) * 0.15)
+        total += max(0, daily_gain) * weight
+    return int(total)
 
 
 def _acceleration(history: Sequence[dict]) -> int:
