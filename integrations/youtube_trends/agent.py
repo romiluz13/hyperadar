@@ -64,7 +64,6 @@ async def fetch_youtube_videos() -> str:
 
 
 def _compute_youtube_momentum(
-    views: int,
     velocity: int,
     channel_relative_velocity: float = 0.0,
 ) -> float:
@@ -76,7 +75,7 @@ def _compute_youtube_momentum(
     unavailable or relative velocity is zero.
     """
     if velocity <= 0:
-        return 50.0  # first discovery — neutral, no velocity data yet
+        return 50.0
     if channel_relative_velocity > 0:
         return min(channel_relative_velocity * 50, 100.0)
     return min(velocity / 1000 * 50, 100.0)
@@ -98,7 +97,7 @@ async def write_youtube_post(video_url: str, verdict: str) -> str:
     velocity = c.get("viewVelocity", 0)
     rel_velocity = c.get("channelRelativeVelocity", 0.0)
     blurb = youtube_evidence_copy(views, velocity)
-    momentum = _compute_youtube_momentum(views, velocity, rel_velocity)
+    momentum = _compute_youtube_momentum(velocity, rel_velocity)
     project = {
         "url": c["url"],
         "title": c["title"],
