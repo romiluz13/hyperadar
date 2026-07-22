@@ -15,14 +15,20 @@ import httpx
 
 from _shared.momentum import (
     _acceleration,
+    _is_monotonic_growth,
     _velocity,
     compute_momentum_score,
     passes_fake_star_filter,
+    should_publish_hidden_gem,
 )
 from github_radar.tracker import track_daily_snapshots
 
-_token = os.environ["GITHUB_TOKEN"]
-_headers = {"Authorization": f"token {_token}", "Accept": "application/vnd.github+json"}
+_token = os.environ.get("GITHUB_TOKEN", "")
+_headers = (
+    {"Authorization": f"token {_token}", "Accept": "application/vnd.github+json"}
+    if _token
+    else {}
+)
 
 
 def _stars_int(value) -> int:
@@ -301,6 +307,21 @@ def compute_momentum(candidate: dict, history: list[dict], prior_posts: int) -> 
 _MIN_HISTORY_DAYS = 7
 
 
+async def _last_published_days(db, project_url: str) -> int:
+    """Days since the most recent post for this project URL. 999 if never posted."""
+    post = await db.posts.find_one(
+        {"project.url": project_url},
+        {"postedAt": 1},
+    )
+    if not post or not post.get("postedAt"):
+        return 999
+    posted = post["postedAt"]
+    if posted.tzinfo is None:
+        posted = posted.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - posted
+    return max(0, delta.days)
+
+
 async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
     """Fetch trending AI repos using the shared Momentum Score.
 
@@ -341,13 +362,28 @@ async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
         if len(history) < _MIN_HISTORY_DAYS:
             continue
 
-        score = compute_momentum_score(history)
         velocity = _velocity(history, 7)
         acceleration = _acceleration(history)
         stars = history[-1].get("github_stars", 0)
         forks = history[-1].get("github_forks", 0)
+        fork_star_ratio = forks / stars if stars > 0 else 0.0
 
         if not passes_fake_star_filter(stars, forks):
+            continue
+
+        prior_count = await db.posts.count_documents({"project.url": project_url})
+        score = compute_momentum_score(history, prior_post_count=prior_count)
+
+        is_monotonic = _is_monotonic_growth(history)
+        last_pub_days = await _last_published_days(db, project_url)
+        if not should_publish_hidden_gem(
+            score,
+            velocity,
+            acceleration,
+            fork_star_ratio,
+            last_pub_days,
+            is_monotonic,
+        ):
             continue
 
         results.append(

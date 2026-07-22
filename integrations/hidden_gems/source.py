@@ -12,6 +12,7 @@ import httpx
 from _shared.momentum import (
     _acceleration,
     _engagement_depth,
+    _is_monotonic_growth,
     _velocity,
     compute_momentum_score,
     passes_fake_star_filter,
@@ -198,7 +199,8 @@ async def fetch_breakout_candidates(db) -> list[dict]:
         if len(history) < _MIN_HISTORY_DAYS:
             continue
 
-        score = compute_momentum_score(history)
+        prior_count = await db.posts.count_documents({"project.url": project_url})
+        score = compute_momentum_score(history, prior_post_count=prior_count)
         velocity = _velocity(history, 7)
         acceleration = _acceleration(history)
         stars = history[-1].get("github_stars", 0)
@@ -209,13 +211,14 @@ async def fetch_breakout_candidates(db) -> list[dict]:
             continue
 
         last_pub_days = await _last_published_days(db, project_url)
-
+        is_monotonic = _is_monotonic_growth(history)
         if not should_publish_hidden_gem(
             score,
             velocity,
             acceleration,
             fork_star_ratio,
             last_pub_days,
+            is_monotonic,
         ):
             continue
 
