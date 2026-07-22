@@ -117,6 +117,83 @@ test("text-only fallback pipeline uses $search without $vectorSearch", () => {
 	);
 });
 
+test("text search pipeline includes $match portSyncStatus after $search for exact MQL filtering", () => {
+	const pipeline = textSearchPostsPipeline("agent security", 20);
+	const searchIndex = pipeline.findIndex((stage) => "$search" in stage);
+	assert.ok(searchIndex >= 0, "pipeline must include $search");
+
+	// Find $match stages after $search
+	const matchAfterSearch = pipeline.findIndex(
+		(stage, i) => i > searchIndex && "$match" in stage,
+	);
+	assert.ok(
+		matchAfterSearch >= 0,
+		"pipeline must include $match after $search",
+	);
+	const matchStage = pipeline[matchAfterSearch] as {
+		$match: Record<string, unknown>;
+	};
+	assert.equal(
+		matchStage.$match.portSyncStatus,
+		"synced",
+		"$match after $search must filter portSyncStatus to exact 'synced'",
+	);
+});
+
+test("text search pipeline includes $sort after $group/$replaceRoot for deterministic order", () => {
+	const pipeline = textSearchPostsPipeline("test", 20);
+	const replaceRootIndex = pipeline.findIndex(
+		(stage) => "$replaceRoot" in stage,
+	);
+	assert.ok(replaceRootIndex >= 0, "pipeline must include $replaceRoot");
+
+	const sortAfterReplaceRoot = pipeline.findIndex(
+		(stage, i) => i > replaceRootIndex && "$sort" in stage,
+	);
+	assert.ok(
+		sortAfterReplaceRoot >= 0,
+		"pipeline must include $sort after $replaceRoot for deterministic order",
+	);
+});
+
+test("text-only fallback pipeline includes $match portSyncStatus after $search for exact MQL filtering", () => {
+	const pipeline = textOnlySearchPipeline("test query", 20);
+	const searchIndex = pipeline.findIndex((stage) => "$search" in stage);
+	assert.ok(searchIndex >= 0, "pipeline must include $search");
+
+	const matchAfterSearch = pipeline.findIndex(
+		(stage, i) => i > searchIndex && "$match" in stage,
+	);
+	assert.ok(
+		matchAfterSearch >= 0,
+		"pipeline must include $match after $search",
+	);
+	const matchStage = pipeline[matchAfterSearch] as {
+		$match: Record<string, unknown>;
+	};
+	assert.equal(
+		matchStage.$match.portSyncStatus,
+		"synced",
+		"$match after $search must filter portSyncStatus to exact 'synced'",
+	);
+});
+
+test("text-only fallback pipeline includes $sort after $group/$replaceRoot for deterministic order", () => {
+	const pipeline = textOnlySearchPipeline("test", 20);
+	const replaceRootIndex = pipeline.findIndex(
+		(stage) => "$replaceRoot" in stage,
+	);
+	assert.ok(replaceRootIndex >= 0, "pipeline must include $replaceRoot");
+
+	const sortAfterReplaceRoot = pipeline.findIndex(
+		(stage, i) => i > replaceRootIndex && "$sort" in stage,
+	);
+	assert.ok(
+		sortAfterReplaceRoot >= 0,
+		"pipeline must include $sort after $replaceRoot for deterministic order",
+	);
+});
+
 test("text-only fallback uses Atlas Search text operator for filter", () => {
 	const pipeline = textOnlySearchPipeline("test", 20);
 	const searchStage = pipeline.find((s) => "$search" in s) as {

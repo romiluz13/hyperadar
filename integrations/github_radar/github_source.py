@@ -6,6 +6,7 @@ gained today), not the lifetime-total sorting the GitHub Search API is limited
 to. The Search API remains a fallback when OSSInsight is unreachable.
 """
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -30,12 +31,58 @@ _headers = (
     else {}
 )
 
+# Rate limiting: sleep between per-repo GitHub API calls to avoid 429s.
+_PER_REPO_SLEEP_SECONDS = 0.1
+_RETRY_MAX_ATTEMPTS = 3
+
 
 def _stars_int(value) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+async def _fetch_repo_with_retry(
+    client: httpx.AsyncClient, url: str
+) -> httpx.Response | None:
+    """Fetch a repo with simple retry on 429/5xx (exponential backoff).
+
+    Returns the response on success, or None if all retries are exhausted.
+    """
+    for attempt in range(_RETRY_MAX_ATTEMPTS):
+        try:
+            r = await client.get(url, headers=_headers)
+        except httpx.HTTPError as e:
+            logging.warning(
+                "GitHub API request failed (attempt %d/%d): %s",
+                attempt + 1,
+                _RETRY_MAX_ATTEMPTS,
+                e,
+            )
+            if attempt < _RETRY_MAX_ATTEMPTS - 1:
+                await asyncio.sleep(2**attempt)
+            continue
+        if r.status_code == 429 or r.status_code >= 500:
+            logging.warning(
+                "GitHub API returned %d (attempt %d/%d) for %s",
+                r.status_code,
+                attempt + 1,
+                _RETRY_MAX_ATTEMPTS,
+                url,
+            )
+            if attempt < _RETRY_MAX_ATTEMPTS - 1:
+                retry_after = r.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        await asyncio.sleep(float(retry_after))
+                    except (TypeError, ValueError):
+                        await asyncio.sleep(2**attempt)
+                else:
+                    await asyncio.sleep(2**attempt)
+            continue
+        return r
+    return None
 
 
 async def _fetch_ossinsight_trending(max_results: int) -> list[dict]:
@@ -125,11 +172,11 @@ async def _fetch_ossinsight_trending(max_results: int) -> list[dict]:
             if len(ai_candidates) >= max_results:
                 break
             try:
-                r = await client.get(
+                r = await _fetch_repo_with_retry(
+                    client,
                     f"https://api.github.com/repos/{c['owner']}/{c['repo']}",
-                    headers=_headers,
                 )
-                if r.status_code != 200:
+                if r is None or r.status_code != 200:
                     continue
                 data = r.json()
                 topics = data.get("topics") or []
@@ -148,8 +195,16 @@ async def _fetch_ossinsight_trending(max_results: int) -> list[dict]:
                 c["description"] = data.get("description") or c["description"]
                 c["forks"] = data.get("forks_count")
                 ai_candidates.append(c)
-            except Exception:
+            except Exception as e:
+                logging.warning(
+                    "Failed to enrich OSSInsight candidate %s/%s via GitHub API: %s",
+                    c.get("owner"),
+                    c.get("repo"),
+                    e,
+                )
                 continue
+            # Rate limit: sleep between per-repo GitHub API calls.
+            await asyncio.sleep(_PER_REPO_SLEEP_SECONDS)
     return ai_candidates
 
 
@@ -340,7 +395,7 @@ async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
             "$group": {
                 "_id": "$projectId",
                 "count": {"$sum": 1},
-            }
+            },
         },
         {"$match": {"count": {"$gte": _MIN_HISTORY_DAYS}}},
     ]

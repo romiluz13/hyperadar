@@ -78,7 +78,9 @@ export function vectorSearchProjectsPipeline(
  * Note: compound.filter uses the Atlas Search `text` operator (not MQL
  * $eq) because $search compound clauses require Atlas Search operators.
  * Using `text` in `filter` zeroes its score contribution, which is correct
- * for a pure filter.
+ * for a pure filter. A follow-up $match stage enforces exact MQL equality
+ * because the Atlas Search text operator does token-based matching, so
+ * "not_synced" would also match "synced".
  */
 export function textSearchPostsPipeline(
 	queryText: string,
@@ -101,9 +103,14 @@ export function textSearchPostsPipeline(
 				},
 			},
 		},
+		// Exact MQL $match after $search — the Atlas Search text operator does
+		// token-based matching, so "not_synced" would also match "synced".
+		{ $match: { portSyncStatus: "synced" } },
 		{ $sort: { rankScore: -1, postedAt: -1 } },
 		{ $group: { _id: "$project.url", post: { $first: "$$ROOT" } } },
 		{ $replaceRoot: { newRoot: "$post" } },
+		// Sort by rankScore descending after dedup — $group order is undefined.
+		{ $sort: { rankScore: -1, postedAt: -1 } },
 		{ $limit: limit },
 	];
 }
@@ -164,6 +171,10 @@ export function mergeHybridResults<T extends { project: { url: string } }>(
  *
  * Uses $search (Atlas Search, BM25) without the vector leg.
  * Ensures the feed search never breaks entirely.
+ *
+ * A follow-up $match stage enforces exact MQL equality on portSyncStatus
+ * because the Atlas Search text operator does token-based matching, so
+ * "not_synced" would also match "synced".
  */
 export function textOnlySearchPipeline(
 	queryText: string,
@@ -186,9 +197,13 @@ export function textOnlySearchPipeline(
 				},
 			},
 		},
+		// Exact MQL $match after $search — the Atlas Search text operator does
+		// token-based matching, so "not_synced" would also match "synced".
+		{ $match: { portSyncStatus: "synced" } },
 		{ $sort: { rankScore: -1, postedAt: -1 } },
 		{ $group: { _id: "$project.url", post: { $first: "$$ROOT" } } },
 		{ $replaceRoot: { newRoot: "$post" } },
+		// Sort by rankScore descending after dedup — $group order is undefined.
 		{ $sort: { rankScore: -1, postedAt: -1 } },
 		{ $limit: limit },
 	];

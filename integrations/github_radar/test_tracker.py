@@ -1,8 +1,28 @@
 """Tests for the github-radar daily snapshot tracker."""
 
+import logging
+
 import pytest
 
 from _shared import mongo
+
+
+@pytest.mark.asyncio
+async def test_search_candidates_logs_warning_on_exception(caplog):
+    """A failed GitHub search logs a warning, not a silent swallow."""
+    from github_radar import tracker
+
+    class _BoomClient:
+        async def get(self, *a, **kw):
+            raise RuntimeError("network down")
+
+    with caplog.at_level(logging.WARNING, logger="root"):
+        result = await tracker._search_candidates(_BoomClient())
+
+    assert result == [], "should return empty list on exception"
+    assert any("GitHub search failed" in r.message for r in caplog.records), (
+        "must log a warning with context when the search raises"
+    )
 
 
 @pytest.mark.asyncio

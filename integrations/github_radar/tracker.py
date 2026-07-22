@@ -10,6 +10,7 @@ no post has been written yet — the snapshot exists purely so future
 momentum calculations have historical data to work with.
 """
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -52,7 +53,8 @@ async def _search_candidates(client: httpx.AsyncClient) -> list[dict]:
             )
             r.raise_for_status()
             items = r.json().get("items", [])
-        except Exception:
+        except Exception as e:
+            logging.warning("GitHub search failed for topic '%s': %s", topic, e)
             continue
         for it in items:
             all_candidates.append(
