@@ -5,6 +5,7 @@ Pure function tests — no network, no database.
 """
 
 from _shared.momentum import (
+    _is_monotonic_growth,
     _velocity,
     compute_momentum_score,
     passes_fake_star_filter,
@@ -173,3 +174,95 @@ def test_publishing_gate_accepts_all_conditions_met():
     assert should_publish_hidden_gem(55, 1, 1, 0.02, 14)
     assert should_publish_hidden_gem(48, 1, 1, 0.02, 14)
     assert not should_publish_hidden_gem(47, 1, 1, 0.02, 14)
+
+
+# --- Monotonicity gate tests ---
+
+
+def test_monotonic_growth_passes_for_non_decreasing_stars():
+    """_is_monotonic_growth returns True when stars never decrease."""
+    history = [_snapshot(50), _snapshot(55), _snapshot(60), _snapshot(70)]
+    assert _is_monotonic_growth(history) is True
+
+
+def test_monotonic_growth_passes_for_equal_stars():
+    """Non-decreasing includes flat (equal) star counts."""
+    history = [_snapshot(50), _snapshot(50), _snapshot(50)]
+    assert _is_monotonic_growth(history) is True
+
+
+def test_monotonic_growth_passes_for_short_history():
+    """History with 0 or 1 entries is vacuously monotonic."""
+    assert _is_monotonic_growth([]) is True
+    assert _is_monotonic_growth([_snapshot(50)]) is True
+
+
+def test_monotonic_growth_fails_for_decreasing_stars():
+    """_is_monotonic_growth returns False when any day has fewer stars."""
+    # 50 -> 40 -> 60 -> 55 -> 70: dips at index 1 and 3
+    history = [
+        _snapshot(50),
+        _snapshot(40),
+        _snapshot(60),
+        _snapshot(55),
+        _snapshot(70),
+    ]
+    assert _is_monotonic_growth(history) is False
+
+
+def test_monotonic_growth_fails_for_single_decrease():
+    """Even a single dip should break monotonicity."""
+    history = [_snapshot(100), _snapshot(90)]
+    assert _is_monotonic_growth(history) is False
+
+
+# --- Novelty bonus tests ---
+
+
+def test_novelty_bonus_first_publication():
+    """First publication (prior_post_count=0) adds +5 to the score."""
+    history = [_snapshot(100, 20), _snapshot(110, 22)]
+    base_score = compute_momentum_score(history, prior_post_count=99)
+    first_score = compute_momentum_score(history, prior_post_count=0)
+    assert first_score == base_score + 5
+
+
+def test_novelty_bonus_second_publication():
+    """Second publication (prior_post_count=1) adds +3 to the score."""
+    history = [_snapshot(100, 20), _snapshot(110, 22)]
+    base_score = compute_momentum_score(history, prior_post_count=99)
+    second_score = compute_momentum_score(history, prior_post_count=1)
+    assert second_score == base_score + 3
+
+
+def test_novelty_bonus_third_plus_no_bonus():
+    """Third+ publication (prior_post_count>=2) adds nothing."""
+    history = [_snapshot(100, 20), _snapshot(110, 22)]
+    base_score = compute_momentum_score(history, prior_post_count=99)
+    third_score = compute_momentum_score(history, prior_post_count=2)
+    assert third_score == base_score
+    assert compute_momentum_score(history, prior_post_count=10) == base_score
+
+
+def test_novelty_bonus_clamped_to_100():
+    """Novelty bonus should not push the score above 100."""
+    history = []
+    s = 0
+    for day in range(30):
+        s += 100 + day * 10
+        history.append(_snapshot(s, s))
+    score = compute_momentum_score(history, prior_post_count=0)
+    assert score == 100
+
+
+# --- Monotonicity gate in publishing gate tests ---
+
+
+def test_publishing_gate_rejects_non_monotonic_growth():
+    """should_publish_hidden_gem rejects when is_monotonic is False."""
+    assert not should_publish_hidden_gem(70, 10, 5, 0.1, 30, is_monotonic=False)
+
+
+def test_publishing_gate_accepts_monotonic_default():
+    """Default is_monotonic=True preserves backward compatibility."""
+    assert should_publish_hidden_gem(70, 10, 5, 0.1, 30)

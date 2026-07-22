@@ -137,7 +137,7 @@ def _viral_bonus(history: Sequence[dict]) -> int:
     return 0
 
 
-def compute_momentum_score(history: Sequence[dict]) -> int:
+def compute_momentum_score(history: Sequence[dict], prior_post_count: int = 0) -> int:
     """Compute a 0–100 Momentum Score from a repo's signal history.
 
     Each history entry is a daily snapshot with at least:
@@ -152,6 +152,7 @@ def compute_momentum_score(history: Sequence[dict]) -> int:
     - Engagement Depth (10%): fork/star ratio, scaled
     - Consistency (10%): positive velocity across multiple windows
     + Viral Bonus (+10): if >5× baseline spike
+    + Novelty Bonus (+5/+3/0): first/second/3+ publication
     """
     if not history or len(history) < 2:
         return 0
@@ -186,6 +187,14 @@ def compute_momentum_score(history: Sequence[dict]) -> int:
     # Viral bonus
     bonus = _viral_bonus(history)
 
+    # Novelty bonus: +5 for first publication, +3 for second, 0 for 3+
+    if prior_post_count == 0:
+        novelty_bonus = 5
+    elif prior_post_count == 1:
+        novelty_bonus = 3
+    else:
+        novelty_bonus = 0
+
     total = (
         velocity_score
         + accel_score
@@ -193,6 +202,7 @@ def compute_momentum_score(history: Sequence[dict]) -> int:
         + depth_score
         + consistency_score
         + bonus
+        + novelty_bonus
     )
     return min(100, max(0, total))
 
@@ -211,12 +221,23 @@ def passes_fake_star_filter(stars: int, forks: int) -> bool:
     return (forks / stars) >= _SUSPICIOUS_FORK_STAR_RATIO
 
 
+def _is_monotonic_growth(history: Sequence[dict]) -> bool:
+    """Check if star count is non-decreasing across the history."""
+    if len(history) < 2:
+        return True
+    for i in range(1, len(history)):
+        if history[i].get("github_stars", 0) < history[i - 1].get("github_stars", 0):
+            return False
+    return True
+
+
 def should_publish_hidden_gem(
     score: int,
     velocity: int,
     acceleration: int,
     fork_star_ratio: float,
     last_published_days: int,
+    is_monotonic: bool = True,
 ) -> bool:
     """Gate whether a repo should be published as a hidden gem.
 
@@ -226,6 +247,7 @@ def should_publish_hidden_gem(
     - acceleration > 0 (growth is accelerating)
     - fork/star_ratio >= 0.02 (passes fake-star filter)
     - last_published_days >= 14 (not recently published)
+    - is_monotonic (growth is non-decreasing across the tracking window)
     """
     return (
         score >= _PUBLISH_SCORE_THRESHOLD
@@ -233,4 +255,5 @@ def should_publish_hidden_gem(
         and acceleration > 0
         and fork_star_ratio >= _MIN_FORK_STAR_RATIO
         and last_published_days >= _REPUBLISH_COOLDOWN_DAYS
+        and is_monotonic
     )

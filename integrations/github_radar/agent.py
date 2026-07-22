@@ -8,6 +8,7 @@ Deep Agents provides planning/tool-calling on LangGraph; MongoDBSaver checkpoint
 the run for durable inspection — the current MongoDB agent-memory proof.
 """
 
+import logging
 import os
 
 from deepagents import create_deep_agent
@@ -18,7 +19,11 @@ from _shared import mongo
 from _shared.agent_catalog import agent_identity
 from _shared.evidence_copy import github_evidence_copy
 from _shared.write_post import write_post
-from github_source import fetch_trending_candidates, compute_momentum
+from github_source import (
+    compute_momentum,
+    fetch_trending_candidates,
+    fetch_trending_candidates_with_momentum,
+)
 
 AGENT_HANDLE = "@github-radar"
 _IDENTITY = agent_identity(AGENT_HANDLE)
@@ -48,33 +53,68 @@ Never imply the repository gained that average in the latest week. Be concrete, 
 async def fetch_trending_repos() -> str:
     """Fetch today's trending AI repos from GitHub (search API), with computed momentum.
 
+    Tries the shared Momentum Score path (``fetch_trending_candidates_with_momentum``)
+    when a database is available, falling back to the legacy ``fetch_trending_candidates``
+    path when the DB is not reachable.
+
     Returns a compact text listing of candidates with their momentum scores so you
     can decide which to post about.
     """
-    candidates = await fetch_trending_candidates(max_results=25)
-    if not candidates:
-        return "No trending candidates found today."
+    candidates: list[dict] = []
+    try:
+        async_db = mongo._get_db()
+        candidates = await fetch_trending_candidates_with_momentum(async_db)
+    except Exception as exc:
+        logging.warning("Momentum path unavailable, falling back to legacy: %s", exc)
+        candidates = []
 
+    if not candidates:
+        # Legacy fallback: no DB or no repos with enough history yet.
+        candidates = await fetch_trending_candidates(max_results=25)
+        if not candidates:
+            return "No trending candidates found today."
+
+        lines = []
+        for c in candidates:
+            project_id = c["url"]
+            history = await mongo.get_momentum_history(
+                project_id,
+                source="github",
+                metric="github_stars",
+            )
+            prior_posts = await mongo.get_prior_post_count(project_id)
+            m = compute_momentum(c, history, prior_posts)
+            c["_momentum"] = m  # cache for the write step
+            lines.append(
+                f"- {c['title']} | {c['url']}\n"
+                f"  stars={c['stars']} | avg_stars/wk_since_creation="
+                f"{m['avgStarsPerWeekSinceCreation']} | momentumScore={m['momentumScore']} | "
+                f"sustainedSixWeekGrowth={m['sustainedSixWeekGrowth']} | "
+                f"novel={m['novel']}\n"
+                f"  desc: {c['description'][:120]}"
+            )
+        _CANDIDATE_CACHE.update({c["url"]: c for c in candidates})
+        return "\n".join(lines)
+
+    # Shared Momentum Score path: candidates already have momentumScore/velocity.
     lines = []
     for c in candidates:
-        project_id = c["url"]
-        history = await mongo.get_momentum_history(
-            project_id,
-            source="github",
-            metric="github_stars",
-        )
-        prior_posts = await mongo.get_prior_post_count(project_id)
-        m = compute_momentum(c, history, prior_posts)
-        c["_momentum"] = m  # cache for the write step
+        c["_momentum"] = {
+            "momentumScore": c["momentumScore"],
+            "velocity": c["velocity"],
+            "acceleration": c["acceleration"],
+            # Legacy fields expected by write_hype_post — not computed in the
+            # shared path; provide neutral defaults so the write tool doesn't
+            # KeyError when the momentum path is active.
+            "avgStarsPerWeekSinceCreation": 0.0,
+            "sustainedSixWeekGrowth": False,
+        }
         lines.append(
             f"- {c['title']} | {c['url']}\n"
-            f"  stars={c['stars']} | avg_stars/wk_since_creation="
-            f"{m['avgStarsPerWeekSinceCreation']} | momentumScore={m['momentumScore']} | "
-            f"sustainedSixWeekGrowth={m['sustainedSixWeekGrowth']} | "
-            f"novel={m['novel']}\n"
+            f"  stars={c['stars']} | momentumScore={c['momentumScore']} | "
+            f"velocity={c['velocity']} | acceleration={c['acceleration']}\n"
             f"  desc: {c['description'][:120]}"
         )
-    # stash candidates on a module-level cache so write_hype_post can look up real data
     _CANDIDATE_CACHE.update({c["url"]: c for c in candidates})
     return "\n".join(lines)
 
