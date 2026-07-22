@@ -183,6 +183,7 @@ async def fetch_reddit_candidates(max_results: int = 10, db=None) -> list[dict]:
                 if len(candidates) >= max_results:
                     break
                 url = str(post.get("url") or "").strip()
+                url = _normalize_reddit_url(url)
                 title = str(post.get("title") or "").strip()
                 if not url or not title:
                     continue

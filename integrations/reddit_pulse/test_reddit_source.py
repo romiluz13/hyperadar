@@ -139,8 +139,8 @@ async def test_cooldown_skips_recently_posted_threads(monkeypatch):
     candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
 
     urls = [c["url"] for c in candidates]
-    assert old_url in urls
-    assert recent_url not in urls
+    assert source._normalize_reddit_url(old_url) in urls
+    assert source._normalize_reddit_url(recent_url) not in urls
 
 
 @pytest.mark.asyncio
@@ -163,7 +163,7 @@ async def test_cooldown_keeps_threads_posted_7_or_more_days_ago(monkeypatch):
 
     candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
     assert len(candidates) == 1
-    assert candidates[0]["url"] == url
+    assert candidates[0]["url"] == source._normalize_reddit_url(url)
 
 
 @pytest.mark.asyncio
@@ -184,7 +184,7 @@ async def test_cooldown_keeps_never_posted_threads(monkeypatch):
 
     candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
     assert len(candidates) == 1
-    assert candidates[0]["url"] == url
+    assert candidates[0]["url"] == source._normalize_reddit_url(url)
 
 
 @pytest.mark.asyncio
@@ -224,7 +224,7 @@ async def test_engagement_velocity_is_computed_and_sorted(monkeypatch):
     assert candidates[0]["engagement_velocity"] >= candidates[1]["engagement_velocity"]
     assert (
         candidates[0]["url"]
-        == "https://www.reddit.com/r/LocalLLaMA/comments/a/thread_a/"
+        == "https://www.reddit.com/r/LocalLLaMA/comments/a/thread_a"
     )
 
 
@@ -248,3 +248,34 @@ async def test_engagement_velocity_falls_back_to_1_hour(monkeypatch):
     candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
     assert len(candidates) == 1
     assert candidates[0]["engagement_velocity"] == 42.0
+
+
+@pytest.mark.asyncio
+async def test_cooldown_matches_despite_trailing_slash(db):
+    """Cooldown should match even if stored URL has trailing slash.
+
+    Regression test for asymmetric URL normalization: the candidate dict
+    stores the raw URL while the cooldown lookup normalizes it. After the fix,
+    the URL is normalized at construction so both stored and lookup sides match.
+    """
+    from _shared.mongo import _get_db
+
+    source = load_source()
+    url_with_slash = "https://www.reddit.com/r/LocalLLaMA/comments/abc123/"
+    # Insert a post with the normalized URL posted 2 days ago
+    db.posts.insert_one(
+        {
+            "project": {"url": source._normalize_reddit_url(url_with_slash)},
+            "postedAt": datetime.now(timezone.utc) - timedelta(days=2),
+        }
+    )
+
+    # The cooldown should find this post and skip it (< COOLDOWN_DAYS)
+    test_db = _get_db()
+    days = await source._last_posted_days(test_db, url_with_slash)
+    assert days < source.COOLDOWN_DAYS, (
+        f"Should be < {source.COOLDOWN_DAYS} days, got {days}"
+    )
+
+    # Cleanup
+    db.posts.delete_one({"project.url": source._normalize_reddit_url(url_with_slash)})

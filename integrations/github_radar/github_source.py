@@ -13,7 +13,13 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from _shared.momentum import passes_fake_star_filter
+from _shared.momentum import (
+    _acceleration,
+    _velocity,
+    compute_momentum_score,
+    passes_fake_star_filter,
+)
+from github_radar.tracker import track_daily_snapshots
 
 _token = os.environ["GITHUB_TOKEN"]
 _headers = {"Authorization": f"token {_token}", "Accept": "application/vnd.github+json"}
@@ -255,6 +261,9 @@ def _has_sustained_six_week_growth(
 def compute_momentum(candidate: dict, history: list[dict], prior_posts: int) -> dict:
     """Deterministic momentum score (0-100) per docs/specs design.
 
+    Legacy scoring path. Prefer ``fetch_trending_candidates_with_momentum``
+    which uses the shared ``compute_momentum_score`` from ``_shared.momentum``.
+
     Velocity (40%): lifetime-average stars per week since creation.
     Sustainedness (25%): six observations spanning at least five weeks, net-positive
     and non-decreasing through the current candidate value.
@@ -285,3 +294,77 @@ def compute_momentum(candidate: dict, history: list[dict], prior_posts: int) -> 
         "sustainedSixWeekGrowth": sustained_six_week_growth,
         "novel": prior_posts == 0,
     }
+
+
+# ─── Shared Momentum Score path (compute_momentum_score from _shared.momentum) ───
+
+_MIN_HISTORY_DAYS = 7
+
+
+async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
+    """Fetch trending AI repos using the shared Momentum Score.
+
+    1. Store today's snapshots via ``track_daily_snapshots``.
+    2. Query the signals time-series for repos with >=7 days of history.
+    3. For each, compute the shared ``compute_momentum_score``.
+    4. Apply the fake-star filter.
+    5. Return candidates with momentumScore, velocity, acceleration.
+    """
+    await track_daily_snapshots(db)
+
+    # Find all projectIds with >=7 days of pre-publication snapshots.
+    pipeline = [
+        {"$match": {"postId": ""}},
+        {
+            "$group": {
+                "_id": "$projectId",
+                "count": {"$sum": 1},
+            }
+        },
+        {"$match": {"count": {"$gte": _MIN_HISTORY_DAYS}}},
+    ]
+    candidates_with_history = await (await db.signals.aggregate(pipeline)).to_list(
+        length=None
+    )
+
+    results: list[dict] = []
+    for doc in candidates_with_history:
+        project_url = doc["_id"]
+
+        # Fetch the full history sorted by capturedAt ascending.
+        cursor = db.signals.find(
+            {"projectId": project_url, "postId": ""},
+            {"capturedAt": 1, "github_stars": 1, "github_forks": 1, "_id": 0},
+        ).sort("capturedAt", 1)
+        history = await cursor.to_list(length=None)
+
+        if len(history) < _MIN_HISTORY_DAYS:
+            continue
+
+        score = compute_momentum_score(history)
+        velocity = _velocity(history, 7)
+        acceleration = _acceleration(history)
+        stars = history[-1].get("github_stars", 0)
+        forks = history[-1].get("github_forks", 0)
+
+        if not passes_fake_star_filter(stars, forks):
+            continue
+
+        results.append(
+            {
+                "url": project_url,
+                "title": project_url.rsplit("/", 1)[-1],
+                "kind": "repo",
+                "description": "",
+                "topics": ["ai", "github-radar"],
+                "discovery_source": "momentum",
+                "evidence_url": project_url,
+                "stars": stars,
+                "github_stars": stars,
+                "github_forks": forks,
+                "momentumScore": score,
+                "velocity": velocity,
+                "acceleration": acceleration,
+            }
+        )
+    return results
