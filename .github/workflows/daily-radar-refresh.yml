@@ -64,7 +64,9 @@ jobs:
           GROVE_MODEL: ${{ secrets.GROVE_MODEL }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
         run: |
-          for name in MONGODB_URI PORT_CLIENT_ID PORT_CLIENT_SECRET GROVE_API_KEY GROVE_BASE_URL GROVE_MODEL VOYAGE_API_KEY; do
+          for name in \
+              MONGODB_URI PORT_CLIENT_ID PORT_CLIENT_SECRET \
+              GROVE_API_KEY GROVE_BASE_URL GROVE_MODEL VOYAGE_API_KEY; do
             if [ -z "${!name}" ]; then
               echo "::error::$name is not configured"
               exit 1
@@ -114,3 +116,38 @@ jobs:
           ROMBOT_COMMUNITY_ASK_TOKEN: ${{ secrets.ROMBOT_COMMUNITY_ASK_TOKEN }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
         run: uv run --frozen python main.py
+
+  generate-digest:
+    name: Generate Daily Digest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [run-all-agents]
+    if: always()
+
+    steps:
+      - name: Check out HypeRadar
+        uses: actions/checkout@v4
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Generate daily digest
+        working-directory: integrations/github_radar
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          MONGODB_DB: hyperadar
+          GROVE_API_KEY: ${{ secrets.GROVE_API_KEY }}
+          GROVE_BASE_URL: ${{ secrets.GROVE_BASE_URL }}
+          GROVE_MODEL: ${{ secrets.GROVE_MODEL }}
+          PYTHONPATH: ${{ github.workspace }}/integrations
+        run: |
+          uv run --frozen python -c "
+          import asyncio
+          from _shared.daily_digest import generate_daily_digest
+          result = asyncio.run(generate_daily_digest())
+          print('digest generated:', result is not None)
+          print('items:', len(result['items']) if result else 0)
+          "

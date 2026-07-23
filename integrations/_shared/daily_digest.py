@@ -70,7 +70,7 @@ def _build_grove_prompt(posts: list[dict]) -> str:
 async def _call_grove(posts: list[dict]) -> list[dict]:
     """Call Grove LLM to pick + blurb the top 5 items. Returns list of {id, blurb}."""
     prompt = _build_grove_prompt(posts)
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(
             f"{os.environ['GROVE_BASE_URL']}/chat/completions",
             headers={
