@@ -2,10 +2,12 @@ name: Daily Radar Refresh
 
 on:
   schedule:
-    # 06:00 UTC every day — fresh trending content ready before RomBot fetches
-    # at 09:00 UTC (12:00 Israel IDT). GitHub Actions cron can delay 1-3h,
-    # so we fire 3h early to ensure the digest is ready before RomBot pulls it.
-    - cron: "0 6 * * *"
+    # 05:00 UTC every day — fresh trending content ready before RomBot fetches
+    # at 09:30 UTC (12:30 Israel IDT). GitHub Actions cron can delay 1-3h,
+    # so we fire 4h+ early to ensure the digest is ready before RomBot pulls it.
+    # Even with a 3h GHA delay: 05:00 + 3h = 08:00 start + ~7min run = 08:07
+    # digest, leaving ~1h23m before RomBot fetches at 09:30 UTC.
+    - cron: "0 5 * * *"
   workflow_dispatch:
 
 permissions:
