@@ -298,6 +298,11 @@ async def fetch_reddit_candidates(max_results: int = 10, db=None) -> list[dict]:
 
     # Sort by heat_score (highest first), with upvotes_delta as a tiebreaker.
     gated.sort(key=lambda c: (c["heat_score"], c.get("upvotes_delta", 0)), reverse=True)
+    print(
+        f"@reddit-pulse source: candidates_returned={len(unique)} "
+        f"gate_passed={len(gated)}",
+        flush=True,
+    )
     return gated[:max_results]
 
 

@@ -237,6 +237,8 @@ async def fetch_youtube_candidates_with_velocity(
     if not candidates:
         return []
 
+    candidates_returned = len(candidates)
+
     result = []
     for c in candidates:
         url = c["url"]
@@ -289,6 +291,11 @@ async def fetch_youtube_candidates_with_velocity(
             gated.append(c)
 
     gated.sort(key=lambda c: (c["heat_score"], c.get("views_delta", 0)), reverse=True)
+    print(
+        f"@youtube-trends source: candidates_returned={candidates_returned} "
+        f"gate_passed={len(gated)}",
+        flush=True,
+    )
     return gated[:max_results]
 
 

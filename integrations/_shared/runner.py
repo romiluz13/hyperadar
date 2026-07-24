@@ -83,7 +83,7 @@ async def _run_agent_cycle(
         with MongoDBSaver.from_conn_string(os.environ["MONGODB_URI"]) as checkpointer:
             agent = build_agent_fn(checkpointer=checkpointer)
             try:
-                await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     agent.ainvoke(
                         {"messages": f"Run today's {agent_handle} scan."}, config=config
                     ),
@@ -96,6 +96,22 @@ async def _run_agent_cycle(
                 ) from None
     finally:
         write_post.current_run_id.reset(token)
+
+    # Log the LLM tool-call trace so the next "wrote 0" event is self-diagnosing:
+    # candidates_returned=0 + write_calls=0 = gate/cooldown (working as designed);
+    # candidates_returned=N + write_calls=0 = a real LLM bug worth chasing.
+    tool_calls = []
+    for m in (getattr(result, "messages", None) or []):
+        for tc in (getattr(m, "tool_calls", None) or []):
+            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", str(tc))
+            tool_calls.append(name)
+    write_call_count = sum(1 for n in tool_calls if n.startswith("write_"))
+    fetch_call_count = sum(1 for n in tool_calls if n.startswith("fetch_"))
+    print(
+        f"{agent_handle} runner: fetch_calls={fetch_call_count} "
+        f"write_calls={write_call_count} tool_trace={tool_calls}",
+        flush=True,
+    )
 
     # 3. Count posts created today by this agent
     summary = await summarize_run(agent_handle, thread_id, start_of_day)
