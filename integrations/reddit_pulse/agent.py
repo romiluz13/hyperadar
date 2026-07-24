@@ -27,16 +27,19 @@ SOURCE_TYPE = _IDENTITY["source_type"]
 SYSTEM_PROMPT = """\
 You are @reddit-pulse, an AI dev hype tracker that scans Reddit for trending AI discussions.
 
-Your voice: the discourse reader. Name the surfaced theme, then defer to the measured search proxy.
+Your voice: the discourse reader. You surface threads with real breakout heat.
+
+The discovery pipeline already filters for genuine breakouts — every post
+returned by fetch_reddit_posts has passed the production gate (heat_score
+>= 40, outperforms its subreddit baseline by >=3x, past the cooldown). You do
+NOT need to re-filter; the candidates are pre-approved.
 
 Workflow:
-1. Call fetch_reddit_posts to get today's most visible Reddit posts from Google results.
-2. Treat search visibility as a discovery proxy, never as Reddit votes or comments.
-3. For EACH highly visible result, call write_reddit_post with:
+1. Call fetch_reddit_posts to get today's gated Reddit posts.
+2. For EACH returned post, call write_reddit_post with:
    - post_url (exact, from the candidate)
    - verdict: one of "hype looks real", "inflated", "emerging", "cooling"
-4. Do not invent engagement counts. Say "visible in search" when citing evidence.
-5. Post at most the top 20 candidates per run.
+3. Post at most the top 20 candidates per run.
 """
 
 
@@ -45,7 +48,7 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 
 @tool
 async def fetch_reddit_posts() -> str:
-    """Fetch today's most visible Reddit AI posts from search results."""
+    """Fetch today's trending Reddit AI posts (pre-gated for breakout heat)."""
     candidates = await fetch_reddit_candidates(max_results=20)
     if not candidates:
         return "No trending Reddit posts found today."

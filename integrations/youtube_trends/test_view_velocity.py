@@ -160,10 +160,10 @@ async def test_fetch_youtube_candidates_with_velocity_filters_zero_velocity(db):
             "url": "https://www.youtube.com/watch?v=growing",
             "title": "Growing Video",
             "kind": "video",
-            "description": "By Test · 5000 views",
+            "description": "By Test · 50000 views",
             "topics": ["youtube", "ai", "video", "test"],
             "channel": "Test",
-            "viewCount": 5000,
+            "viewCount": 50000,
             "uploadDate": two_days_ago,
             "channel_subscribers": 1000,
             "channel_url": "https://www.youtube.com/@Test/videos",
@@ -193,7 +193,7 @@ async def test_fetch_youtube_candidates_with_velocity_filters_zero_velocity(db):
     db.youtube_view_snapshots.insert_one(
         {
             "url": "https://www.youtube.com/watch?v=growing",
-            "viewCount": 3000,
+            "viewCount": 30000,
             "capturedAt": now - timedelta(days=10),
         }
     )
@@ -210,7 +210,7 @@ async def test_fetch_youtube_candidates_with_velocity_filters_zero_velocity(db):
     assert "https://www.youtube.com/watch?v=flat" not in urls
     # Growing video should have viewVelocity set
     growing = next(c for c in result if c["url"].endswith("growing"))
-    assert growing["viewVelocity"] == 2000
+    assert growing["viewVelocity"] == 20000
 
 
 async def test_fetch_youtube_candidates_with_velocity_includes_first_discovery(db):
@@ -222,10 +222,10 @@ async def test_fetch_youtube_candidates_with_velocity_includes_first_discovery(d
             "url": "https://www.youtube.com/watch?v=newvid",
             "title": "New Video",
             "kind": "video",
-            "description": "By Test · 5000 views",
+            "description": "By Test · 50000 views",
             "topics": ["youtube", "ai", "video", "test"],
             "channel": "Test",
-            "viewCount": 5000,
+            "viewCount": 50000,
             "uploadDate": two_days_ago,
             "channel_subscribers": 1000,
         },
@@ -244,7 +244,7 @@ async def test_fetch_youtube_candidates_with_velocity_includes_first_discovery(d
     # Snapshot should be saved
     docs = list(db.youtube_view_snapshots.find({"url": raw_candidates[0]["url"]}))
     assert len(docs) == 1
-    assert docs[0]["viewCount"] == 5000
+    assert docs[0]["viewCount"] == 50000
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +333,7 @@ def test_attach_youtube_heat_preserves_existing_fields():
             "url": "https://www.youtube.com/watch?v=a",
             "title": "A",
             "channel": "Ch",
-            "viewCount": 5000,
+            "viewCount": 50000,
             "uploadDate": two_days_ago,
             "channel_subscribers": 1000,
             "viewVelocity": 1000,
@@ -353,7 +353,7 @@ def test_attach_youtube_heat_missing_upload_date_is_handled():
             "url": "https://www.youtube.com/watch?v=x",
             "title": "X",
             "channel": "Ch",
-            "viewCount": 5000,
+            "viewCount": 50000,
             "channel_subscribers": 1000,
         },
     ]
@@ -373,7 +373,7 @@ async def test_fetch_youtube_candidates_with_velocity_attaches_heat_score(db):
             "description": "By Test · 5000 views",
             "topics": ["youtube", "ai", "video", "test"],
             "channel": "Test",
-            "viewCount": 5000,
+            "viewCount": 50000,
             "uploadDate": two_days_ago,
             "channel_subscribers": 1000,
         },
@@ -418,7 +418,7 @@ async def test_fetch_surfaces_day1_video_with_prior_snapshots(db):
             "description": "By Test · 5000 views",
             "topics": ["youtube", "ai", "video", "test"],
             "channel": "Test",
-            "viewCount": 5000,
+            "viewCount": 50000,
             "uploadDate": two_days_ago,
             "channel_subscribers": 1000,
         },
@@ -465,7 +465,7 @@ async def test_fetch_youtube_skips_recently_published(db):
             "description": "By Test · 5000 views",
             "topics": ["youtube", "ai", "video", "test"],
             "channel": "Test",
-            "viewCount": 5000,
+            "viewCount": 50000,
             "uploadDate": two_days_ago,
             "channel_subscribers": 1000,
         },

@@ -213,17 +213,18 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
 async def fetch_youtube_candidates_with_velocity(
     max_results: int = 8,
 ) -> list[dict]:
-    """Discover recent AI-dev videos, filtering for view velocity > 0.
+    """Discover recent AI-dev videos and gate by breakout heat.
 
-    Wraps fetch_youtube_candidates with view velocity tracking:
-    1. Fetch raw candidates via yt-dlp.
-    2. Save a daily view snapshot for each discovered video.
+    Wraps fetch_youtube_candidates with view velocity tracking + the
+    unified heat gate:
+    1. Fetch raw candidates via yt-dlp (all non-zero-view videos).
+    2. Save a per-run view snapshot for each discovered video.
     3. Compute view velocity (views gained in last 7 days) from snapshots.
     4. Compute channel-relative velocity (normalized by subscriber count).
-    5. Only include videos with velocity > 0.
-
-    First discovery (no prior snapshots) passes through — the snapshot is
-    saved as a baseline for future velocity computation.
+    5. Compute the inter-run delta (views gained since the last run).
+    6. Attach a shared heat_score (views/hour/subscriber + baseline).
+    7. Apply the publish gate (cooldown + threshold + noise floor +
+       outperform) — only gated candidates are returned.
     """
     from _shared.mongo import _get_db
     from view_velocity import (
