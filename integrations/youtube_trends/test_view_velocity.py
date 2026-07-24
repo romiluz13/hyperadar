@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from source import fetch_youtube_candidates_with_velocity
+from source import attach_youtube_heat, fetch_youtube_candidates_with_velocity
 from view_velocity import (
     channel_relative_velocity,
     compute_view_velocity,
@@ -151,8 +151,9 @@ async def test_get_view_velocity_ignores_recent_only_snapshots(db):
 
 
 async def test_fetch_youtube_candidates_with_velocity_filters_zero_velocity(db):
-    """Videos with zero velocity (flat views) should be excluded."""
+    """Videos with low heat (flat views) are excluded by the publish gate."""
     now = datetime.now(timezone.utc)
+    two_days_ago = (now - timedelta(days=2)).strftime("%Y%m%d")
 
     raw_candidates = [
         {
@@ -163,6 +164,8 @@ async def test_fetch_youtube_candidates_with_velocity_filters_zero_velocity(db):
             "topics": ["youtube", "ai", "video", "test"],
             "channel": "Test",
             "viewCount": 5000,
+            "uploadDate": two_days_ago,
+            "channel_subscribers": 1000,
             "channel_url": "https://www.youtube.com/@Test/videos",
         },
         {
@@ -173,6 +176,8 @@ async def test_fetch_youtube_candidates_with_velocity_filters_zero_velocity(db):
             "topics": ["youtube", "ai", "video", "test"],
             "channel": "Test",
             "viewCount": 1000,
+            "uploadDate": two_days_ago,
+            "channel_subscribers": 1000,
         },
     ]
 
@@ -209,16 +214,20 @@ async def test_fetch_youtube_candidates_with_velocity_filters_zero_velocity(db):
 
 
 async def test_fetch_youtube_candidates_with_velocity_includes_first_discovery(db):
-    """First discovery (no prior snapshots) should be included with velocity = 0."""
+    """First discovery (no prior snapshots) should be included if it passes the gate."""
+    now = datetime.now(timezone.utc)
+    two_days_ago = (now - timedelta(days=2)).strftime("%Y%m%d")
     raw_candidates = [
         {
             "url": "https://www.youtube.com/watch?v=newvid",
             "title": "New Video",
             "kind": "video",
-            "description": "By Test · 300 views",
+            "description": "By Test · 5000 views",
             "topics": ["youtube", "ai", "video", "test"],
             "channel": "Test",
-            "viewCount": 300,
+            "viewCount": 5000,
+            "uploadDate": two_days_ago,
+            "channel_subscribers": 1000,
         },
     ]
 
@@ -229,13 +238,13 @@ async def test_fetch_youtube_candidates_with_velocity_includes_first_discovery(d
     ):
         result = await fetch_youtube_candidates_with_velocity(max_results=10)
 
-    # First discovery should pass through (no prior history to compare)
+    # First discovery should pass through (passes the gate)
     assert len(result) == 1
     assert result[0]["url"] == "https://www.youtube.com/watch?v=newvid"
     # Snapshot should be saved
     docs = list(db.youtube_view_snapshots.find({"url": raw_candidates[0]["url"]}))
     assert len(docs) == 1
-    assert docs[0]["viewCount"] == 300
+    assert docs[0]["viewCount"] == 5000
 
 
 # ---------------------------------------------------------------------------
@@ -264,3 +273,217 @@ def test_channel_relative_velocity_falls_back_for_zero_subs():
     """Zero subscribers → use default (10000), don't divide by zero."""
     result = channel_relative_velocity(5000, 0)
     assert result == 0.5  # 5000 / 10000
+
+
+# ---------------------------------------------------------------------------
+# Shared heat score attachment (ticket 01 — expand: heat_score beside fields)
+# ---------------------------------------------------------------------------
+
+
+def _now_two_days_ago() -> tuple[datetime, str]:
+    now = datetime.now(timezone.utc)
+    return now, (now - timedelta(days=2)).strftime("%Y%m%d")
+
+
+def test_attach_youtube_heat_adds_heat_score_field():
+    """Each candidate gets a heat_score (int, 0-100) beside existing fields."""
+    now, two_days_ago = _now_two_days_ago()
+    candidates = [
+        {
+            "url": "https://www.youtube.com/watch?v=a",
+            "title": "A",
+            "channel": "Ch",
+            "viewCount": 50000,
+            "uploadDate": two_days_ago,
+            "channel_subscribers": 1000,
+        },
+        {
+            "url": "https://www.youtube.com/watch?v=b",
+            "title": "B",
+            "channel": "Ch",
+            "viewCount": 1000,
+            "uploadDate": two_days_ago,
+            "channel_subscribers": 1000,
+        },
+    ]
+    result = attach_youtube_heat(candidates, now=now)
+    for c in result:
+        assert "heat_score" in c
+        assert isinstance(c["heat_score"], int)
+        assert 0 <= c["heat_score"] <= 100
+        assert "outperform_ratio" in c
+        assert "baseline_confidence" in c
+    # The high-view video outscored the low-view one (channel-relative velocity).
+    a = next(c for c in result if c["url"].endswith("a"))
+    b = next(c for c in result if c["url"].endswith("b"))
+    assert a["heat_score"] > b["heat_score"], (
+        f"50K views ({a['heat_score']}) should outrank 1K ({b['heat_score']})"
+    )
+
+
+def test_attach_youtube_heat_empty_list_returns_empty():
+    assert attach_youtube_heat([]) == []
+
+
+def test_attach_youtube_heat_preserves_existing_fields():
+    """Expand: heat_score is added beside existing fields, not replacing them."""
+    now, two_days_ago = _now_two_days_ago()
+    candidates = [
+        {
+            "url": "https://www.youtube.com/watch?v=a",
+            "title": "A",
+            "channel": "Ch",
+            "viewCount": 5000,
+            "uploadDate": two_days_ago,
+            "channel_subscribers": 1000,
+            "viewVelocity": 1000,
+            "channelRelativeVelocity": 1.0,
+        },
+    ]
+    result = attach_youtube_heat(candidates, now=now)
+    assert result[0]["viewVelocity"] == 1000
+    assert result[0]["channelRelativeVelocity"] == 1.0
+    assert "heat_score" in result[0]
+
+
+def test_attach_youtube_heat_missing_upload_date_is_handled():
+    """A candidate without uploadDate must not crash (age falls back to 0)."""
+    candidates = [
+        {
+            "url": "https://www.youtube.com/watch?v=x",
+            "title": "X",
+            "channel": "Ch",
+            "viewCount": 5000,
+            "channel_subscribers": 1000,
+        },
+    ]
+    result = attach_youtube_heat(candidates)
+    assert isinstance(result[0]["heat_score"], int)
+
+
+async def test_fetch_youtube_candidates_with_velocity_attaches_heat_score(db):
+    """End-to-end: the velocity-filtered fetch returns heat_score on each video."""
+    now = datetime.now(timezone.utc)
+    two_days_ago = (now - timedelta(days=2)).strftime("%Y%m%d")
+    raw_candidates = [
+        {
+            "url": "https://www.youtube.com/watch?v=growing",
+            "title": "Growing Video",
+            "kind": "video",
+            "description": "By Test · 5000 views",
+            "topics": ["youtube", "ai", "video", "test"],
+            "channel": "Test",
+            "viewCount": 5000,
+            "uploadDate": two_days_ago,
+            "channel_subscribers": 1000,
+        },
+    ]
+    db.youtube_view_snapshots.insert_one(
+        {
+            "url": "https://www.youtube.com/watch?v=growing",
+            "viewCount": 3000,
+            "capturedAt": now - timedelta(days=10),
+        }
+    )
+    with patch(
+        "source.fetch_youtube_candidates",
+        new_callable=AsyncMock,
+        return_value=raw_candidates,
+    ):
+        result = await fetch_youtube_candidates_with_velocity(max_results=10)
+    assert len(result) == 1
+    assert "heat_score" in result[0]
+    assert isinstance(result[0]["heat_score"], int)
+
+
+# ---------------------------------------------------------------------------
+# Fix B: day-1 surfacing (remove the 7-day velocity drop)
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_surfaces_day1_video_with_prior_snapshots(db):
+    """A 2-day-old video with prior snapshots is surfaced, not dropped by the old 7-day gate.
+
+    The old fetch dropped any video with velocity=0 and prior snapshots (i.e.,
+    not enough 7-day history). The day-1 heat scorer (views/hour/subscriber)
+    works from the first fetch, so the fetch must not drop these videos.
+    """
+    now = datetime.now(timezone.utc)
+    two_days_ago = (now - timedelta(days=2)).strftime("%Y%m%d")
+    raw_candidates = [
+        {
+            "url": "https://www.youtube.com/watch?v=day1surf",
+            "title": "Day 1 Video",
+            "kind": "video",
+            "description": "By Test · 5000 views",
+            "topics": ["youtube", "ai", "video", "test"],
+            "channel": "Test",
+            "viewCount": 5000,
+            "uploadDate": two_days_ago,
+            "channel_subscribers": 1000,
+        },
+    ]
+    # Prior snapshot from 1 day ago → 7-day velocity is 0 (no 7-day-old baseline).
+    # The OLD code dropped this; the NEW code surfaces it (day-1 heat applies).
+    db.youtube_view_snapshots.insert_one(
+        {
+            "url": "https://www.youtube.com/watch?v=day1surf",
+            "viewCount": 4000,
+            "capturedAt": now - timedelta(days=1),
+        }
+    )
+    with patch(
+        "source.fetch_youtube_candidates",
+        new_callable=AsyncMock,
+        return_value=raw_candidates,
+    ):
+        result = await fetch_youtube_candidates_with_velocity(max_results=10)
+    urls = [c["url"] for c in result]
+    assert "https://www.youtube.com/watch?v=day1surf" in urls
+    assert "heat_score" in result[0]
+    # Cleanup
+    db.youtube_view_snapshots.delete_many(
+        {"url": "https://www.youtube.com/watch?v=day1surf"}
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fix C: YouTube cooldown (the re-post-every-run bug fix)
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_youtube_skips_recently_published(db):
+    """A video published within the 14-day YouTube cooldown is not surfaced."""
+    now = datetime.now(timezone.utc)
+    two_days_ago = (now - timedelta(days=2)).strftime("%Y%m%d")
+    video_url = "https://www.youtube.com/watch?v=cooldown"
+    raw_candidates = [
+        {
+            "url": video_url,
+            "title": "Recently Published",
+            "kind": "video",
+            "description": "By Test · 5000 views",
+            "topics": ["youtube", "ai", "video", "test"],
+            "channel": "Test",
+            "viewCount": 5000,
+            "uploadDate": two_days_ago,
+            "channel_subscribers": 1000,
+        },
+    ]
+    # Insert a post for this URL posted 2 days ago (within the 14-day cooldown).
+    db.posts.insert_one(
+        {
+            "project": {"url": video_url},
+            "postedAt": now - timedelta(days=2),
+        }
+    )
+    with patch(
+        "source.fetch_youtube_candidates",
+        new_callable=AsyncMock,
+        return_value=raw_candidates,
+    ):
+        result = await fetch_youtube_candidates_with_velocity(max_results=10)
+    urls = [c["url"] for c in result]
+    assert video_url not in urls
+    # Cleanup
+    db.posts.delete_many({"project.url": video_url})

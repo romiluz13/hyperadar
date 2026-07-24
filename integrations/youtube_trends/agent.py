@@ -55,30 +55,11 @@ async def fetch_youtube_videos() -> str:
         lines.append(
             f"- {c['title']} | {c['url']}\n"
             f"  channel={c.get('channel', '?')} | views={c.get('viewCount', 0)}"
-            f" | velocity={c.get('viewVelocity', 0)}"
-            f" | channel_subs={c.get('channel_subscribers', 0)}"
-            f" | relative_velocity={c.get('channelRelativeVelocity', 0.0)}\n"
+            f" | heat_score={c.get('heat_score', 0)}"
+            f" | channel_subs={c.get('channel_subscribers', 0)}\n"
             f"  desc: {c['description'][:120]}"
         )
     return "\n".join(lines)
-
-
-def _compute_youtube_momentum(
-    velocity: int,
-    channel_relative_velocity: float = 0.0,
-) -> float:
-    """Compute a 0-100 momentum score for a YouTube video.
-
-    First discovery (velocity=0): neutral momentum=50 (don't guess).
-    Subsequent: prefer channel-relative velocity (normalized by subscriber
-    count). Fall back to raw velocity / 1000 * 50 if channel data is
-    unavailable or relative velocity is zero.
-    """
-    if velocity <= 0:
-        return 50.0
-    if channel_relative_velocity > 0:
-        return min(channel_relative_velocity * 50, 100.0)
-    return min(velocity / 1000 * 50, 100.0)
 
 
 @tool
@@ -95,9 +76,8 @@ async def write_youtube_post(video_url: str, verdict: str) -> str:
 
     views = c.get("viewCount", 0)
     velocity = c.get("viewVelocity", 0)
-    rel_velocity = c.get("channelRelativeVelocity", 0.0)
     blurb = youtube_evidence_copy(views, velocity)
-    momentum = _compute_youtube_momentum(velocity, rel_velocity)
+    momentum = c.get("heat_score", 0)
     project = {
         "url": c["url"],
         "title": c["title"],
