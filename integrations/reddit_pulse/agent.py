@@ -57,7 +57,8 @@ async def fetch_reddit_posts() -> str:
             f"- {c['title']} | {c['url']}\n"
             f"  upvotes={c.get('num_upvotes', '?')} | "
             f"comments={c.get('num_comments', '?')} | "
-            f"subreddit={c.get('subreddit', '?')}\n"
+            f"subreddit={c.get('subreddit', '?')} | "
+            f"heat_score={c.get('heat_score', '?')}\n"
             f"  desc: {c['description'][:120]}"
         )
     return "\n".join(lines)
@@ -75,7 +76,7 @@ async def write_reddit_post(post_url: str, verdict: str) -> str:
     if not c:
         return f"ERROR: unknown post_url {post_url}. Call fetch_reddit_posts first."
 
-    momentum = c["visibility_score"]
+    momentum = c.get("heat_score", c.get("visibility_score", 0))
     blurb = reddit_evidence_copy(c.get("num_upvotes", 0), c.get("num_comments", 0))
     project = {
         "url": c["url"],
