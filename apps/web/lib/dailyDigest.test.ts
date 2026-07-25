@@ -36,6 +36,10 @@ test("getLatestDailyDigest returns the latest daily digest when one exists", asy
 				kind: "repo",
 				blurb: "Stars exploding",
 				score: 78,
+				signalSource: "github",
+				signalMetric: "stars",
+				signalValue: 1250,
+				signalDelta: 45,
 				stars: 1250,
 				velocity: 45,
 				contributorCount: 12,
@@ -52,6 +56,10 @@ test("getLatestDailyDigest returns the latest daily digest when one exists", asy
 	assert.equal(result.items.length, 1);
 	assert.equal(result.items[0].title, "awesome-repo");
 	assert.equal(result.items[0].blurb, "Stars exploding");
+	assert.equal(result.items[0].signalSource, "github");
+	assert.equal(result.items[0].signalMetric, "stars");
+	assert.equal(result.items[0].signalValue, 1250);
+	assert.equal(result.items[0].signalDelta, 45);
 });
 
 test("getLatestDailyDigest returns empty items and null date when no digest exists", async () => {

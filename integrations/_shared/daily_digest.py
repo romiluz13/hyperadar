@@ -136,6 +136,7 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
             continue
         agent_counts[agent] = agent_counts.get(agent, 0) + 1
         project = post.get("project", {})
+        signal = post.get("signal", {})
         items.append(
             {
                 "rank": len(items) + 1,
@@ -145,6 +146,10 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
                 "kind": project.get("kind", "repo"),
                 "blurb": pick.get("blurb", ""),
                 "score": post.get("rankScore", 0),
+                "signalSource": signal.get("source"),
+                "signalMetric": signal.get("metric"),
+                "signalValue": signal.get("value"),
+                "signalDelta": signal.get("delta"),
                 "stars": None,
                 "velocity": None,
                 "contributorCount": None,
@@ -166,6 +171,7 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
             used_indices.add(i)
             agent_counts[agent] = agent_counts.get(agent, 0) + 1
             project = post.get("project", {})
+            signal = post.get("signal", {})
             items.append(
                 {
                     "rank": len(items) + 1,
@@ -175,6 +181,10 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
                     "kind": project.get("kind", "repo"),
                     "blurb": post.get("body", "")[:100],
                     "score": post.get("rankScore", 0),
+                    "signalSource": signal.get("source"),
+                    "signalMetric": signal.get("metric"),
+                    "signalValue": signal.get("value"),
+                    "signalDelta": signal.get("delta"),
                     "stars": None,
                     "velocity": None,
                     "contributorCount": None,

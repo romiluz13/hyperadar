@@ -10,6 +10,10 @@ export type DailyDigestItem = {
 	kind: string;
 	blurb: string;
 	score: number;
+	signalSource: string | null;
+	signalMetric: string | null;
+	signalValue: number | null;
+	signalDelta: number | null;
 	stars: number | null;
 	velocity: number | null;
 	contributorCount: number | null;

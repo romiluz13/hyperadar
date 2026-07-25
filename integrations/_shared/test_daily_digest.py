@@ -31,6 +31,7 @@ def _make_post(
     body: str = "blurb",
     verdict: str = "hype looks real",
     kind: str = "repo",
+    signal: dict | None = None,
 ) -> dict:
     """Build a post document that matches the real write_post.py schema."""
     return {
@@ -39,6 +40,7 @@ def _make_post(
         "body": body,
         "verdict": verdict,
         "rankScore": rank_score + i,
+        "signal": signal or {},
         "project": {
             "title": f"repo-{i}",
             "url": f"https://example.com/repo-{i}",
@@ -331,6 +333,38 @@ class TestGenerateDailyDigest:
         assert query["digestType"] == "daily"
         assert upsert is True
 
+    async def test_reddit_item_keeps_rank_score_and_exposes_raw_signal(
+        self, monkeypatch
+    ):
+        now = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
+        post = _make_post(
+            0,
+            agent="@reddit-pulse",
+            rank_score=73,
+            signal={
+                "source": "reddit",
+                "metric": "upvotes",
+                "value": 2109,
+                "delta": 724,
+            },
+        )
+        db = _FakeDatabase([post])
+
+        async def fake_call_grove(posts):
+            return [{"id": 0, "blurb": "A Reddit discussion is taking off."}]
+
+        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+
+        result = await daily_digest.generate_daily_digest(db=db, now=now)
+
+        assert result is not None
+        item = result["items"][0]
+        assert item["score"] == 73
+        assert item["signalSource"] == "reddit"
+        assert item["signalMetric"] == "upvotes"
+        assert item["signalValue"] == 2109
+        assert item["signalDelta"] == 724
+
     async def test_no_posts_returns_none(self, monkeypatch):
         """When there are no posts, no digest is generated."""
         now = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
@@ -412,6 +446,41 @@ class TestGenerateDailyDigest:
             )
         for count in agent_counts.values():
             assert count <= 2, f"Backfill violated diversity: {agent_counts}"
+
+    async def test_backfill_exposes_raw_signal_without_changing_score(
+        self, monkeypatch
+    ):
+        now = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
+        sample_posts = [
+            _make_post(0, agent="@github-radar", rank_score=90),
+            _make_post(
+                1,
+                agent="@reddit-pulse",
+                rank_score=72,
+                signal={
+                    "source": "reddit",
+                    "metric": "upvotes",
+                    "value": 2109,
+                    "delta": 724,
+                },
+            ),
+        ]
+        db = _FakeDatabase(sample_posts)
+
+        async def fake_call_grove(posts):
+            return [{"id": 0, "blurb": "Grove pick"}]
+
+        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+
+        result = await daily_digest.generate_daily_digest(db=db, now=now)
+
+        assert result is not None
+        backfill = result["items"][1]
+        assert backfill["score"] == 73
+        assert backfill["signalSource"] == "reddit"
+        assert backfill["signalMetric"] == "upvotes"
+        assert backfill["signalValue"] == 2109
+        assert backfill["signalDelta"] == 724
 
     async def test_backfill_uses_body_as_blurb(self, monkeypatch):
         """Backfilled items use the post body as the blurb (truncated)."""
