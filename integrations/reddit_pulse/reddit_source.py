@@ -70,6 +70,19 @@ def _normalize_reddit_url(url: str) -> str:
     return url
 
 
+def _reddit_permalink(post: dict) -> str:
+    """Build the canonical thread URL from Bright Data's post identity fields."""
+    post_id = str(post.get("post_id") or "").strip()
+    subreddit = str(post.get("community_name") or "").strip().strip("/")
+    if post_id.startswith("t3_"):
+        post_id = post_id[3:]
+    if not post_id or not subreddit:
+        return ""
+    return _normalize_reddit_url(
+        f"https://www.reddit.com/r/{subreddit}/comments/{post_id}/"
+    )
+
+
 def _post_age_hours(post: dict) -> float:
     """Hours since the Reddit post was created. Falls back to 1 if unknown.
 
@@ -195,14 +208,18 @@ async def _fetch_one_subreddit(subreddit_url: str) -> list[dict]:
 
         results = []
         for post in posts:
-            url = str(post.get("url") or "").strip()
-            url = _normalize_reddit_url(url)
+            url = _reddit_permalink(post)
             title = str(post.get("title") or "").strip()
-            if not url or not title:
+            if not url:
+                logging.warning(
+                    "reddit_source skipped post with missing canonical identity: post_id=%r community_name=%r",
+                    post.get("post_id"),
+                    post.get("community_name"),
+                )
+                continue
+            if not title:
                 continue
             subreddit = str(post.get("community_name") or "").strip()
-            if not subreddit and "/r/" in url:
-                subreddit = url.split("/r/")[1].split("/")[0]
             upvotes = int(post.get("num_upvotes") or 0)
             comments = int(post.get("num_comments") or 0)
             if upvotes < 10:  # filter noise

@@ -71,7 +71,10 @@ def _make_post(
     comments: int = 10,
     community_name: str = "LocalLLaMA",
     created_utc: float | None = None,
+    post_id: str | None = None,
 ) -> dict:
+    if post_id is None and "/comments/" in url:
+        post_id = f"t3_{url.split('/comments/', 1)[1].split('/', 1)[0]}"
     post = {
         "url": url,
         "title": title,
@@ -80,9 +83,82 @@ def _make_post(
         "num_comments": comments,
         "community_name": community_name,
     }
+    if post_id is not None:
+        post["post_id"] = post_id
     if created_utc is not None:
         post["created_utc"] = created_utc
     return post
+
+
+@pytest.mark.asyncio
+async def test_fetch_builds_permalink_from_real_bdata_post_shape(monkeypatch):
+    source = load_source()
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return FakeProcess(
+            json.dumps(
+                [
+                    {
+                        "post_id": "t3_1v5rwld",
+                        "url": "https://www.reddit.com/r/ClaudeAI/rising/",
+                        "title": "Test post",
+                        "description": "desc",
+                        "num_upvotes": 100,
+                        "num_comments": 10,
+                        "community_name": "ClaudeAI",
+                    }
+                ]
+            )
+        )
+
+    monkeypatch.setattr(
+        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+
+    candidates = await source._fetch_one_subreddit(
+        "https://www.reddit.com/r/ClaudeAI/rising/"
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["url"] == (
+        "https://www.reddit.com/r/ClaudeAI/comments/1v5rwld"
+    )
+    assert candidates[0]["evidence_url"] == candidates[0]["url"]
+    assert "/rising" not in candidates[0]["url"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "post_id, community_name",
+    [(None, "ClaudeAI"), ("t3_1v5rwld", "")],
+)
+async def test_fetch_skips_posts_without_canonical_identity(
+    monkeypatch, post_id, community_name
+):
+    source = load_source()
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return FakeProcess(
+            json.dumps(
+                [
+                    _make_post(
+                        "https://www.reddit.com/r/ClaudeAI/rising/",
+                        community_name=community_name,
+                        post_id=post_id,
+                    )
+                ]
+            )
+        )
+
+    monkeypatch.setattr(
+        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+
+    candidates = await source._fetch_one_subreddit(
+        "https://www.reddit.com/r/ClaudeAI/rising/"
+    )
+
+    assert candidates == []
 
 
 class FakePosts:
@@ -154,17 +230,18 @@ async def test_cooldown_skips_recently_posted_threads(monkeypatch):
 
     # Recent post was published 2 days ago → should be filtered out.
     recent_posted_at = datetime.now(timezone.utc) - timedelta(days=2)
+    recent_permalink = "https://www.reddit.com/r/LocalLLaMA/comments/new"
     db = FakeDb(
         url_to_post={
-            recent_url: {"postedAt": recent_posted_at},
+            recent_permalink: {"postedAt": recent_posted_at},
         }
     )
 
     candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
 
     urls = [c["url"] for c in candidates]
-    assert source._normalize_reddit_url(old_url) in urls
-    assert source._normalize_reddit_url(recent_url) not in urls
+    assert "https://www.reddit.com/r/LocalLLaMA/comments/old" in urls
+    assert recent_permalink not in urls
 
 
 @pytest.mark.asyncio
@@ -175,7 +252,9 @@ async def test_cooldown_keeps_threads_posted_7_or_more_days_ago(monkeypatch):
     url = "https://www.reddit.com/r/MachineLearning/comments/abc/kept_thread/"
 
     async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(json.dumps([_make_post(url, upvotes=150)]))
+        return FakeProcess(
+            json.dumps([_make_post(url, upvotes=150, community_name="MachineLearning")])
+        )
 
     monkeypatch.setattr(
         source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
@@ -183,11 +262,12 @@ async def test_cooldown_keeps_threads_posted_7_or_more_days_ago(monkeypatch):
 
     # Posted exactly 7 days ago → should be kept (>= COOLDOWN_DAYS).
     posted_at = datetime.now(timezone.utc) - timedelta(days=7)
-    db = FakeDb(url_to_post={url: {"postedAt": posted_at}})
+    permalink = "https://www.reddit.com/r/MachineLearning/comments/abc"
+    db = FakeDb(url_to_post={permalink: {"postedAt": posted_at}})
 
     candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
     assert len(candidates) == 1
-    assert candidates[0]["url"] == source._normalize_reddit_url(url)
+    assert candidates[0]["url"] == permalink
 
 
 @pytest.mark.asyncio
@@ -198,7 +278,9 @@ async def test_cooldown_keeps_never_posted_threads(monkeypatch):
     url = "https://www.reddit.com/r/singularity/comments/xyz/never_posted/"
 
     async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(json.dumps([_make_post(url, upvotes=120)]))
+        return FakeProcess(
+            json.dumps([_make_post(url, upvotes=120, community_name="singularity")])
+        )
 
     monkeypatch.setattr(
         source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
@@ -208,7 +290,7 @@ async def test_cooldown_keeps_never_posted_threads(monkeypatch):
 
     candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
     assert len(candidates) == 1
-    assert candidates[0]["url"] == source._normalize_reddit_url(url)
+    assert candidates[0]["url"] == ("https://www.reddit.com/r/singularity/comments/xyz")
 
 
 @pytest.mark.asyncio
@@ -223,12 +305,14 @@ async def test_engagement_velocity_is_computed_and_sorted(monkeypatch):
         upvotes=100,
         comments=50,
         created_utc=(now - timedelta(hours=1)).timestamp(),
+        post_id="t3_a",
     )
     post_b = _make_post(
         "https://www.reddit.com/r/LocalLLaMA/comments/b/thread_b/",
         upvotes=500,
         comments=50,
         created_utc=(now - timedelta(hours=2)).timestamp(),
+        post_id="t3_b",
     )
 
     async def fake_create_subprocess_exec(*_args, **_kwargs):
@@ -256,7 +340,7 @@ async def test_engagement_velocity_falls_back_to_1_hour(monkeypatch):
 
     url = "https://www.reddit.com/r/OpenAI/comments/fb/fallback/"
     # No created_utc field → age defaults to 1 hour → velocity = upvotes / 1
-    post = _make_post(url, upvotes=42, created_utc=None)
+    post = _make_post(url, upvotes=42, created_utc=None, post_id="t3_fb")
 
     async def fake_create_subprocess_exec(*_args, **_kwargs):
         return FakeProcess(json.dumps([post]))
@@ -440,8 +524,18 @@ async def test_gate_rejects_below_noise_floor(monkeypatch):
         return FakeProcess(
             json.dumps(
                 [
-                    _make_post(hot_url, upvotes=5000, comments=500, title="Hot"),
-                    _make_post(noisy_url, upvotes=15, comments=0, title="Noisy"),
+                    _make_post(
+                        hot_url,
+                        upvotes=5000,
+                        comments=500,
+                        title="Hot",
+                    ),
+                    _make_post(
+                        noisy_url,
+                        upvotes=15,
+                        comments=0,
+                        title="Noisy",
+                    ),
                 ]
             )
         )
@@ -453,8 +547,8 @@ async def test_gate_rejects_below_noise_floor(monkeypatch):
     db = FakeDb()  # no prior posts → both pass cooldown
     candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
     urls = [c["url"] for c in candidates]
-    assert source._normalize_reddit_url(hot_url) in urls
-    assert source._normalize_reddit_url(noisy_url) not in urls
+    assert "https://www.reddit.com/r/LocalLLaMA/comments/hot" in urls
+    assert "https://www.reddit.com/r/LocalLLaMA/comments/noisy" not in urls
 
 
 @pytest.mark.asyncio
@@ -469,7 +563,15 @@ async def test_gate_rejects_below_heat_threshold(monkeypatch):
     async def fake_create_subprocess_exec(*_args, **_kwargs):
         return FakeProcess(
             json.dumps(
-                [_make_post(lukewarm_url, upvotes=20, comments=1, title="Lukewarm")]
+                [
+                    _make_post(
+                        lukewarm_url,
+                        upvotes=20,
+                        comments=1,
+                        title="Lukewarm",
+                        post_id="t3_lw",
+                    )
+                ]
             )
         )
 
