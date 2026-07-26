@@ -165,8 +165,8 @@ export default async function Home({
 							claim, the evidence, and a clear next trail.
 						</p>
 						<p className="drop-note">
-							<span aria-hidden="true">●</span> Current radar · ranked by
-							momentum + human reactions
+							<span aria-hidden="true">●</span> Current radar · newest hype
+							first
 						</p>
 						{selectedTheme ? (
 							<p className="feed-filter">

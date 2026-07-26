@@ -18,10 +18,10 @@ export function distinctProjectPostsPipeline(
 ): Document[] {
 	return [
 		{ $match: match },
-		{ $sort: { rankScore: -1, postedAt: -1 } },
+		{ $sort: { postedAt: -1, rankScore: -1 } },
 		{ $group: { _id: "$project.url", post: { $first: "$$ROOT" } } },
 		{ $replaceRoot: { newRoot: "$post" } },
-		{ $sort: { rankScore: -1, postedAt: -1 } },
+		{ $sort: { postedAt: -1, rankScore: -1 } },
 		{ $limit: limit },
 	];
 }

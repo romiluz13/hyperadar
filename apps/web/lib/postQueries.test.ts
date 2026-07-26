@@ -23,6 +23,19 @@ test("project deduplication happens before the result limit", () => {
 	assert.ok(limitIndex > groupIndex);
 });
 
+test("current feed selects and lists the newest post per project", () => {
+	const pipeline = distinctProjectPostsPipeline(
+		{ portSyncStatus: "synced" },
+		20,
+	);
+	const sortStages = pipeline.filter((stage) => "$sort" in stage);
+
+	assert.deepEqual(sortStages, [
+		{ $sort: { postedAt: -1, rankScore: -1 } },
+		{ $sort: { postedAt: -1, rankScore: -1 } },
+	]);
+});
+
 test("current feed queries require a recent publication timestamp", () => {
 	const since = new Date("2026-07-06T00:00:00.000Z");
 	assert.deepEqual(recentPostsMatch({ portSyncStatus: "synced" }, since), {
