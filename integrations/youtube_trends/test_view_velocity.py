@@ -10,7 +10,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from source import attach_youtube_heat, fetch_youtube_candidates_with_velocity
+from source import (
+    _yt_dlp_args,
+    attach_youtube_heat,
+    fetch_youtube_candidates_with_velocity,
+)
 from view_velocity import (
     channel_relative_velocity,
     compute_view_velocity,
@@ -487,3 +491,42 @@ async def test_fetch_youtube_skips_recently_published(db):
     assert video_url not in urls
     # Cleanup
     db.posts.delete_many({"project.url": video_url})
+
+
+# ---------------------------------------------------------------------------
+# yt-dlp command construction: residential proxy support
+# ---------------------------------------------------------------------------
+# The GHA datacenter IP gets 0 results from YouTube (anti-bot for datacenter
+# IPs). The fix: route yt-dlp through a residential proxy (--proxy) when
+# YOUTUBE_PROXY_URL is set. The arg list is a pure function so the proxy wiring
+# is testable without running yt-dlp.
+
+
+def test_yt_dlp_args_without_proxy_omits_proxy_flag():
+    """No proxy configured → the standard yt-dlp arg list, no --proxy flag."""
+    args = _yt_dlp_args("https://www.youtube.com/@ChaseAI/videos", "20260714")
+    assert args == [
+        "yt-dlp",
+        "--dump-json",
+        "--dateafter",
+        "20260714",
+        "--playlist-end",
+        "10",
+        "--no-warnings",
+        "https://www.youtube.com/@ChaseAI/videos",
+    ]
+    assert "--proxy" not in args
+
+
+def test_yt_dlp_args_with_proxy_includes_proxy_flag_before_channel_url():
+    """A residential proxy URL → --proxy <url> is inserted before the channel URL."""
+    proxy = "http://user:pass@brd.superproxy.io:22225"
+    args = _yt_dlp_args(
+        "https://www.youtube.com/@ChaseAI/videos", "20260714", proxy_url=proxy
+    )
+    assert "--proxy" in args
+    proxy_idx = args.index("--proxy")
+    assert args[proxy_idx + 1] == proxy
+    # The channel URL stays last; the proxy flag sits before it, after --no-warnings.
+    assert args[-1] == "https://www.youtube.com/@ChaseAI/videos"
+    assert args[proxy_idx - 1] == "--no-warnings"

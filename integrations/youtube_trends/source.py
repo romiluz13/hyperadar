@@ -78,18 +78,37 @@ async def _stop_source_process(proc, communication) -> None:
         logging.error("yt-dlp process cleanup failed: %s", error)
 
 
-async def _fetch_one_channel(channel_url: str, cutoff: str) -> list[dict]:
+def _yt_dlp_args(
+    channel_url: str, cutoff: str, proxy_url: str | None = None
+) -> list[str]:
+    """Build the yt-dlp arg list for one channel's recent uploads.
+
+    When ``proxy_url`` is set (a residential proxy to bypass YouTube's datacenter-IP
+    anti-bot, which returns 0 results on GHA), ``--proxy <url>`` is inserted before
+    the channel URL so yt-dlp routes the request through the proxy.
+    """
+    args = [
+        "yt-dlp",
+        "--dump-json",
+        "--dateafter",
+        cutoff,  # only videos from the last 14 days
+        "--playlist-end",
+        "10",  # 10 most recent per channel (full metadata, not flat)
+        "--no-warnings",
+    ]
+    if proxy_url:
+        args.extend(["--proxy", proxy_url])
+    args.append(channel_url)
+    return args
+
+
+async def _fetch_one_channel(
+    channel_url: str, cutoff: str, proxy_url: str | None = None
+) -> list[dict]:
     """Fetch recent videos from a single channel. Soft-fail: returns [] on error."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "yt-dlp",
-            "--dump-json",
-            "--dateafter",
-            cutoff,  # only videos from the last 14 days
-            "--playlist-end",
-            "10",  # 10 most recent per channel (full metadata, not flat)
-            "--no-warnings",
-            channel_url,
+            *_yt_dlp_args(channel_url, cutoff, proxy_url),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
@@ -185,13 +204,17 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
             "yt-dlp not found in PATH — install with: brew install yt-dlp"
         )
     cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y%m%d")
+    # Residential proxy for yt-dlp: YouTube's anti-bot returns 0 results on
+    # datacenter IPs (the GHA runner). Set YOUTUBE_PROXY_URL to route yt-dlp
+    # through a residential proxy so the channel scans actually surface videos.
+    proxy_url = os.environ.get("YOUTUBE_PROXY_URL", "").strip() or None
     # Bounded-async fetch: all channels concurrently (up to the concurrency
     # limit), soft-fail per channel (one timeout does not blank the run).
     sem = asyncio.Semaphore(YOUTUBE_FETCH_CONCURRENCY)
 
     async def _bounded(channel_url: str) -> list[dict]:
         async with sem:
-            return await _fetch_one_channel(channel_url, cutoff)
+            return await _fetch_one_channel(channel_url, cutoff, proxy_url)
 
     tasks = [asyncio.ensure_future(_bounded(url)) for url in CHANNELS]
     candidates: list[dict] = []

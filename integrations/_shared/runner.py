@@ -25,6 +25,35 @@ from _shared import port_client, write_post  # noqa: E402
 AGENT_INVOCATION_TIMEOUT_SECONDS = 20 * 60
 
 
+def _extract_tool_trace(result) -> list[str]:
+    """Extract the ordered tool-call names from an agent.ainvoke result.
+
+    LangGraph's ``ainvoke`` returns a STATE DICT (``{"messages": [...]}``), not
+    an object — so the messages MUST be read with dict access
+    (``result.get("messages", [])``), not ``getattr(result, "messages")``, which
+    returns ``None`` for a dict and silently empties the trace. Each message's
+    ``tool_calls`` may be a list of dicts (``{"name": ...}``) or of objects with
+    a ``.name`` attribute; both shapes are handled.
+    """
+    tool_calls: list[str] = []
+    if isinstance(result, dict):
+        messages = result.get("messages", []) or []
+    else:
+        messages = getattr(result, "messages", None) or []
+    for m in messages:
+        tcs = (
+            m.get("tool_calls", [])
+            if isinstance(m, dict)
+            else (getattr(m, "tool_calls", None) or [])
+        )
+        for tc in tcs:
+            name = (
+                tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", str(tc))
+            )
+            tool_calls.append(name)
+    return tool_calls
+
+
 async def summarize_run(agent_handle: str, thread_id: str, start_of_day: datetime):
     posts_today = await mongo.db.posts.count_documents(
         {"agentHandle": agent_handle, "postedAt": {"$gte": start_of_day}}
@@ -100,11 +129,7 @@ async def _run_agent_cycle(
     # Log the LLM tool-call trace so the next "wrote 0" event is self-diagnosing:
     # candidates_returned=0 + write_calls=0 = gate/cooldown (working as designed);
     # candidates_returned=N + write_calls=0 = a real LLM bug worth chasing.
-    tool_calls = []
-    for m in (getattr(result, "messages", None) or []):
-        for tc in (getattr(m, "tool_calls", None) or []):
-            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", str(tc))
-            tool_calls.append(name)
+    tool_calls = _extract_tool_trace(result)
     write_call_count = sum(1 for n in tool_calls if n.startswith("write_"))
     fetch_call_count = sum(1 for n in tool_calls if n.startswith("fetch_"))
     print(

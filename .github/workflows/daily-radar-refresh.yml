@@ -119,6 +119,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.HYPERADAR_GITHUB_TOKEN || github.token }}
           ROMBOT_COMMUNITY_ASK_TOKEN: ${{ secrets.ROMBOT_COMMUNITY_ASK_TOKEN }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          # Residential proxy for yt-dlp: YouTube's anti-bot returns 0 results on
+          # the GHA datacenter IP. Set YOUTUBE_PROXY_URL to a Bright Data
+          # residential superproxy URL so the YouTube agent surfaces videos.
+          YOUTUBE_PROXY_URL: ${{ secrets.YOUTUBE_PROXY_URL }}
         run: uv run --frozen python main.py
 
   generate-digest:
