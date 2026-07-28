@@ -29,6 +29,12 @@
       `scripts/setup_port_workflows.py` using the real GitHub installation ID.
 - [ ] Configure GitHub Actions secrets: `MONGODB_URI`, `PORT_CLIENT_ID`,
       `PORT_CLIENT_SECRET`, `GROVE_API_KEY`, `GROVE_BASE_URL`, and `GROVE_MODEL`.
+- [ ] Configure the agent-specific GitHub Actions secrets: `BRIGHTDATA_API_KEY`
+      (reddit-pulse), `YOUTUBE_PROXY_URL` (youtube-trends — a residential proxy;
+      without it yt-dlp returns 0 on the GHA datacenter IP and the YouTube agent
+      silently posts nothing), `ROMBOT_COMMUNITY_ASK_TOKEN` (community-radar),
+      and `VOYAGE_API_KEY` (embeddings). The daily-radar-refresh workflow
+      validates the youtube and community-ask secrets per matrix leg.
 - [ ] Configure the Vercel production environment with `MONGODB_URI`,
       `NEXT_PUBLIC_APP_URL`, and a random 32-byte `MUTATION_RATE_LIMIT_SECRET`.
       Redeploy after changing them; a Ready build does not prove runtime data
