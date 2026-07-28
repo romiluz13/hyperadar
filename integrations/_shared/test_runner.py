@@ -23,7 +23,7 @@ def _message(tool_calls=None):
 
 
 def test_extract_tool_trace_reads_messages_from_dict_result():
-    """RED: LangGraph ainvoke returns a dict; getattr(result, 'messages') is None."""
+    """LangGraph ainvoke returns a state dict; the trace must read it via dict access."""
     # result is a STATE DICT — the shape agent.ainvoke actually returns.
     result = {
         "messages": [

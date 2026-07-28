@@ -95,6 +95,16 @@ jobs:
         if: matrix.agent == 'youtube-trends'
         run: uv tool install yt-dlp==2026.07.04
 
+      - name: Validate YouTube proxy secret
+        if: matrix.agent == 'youtube-trends'
+        env:
+          YOUTUBE_PROXY_URL: ${{ secrets.YOUTUBE_PROXY_URL }}
+        run: |
+          if [ -z "$YOUTUBE_PROXY_URL" ]; then
+            echo "::error::YOUTUBE_PROXY_URL is not configured — yt-dlp returns 0 on the GHA datacenter IP without a residential proxy"
+            exit 1
+          fi
+
       - name: Validate community-ask secret
         if: matrix.agent == 'community-radar'
         env:
@@ -119,9 +129,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.HYPERADAR_GITHUB_TOKEN || github.token }}
           ROMBOT_COMMUNITY_ASK_TOKEN: ${{ secrets.ROMBOT_COMMUNITY_ASK_TOKEN }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
-          # Residential proxy for yt-dlp: YouTube's anti-bot returns 0 results on
-          # the GHA datacenter IP. Set YOUTUBE_PROXY_URL to a Bright Data
-          # residential superproxy URL so the YouTube agent surfaces videos.
+          # Residential proxy for yt-dlp: scoped to youtube-trends via the
+          # Validate YouTube proxy secret step above; the source reads it from
+          # os.environ, so other agents silently ignore it when unset.
           YOUTUBE_PROXY_URL: ${{ secrets.YOUTUBE_PROXY_URL }}
         run: uv run --frozen python main.py
 
