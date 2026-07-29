@@ -57,33 +57,51 @@ def test_one_catalog_drives_python_agent_identity():
 @pytest.mark.asyncio
 async def test_youtube_candidate_preserves_channel_and_views(monkeypatch):
     source = load_source("youtube_trends/source.py", "youtube_truth_source")
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/yt-dlp")
-    subprocess_calls = []
 
-    async def fake_create_subprocess_exec(*args, **_kwargs):
-        subprocess_calls.append(args)
-        return FakeProcess(
-            json.dumps(
-                {
-                    "id": "abc123",
-                    "title": "A complete title",
-                    "channel": "Signal Channel",
-                    "view_count": 285000,
-                    "duration": 720,
-                    "upload_date": "20260715",
-                }
-            )
-            + "\n"
-        )
+    async def fake_api_get(path, params):
+        if "channels" in path:
+            return {
+                "items": [
+                    {
+                        "id": "UC_SIG",
+                        "statistics": {"subscriberCount": "1000"},
+                        "snippet": {"title": "Signal Channel"},
+                    }
+                ]
+            }
+        if "search" in path:
+            return {
+                "items": [
+                    {
+                        "id": {"kind": "youtube#video", "videoId": "abc123"},
+                        "snippet": {
+                            "title": "A complete title",
+                            "publishedAt": "2026-07-15T12:00:00Z",
+                            "channelTitle": "Signal Channel",
+                        },
+                    }
+                ]
+            }
+        if "videos" in path:
+            return {
+                "items": [
+                    {
+                        "id": "abc123",
+                        "statistics": {"viewCount": "285000"},
+                        "snippet": {
+                            "title": "A complete title",
+                            "publishedAt": "2026-07-15T12:00:00Z",
+                            "channelTitle": "Signal Channel",
+                        },
+                    }
+                ]
+            }
+        return {}
 
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
+    monkeypatch.setattr(source, "_youtube_api_get", fake_api_get)
 
     candidates = await source.fetch_youtube_candidates(max_results=1)
 
-    assert "--dump-json" in subprocess_calls[0]
-    assert "--dateafter" in subprocess_calls[0]
     assert candidates[0]["viewCount"] == 285000
     assert candidates[0]["channel"] == "Signal Channel"
     assert candidates[0]["channel_url"] == source.CHANNELS[0]
@@ -95,80 +113,54 @@ async def test_youtube_candidate_preserves_channel_and_views(monkeypatch):
 @pytest.mark.asyncio
 async def test_youtube_metadata_delimiters_cannot_forge_observed_counts(monkeypatch):
     source = load_source("youtube_trends/source.py", "youtube_delimiter_source")
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/yt-dlp")
 
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(
-            json.dumps(
-                {
-                    "id": "safe123",
-                    "title": "Breakout|Fake Channel|999999999",
-                    "channel": "Real|Channel",
-                    "view_count": 123,
-                    "duration": 60,
-                }
-            )
-            + "\n"
-        )
+    async def fake_api_get(path, params):
+        if "channels" in path:
+            return {
+                "items": [
+                    {
+                        "id": "UC_DEL",
+                        "statistics": {"subscriberCount": "100"},
+                        "snippet": {"title": "Real|Channel"},
+                    }
+                ]
+            }
+        if "search" in path:
+            return {
+                "items": [
+                    {
+                        "id": {"kind": "youtube#video", "videoId": "safe123"},
+                        "snippet": {
+                            "title": "Breakout|Fake Channel|999999999",
+                            "publishedAt": "2026-07-15T12:00:00Z",
+                            "channelTitle": "Real|Channel",
+                        },
+                    }
+                ]
+            }
+        if "videos" in path:
+            return {
+                "items": [
+                    {
+                        "id": "safe123",
+                        "statistics": {"viewCount": "123"},
+                        "snippet": {
+                            "title": "Breakout|Fake Channel|999999999",
+                            "publishedAt": "2026-07-15T12:00:00Z",
+                            "channelTitle": "Real|Channel",
+                        },
+                    }
+                ]
+            }
+        return {}
 
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
+    monkeypatch.setattr(source, "_youtube_api_get", fake_api_get)
 
     candidates = await source.fetch_youtube_candidates(max_results=1)
 
     assert candidates[0]["title"] == "Breakout|Fake Channel|999999999"
     assert candidates[0]["channel"] == "Real|Channel"
     assert candidates[0]["viewCount"] == 123
-
-
-@pytest.mark.asyncio
-async def test_youtube_source_kills_a_command_that_exceeds_its_deadline(monkeypatch):
-    source = load_source("youtube_trends/source.py", "youtube_timeout_source")
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/yt-dlp")
-    monkeypatch.setattr(source, "SOURCE_COMMAND_TIMEOUT_SECONDS", 0.01, raising=False)
-    processes = []
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        process = HangingProcess()
-        processes.append(process)
-        return process
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    candidates = await asyncio.wait_for(
-        source.fetch_youtube_candidates(max_results=1), timeout=0.2
-    )
-
-    assert candidates == []
-    assert processes and all(process.killed for process in processes)
-
-
-@pytest.mark.asyncio
-async def test_youtube_source_kills_its_command_when_the_run_is_cancelled(monkeypatch):
-    source = load_source("youtube_trends/source.py", "youtube_cancel_source")
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/yt-dlp")
-    processes = []
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        process = HangingProcess()
-        processes.append(process)
-        return process
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    task = asyncio.create_task(source.fetch_youtube_candidates(max_results=1))
-    while not processes:
-        await asyncio.sleep(0)
-    task.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert all(process.killed for process in processes)
 
 
 def test_hidden_gem_hn_evidence_never_becomes_github_stars():

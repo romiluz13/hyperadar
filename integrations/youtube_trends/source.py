@@ -1,4 +1,5 @@
-"""YouTube source — channel-scoped yt-dlp discovery for AI-dev channels.
+"""YouTube source — channel-scoped discovery for AI-dev channels via the
+YouTube Data API v3.
 
 Instead of generic `ytsearch` (which surfaces old popular videos), this scans
 a curated allowlist of AI-dev YouTube channels for recent uploads, preserving
@@ -8,16 +9,21 @@ snapshots stored in MongoDB (see view_velocity.py).
 Channel-relative velocity normalizes by channel subscriber count so a
 5K-view video from a 1K-subscriber channel scores higher than a 5K-view
 video from a 100K-subscriber channel.
+
+The YouTube Data API v3 (channels.list -> search.list -> videos.list) is used
+instead of yt-dlp because YouTube's anti-bot returns 0 results on datacenter
+IPs (the GHA runner). The API is a REST endpoint, so it works from any IP and
+needs only a YOUTUBE_API_KEY (free, 10k units/day quota, ~2.3k used for 23
+channels).
 """
 
 import asyncio
-import contextlib
-import json
 import logging
 import os
-import shutil
-import signal
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
+
+import httpx
 
 from _shared.heat import compute_heat_score, should_publish_heat
 
@@ -48,179 +54,208 @@ CHANNELS = [
     "https://www.youtube.com/@MattWolfe/videos",
     "https://www.youtube.com/@AILuke/videos",
 ]
-SOURCE_COMMAND_TIMEOUT_SECONDS = 120
-SOURCE_COMMAND_CLEANUP_TIMEOUT_SECONDS = 5
 YOUTUBE_FETCH_CONCURRENCY = 8
+YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
+YOUTUBE_LOOKBACK_DAYS = 14
+YOUTUBE_API_TIMEOUT_SECONDS = 30
+_AUTH_ERROR_MSG = "YouTube API auth failed — check YOUTUBE_API_KEY (401/403)"
 
 
-async def _stop_source_process(proc, communication) -> None:
-    if proc.returncode is None:
-        pid = getattr(proc, "pid", None)
-        if isinstance(pid, int):
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except PermissionError:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        else:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-    try:
-        await asyncio.wait_for(
-            asyncio.shield(communication),
-            timeout=SOURCE_COMMAND_CLEANUP_TIMEOUT_SECONDS,
-        )
-    except TimeoutError:
-        logging.error("yt-dlp process cleanup exceeded its deadline")
-    except Exception as error:
-        logging.error("yt-dlp process cleanup failed: %s", error)
+def _is_auth_error(error: Exception) -> bool:
+    """A 401/403 from the YouTube API means the key is bad/expired — a global
+    failure, not a per-channel one, so the caller should raise rather than
+    soft-fail (a silent [] would mask key-rotation issues)."""
+    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code in (
+        401,
+        403,
+    )
 
 
-def _yt_dlp_args(
-    channel_url: str, cutoff: str, proxy_url: str | None = None
-) -> list[str]:
-    """Build the yt-dlp arg list for one channel's recent uploads.
+def _safe_error_detail(error: Exception) -> str:
+    """A short, secret-safe description of an API error for logs.
 
-    When ``proxy_url`` is set (a residential proxy to bypass YouTube's datacenter-IP
-    anti-bot, which returns 0 results on GHA), ``--proxy <url>`` is inserted before
-    the channel URL so yt-dlp routes the request through the proxy.
+    Returns the HTTP status code for HTTP errors — NOT the full exception,
+    whose message embeds the request URL and would leak the API key
+    (httpx's raise_for_status() puts ``?key=...`` in the error string).
     """
-    args = [
-        "yt-dlp",
-        "--dump-json",
-        "--dateafter",
-        cutoff,  # only videos from the last 14 days
-        "--playlist-end",
-        "10",  # 10 most recent per channel (full metadata, not flat)
-        "--no-warnings",
-    ]
-    if proxy_url:
-        args.extend(["--proxy", proxy_url])
-    args.append(channel_url)
-    return args
+    if isinstance(error, httpx.HTTPStatusError):
+        return f"HTTP {error.response.status_code}"
+    return type(error).__name__
 
 
-async def _fetch_one_channel(
-    channel_url: str, cutoff: str, proxy_url: str | None = None
-) -> list[dict]:
-    """Fetch recent videos from a single channel. Soft-fail: returns [] on error."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *_yt_dlp_args(channel_url, cutoff, proxy_url),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
+def _handle_from_channel_url(channel_url: str) -> str:
+    """Extract the @handle from a https://www.youtube.com/@handle/videos URL."""
+    parts = [p for p in urlparse(channel_url).path.split("/") if p]
+    return parts[0] if parts else ""
+
+
+async def _youtube_api_get(path: str, params: dict) -> dict:
+    """GET one YouTube Data API v3 endpoint. Returns the parsed JSON.
+
+    Raises RuntimeError if YOUTUBE_API_KEY is unset.
+    """
+    key = os.environ.get("YOUTUBE_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError(
+            "YOUTUBE_API_KEY not set — required for the YouTube Data API v3 source"
         )
-        communication = asyncio.create_task(proc.communicate())
-        try:
-            stdout, _ = await asyncio.wait_for(
-                asyncio.shield(communication),
-                timeout=SOURCE_COMMAND_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            await _stop_source_process(proc, communication)
-            logging.warning("yt-dlp timed out for %s", channel_url)
+    async with httpx.AsyncClient(timeout=YOUTUBE_API_TIMEOUT_SECONDS) as client:
+        resp = await client.get(YOUTUBE_API_BASE + path, params={**params, "key": key})
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def _fetch_one_channel_via_api(channel_url: str, max_results: int) -> list[dict]:
+    """Resolve a channel + its recent uploads via the YouTube Data API v3.
+
+    Returns a list of dicts (one per recent video) with video_id, title,
+    publishedAt, channel, channel_url, channel_subscribers — the view/like
+    counts are fetched in a batched videos.list call by the caller. Soft-fail:
+    returns [] if the channel can't be resolved or the search is empty.
+    """
+    handle = _handle_from_channel_url(channel_url)
+    if not handle:
+        return []
+    try:
+        ch = await _youtube_api_get(
+            "/channels", {"part": "snippet,statistics", "forHandle": handle}
+        )
+        items = ch.get("items", [])
+        if not items:
             return []
-        except asyncio.CancelledError:
-            await _stop_source_process(proc, communication)
-            raise
-        output = stdout.decode()
+        channel_id = items[0]["id"]
+        channel_subscribers = int(
+            items[0].get("statistics", {}).get("subscriberCount", 0) or 0
+        )
+        channel_title = items[0].get("snippet", {}).get("title", handle)
 
-        results = []
-        for line in output.strip().split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                metadata = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(metadata, dict):
-                continue
-            vid_id = str(metadata.get("id") or "").strip()
-            title = str(metadata.get("title") or "").strip()
-            channel = str(
-                metadata.get("channel") or metadata.get("uploader") or "Unknown channel"
-            ).strip()
-            if not vid_id or not title:
-                continue
-            views = metadata.get("view_count")
-            try:
-                view_count = int(views or 0)
-            except (TypeError, ValueError):
-                view_count = 0
-            if view_count == 0:
-                continue
-
-            upload_date = str(metadata.get("upload_date") or "").strip()
-            subs = metadata.get("channel_subscriber_count")
-            try:
-                channel_subscribers = int(subs or 0)
-            except (TypeError, ValueError):
-                channel_subscribers = 0
-            likes = metadata.get("like_count")
-            try:
-                like_count = int(likes or 0)
-            except (TypeError, ValueError):
-                like_count = 0
-
-            results.append(
-                {
-                    "url": f"https://www.youtube.com/watch?v={vid_id}",
-                    "title": title[:200],
-                    "kind": "video",
-                    "description": f"By {channel} · {view_count:,} views",
-                    "topics": [
-                        "youtube",
-                        "ai",
-                        "video",
-                        channel.lower().replace(" ", "-"),
-                    ],
-                    "channel": channel,
-                    "viewCount": view_count,
-                    "uploadDate": upload_date,
-                    "channel_url": channel_url,
-                    "channel_subscribers": channel_subscribers,
-                    "like_count": like_count,
-                }
-            )
-        return results
+        published_after = (
+            datetime.now(timezone.utc) - timedelta(days=YOUTUBE_LOOKBACK_DAYS)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        sr = await _youtube_api_get(
+            "/search",
+            {
+                "part": "snippet",
+                "channelId": channel_id,
+                "type": "video",
+                "order": "date",
+                "publishedAfter": published_after,
+                "maxResults": str(max_results),
+            },
+        )
+        videos = [
+            i
+            for i in sr.get("items", [])
+            if i.get("id", {}).get("kind") == "youtube#video"
+        ]
+        return [
+            {
+                "video_id": v["id"]["videoId"],
+                "title": v["snippet"]["title"],
+                "publishedAt": v["snippet"]["publishedAt"],
+                "channel": v["snippet"].get("channelTitle", channel_title),
+                "channel_url": channel_url,
+                "channel_subscribers": channel_subscribers,
+            }
+            for v in videos
+        ]
     except Exception as e:
-        logging.warning("youtube_source fetch failed for %s: %s", channel_url, e)
+        if _is_auth_error(e):
+            raise RuntimeError(_AUTH_ERROR_MSG) from None
+        logging.warning(
+            "youtube_source fetch failed for %s: %s",
+            channel_url,
+            _safe_error_detail(e),
+        )
         return []
 
 
 async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
     """Discover recent AI-dev videos from a curated channel allowlist.
 
-    Scans each channel's /videos page for recent uploads via yt-dlp, preserving
-    channel identity, view counts, and channel subscriber count. Raises
-    RuntimeError if yt-dlp is not in PATH.
+    Uses the YouTube Data API v3 (channels.list -> search.list -> videos.list)
+    to scan each channel for recent uploads (last YOUTUBE_LOOKBACK_DAYS days),
+    preserving channel identity, view counts, and channel subscriber count.
     """
-    if not shutil.which("yt-dlp"):
+    # Global prerequisite: the YouTube Data API v3 needs a key. A missing key
+    # is a global failure (not per-channel), so raise immediately rather than
+    # letting _youtube_api_get's RuntimeError get swallowed by the per-channel
+    # except and mask as "no videos found".
+    if not os.environ.get("YOUTUBE_API_KEY", "").strip():
         raise RuntimeError(
-            "yt-dlp not found in PATH — install with: brew install yt-dlp"
+            "YOUTUBE_API_KEY not set — required for the YouTube Data API v3 source"
         )
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y%m%d")
-    # Residential proxy for yt-dlp: YouTube's anti-bot returns 0 results on
-    # datacenter IPs (the GHA runner). Set YOUTUBE_PROXY_URL to route yt-dlp
-    # through a residential proxy so the channel scans actually surface videos.
-    proxy_url = os.environ.get("YOUTUBE_PROXY_URL", "").strip() or None
-    # Bounded-async fetch: all channels concurrently (up to the concurrency
-    # limit), soft-fail per channel (one timeout does not blank the run).
     sem = asyncio.Semaphore(YOUTUBE_FETCH_CONCURRENCY)
 
     async def _bounded(channel_url: str) -> list[dict]:
         async with sem:
-            return await _fetch_one_channel(channel_url, cutoff, proxy_url)
+            return await _fetch_one_channel_via_api(channel_url, max_results)
 
     tasks = [asyncio.ensure_future(_bounded(url)) for url in CHANNELS]
-    candidates: list[dict] = []
+    raw: list[dict] = []
     for coro in asyncio.as_completed(tasks):
-        videos = await coro
-        candidates.extend(videos)
+        raw.extend(await coro)
+    if not raw:
+        return []
+
+    # Batch videos.list for all discovered video IDs (up to 50 per call).
+    # Soft-fail on non-auth errors (no stats → all candidates filter as
+    # zero-view → returns []); raise on auth errors (bad key is global).
+    all_video_ids = [v["video_id"] for v in raw]
+    stats: dict[str, dict] = {}
+    try:
+        for i in range(0, len(all_video_ids), 50):
+            batch = all_video_ids[i : i + 50]
+            vl = await _youtube_api_get(
+                "/videos", {"part": "snippet,statistics", "id": ",".join(batch)}
+            )
+            for v in vl.get("items", []):
+                stats[v["id"]] = v
+    except Exception as e:
+        if _is_auth_error(e):
+            raise RuntimeError(_AUTH_ERROR_MSG) from None
+        logging.warning("youtube_source videos.list failed: %s", _safe_error_detail(e))
+
+    # Assemble candidate dicts in the shape the gate + velocity layer expect.
+    candidates: list[dict] = []
+    for v in raw:
+        stat = stats.get(v["video_id"], {})
+        st = stat.get("statistics", {})
+        try:
+            view_count = int(st.get("viewCount", 0) or 0)
+        except (TypeError, ValueError):
+            view_count = 0
+        if view_count == 0:
+            continue
+        try:
+            like_count = int(st.get("likeCount", 0) or 0)
+        except (TypeError, ValueError):
+            like_count = 0
+        # Convert ISO 8601 publishedAt -> YYYYMMDD for the existing
+        # _upload_date_to_age_hours + view-velocity layer.
+        published_at = stat.get("snippet", {}).get("publishedAt", v["publishedAt"])
+        upload_date = str(published_at or "")[:10].replace("-", "")
+        channel = v["channel"]
+        candidates.append(
+            {
+                "url": f"https://www.youtube.com/watch?v={v['video_id']}",
+                "title": v["title"][:200],
+                "kind": "video",
+                "description": f"By {channel} · {view_count:,} views",
+                "topics": [
+                    "youtube",
+                    "ai",
+                    "video",
+                    channel.lower().replace(" ", "-"),
+                ],
+                "channel": channel,
+                "viewCount": view_count,
+                "uploadDate": upload_date,
+                "channel_url": v["channel_url"],
+                "channel_subscribers": v["channel_subscribers"],
+                "like_count": like_count,
+            }
+        )
 
     # Deduplicate by URL, prioritize by view count.
     seen = set()
@@ -240,7 +275,7 @@ async def fetch_youtube_candidates_with_velocity(
 
     Wraps fetch_youtube_candidates with view velocity tracking + the
     unified heat gate:
-    1. Fetch raw candidates via yt-dlp (all non-zero-view videos).
+    1. Fetch raw candidates via the YouTube Data API v3 (all non-zero-view videos).
     2. Save a per-run view snapshot for each discovered video.
     3. Compute view velocity (views gained in last 7 days) from snapshots.
     4. Compute channel-relative velocity (normalized by subscriber count).
@@ -326,7 +361,7 @@ _DATE_FORMAT = "%Y%m%d"
 
 
 def _upload_date_to_age_hours(upload_date: str, now: datetime | None = None) -> float:
-    """Parse a yt-dlp upload_date (YYYYMMDD) to the video's age in hours.
+    """Parse a YYYYMMDD upload date to the video's age in hours.
 
     Returns 0.0 when the date is missing or unparseable — the shared scorer's
     min-age guard then zeroes the velocity component, so a bad date degrades

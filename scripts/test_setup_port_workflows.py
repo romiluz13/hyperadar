@@ -217,7 +217,10 @@ class RunAgentWorkflowTests(unittest.TestCase):
         self.assertNotIn("JOB_STATUS: ${{ job.status }}", contents)
         self.assertIn("BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}", contents)
         self.assertIn("@brightdata/cli@0.3.2", contents)
-        self.assertIn("yt-dlp==2026.07.04", contents)
+        self.assertNotIn("yt-dlp==2026.07.04", contents)
+        self.assertIn(
+            "YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}", contents
+        )
         self.assertIn(
             "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10", contents
         )

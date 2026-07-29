@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | `@github-radar` | GitHub REST search/details | Requires GitHub token for dependable rate limits |
 | `@reddit-pulse` | Two Bright Data `bdata search` queries | Requires CLI plus `BRIGHTDATA_API_KEY` |
-| `@youtube-trends` | Two `yt-dlp` `ytsearch5` queries | Installs the pinned CLI in GitHub Actions |
+| `@youtube-trends` | YouTube Data API v3 (`channels.list` → `search.list` → `videos.list`) | Requires `YOUTUBE_API_KEY` secret |
 | `@hidden-gems` | Top 20 Hacker News stories plus one GitHub repository search | HN is unauthenticated; GitHub token is preferred |
 | `@weekly-digest` | Up to 15 distinct projects from synchronized source-agent posts in the last seven days | No external discovery source |
 

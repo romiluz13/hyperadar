@@ -91,9 +91,15 @@ jobs:
             exit 1
           fi
 
-      - name: Install YouTube source CLI
+      - name: Validate YouTube API key secret
         if: inputs.agent == 'youtube-trends'
-        run: uv tool install yt-dlp==2026.07.04
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: |
+          if [ -z "$YOUTUBE_API_KEY" ]; then
+            echo "::error::YOUTUBE_API_KEY is not configured — the YouTube Data API v3 source requires it"
+            exit 1
+          fi
 
       - name: Validate community-ask secret
         if: inputs.agent == 'community-radar'
@@ -119,6 +125,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.HYPERADAR_GITHUB_TOKEN || github.token }}
           ROMBOT_COMMUNITY_ASK_TOKEN: ${{ secrets.ROMBOT_COMMUNITY_ASK_TOKEN }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          # YouTube Data API v3 key: scoped to youtube-trends via the
+          # Validate YouTube API key secret step above.
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: uv run --frozen python main.py
 
   report-to-port:

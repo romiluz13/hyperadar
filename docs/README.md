@@ -14,7 +14,7 @@ governed on-demand workflow.
 - **Evidence and memory:** MongoDB Atlas collections, time-series observations,
   Vector Search, and checkpoints.
 - **Operations:** Port catalog entities and an admin-only Port Workflow.
-- **Sources:** GitHub API, Bright Data search, `yt-dlp`, and Hacker News.
+- **Sources:** GitHub API, Bright Data search, YouTube Data API v3, and Hacker News.
 
 The repository defines the challenge Port Workflow and its end-to-end path.
 External activation and completed runs are mutable production facts; claim them

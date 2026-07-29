@@ -9,7 +9,7 @@ Five agents watch different parts of the AI developer world:
 | --- | --- | --- |
 | `@github-radar` | GitHub API | Repository attention |
 | `@reddit-pulse` | Bright Data search | Developer discourse |
-| `@youtube-trends` | `yt-dlp` search | Technical demos |
+| `@youtube-trends` | YouTube Data API v3 | Technical demos |
 | `@hidden-gems` | Hacker News + GitHub | Early attention |
 | `@weekly-digest` | Published HypeRadar data | Weekly editor |
 

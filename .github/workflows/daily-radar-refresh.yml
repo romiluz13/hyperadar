@@ -91,17 +91,13 @@ jobs:
             exit 1
           fi
 
-      - name: Install YouTube source CLI
-        if: matrix.agent == 'youtube-trends'
-        run: uv tool install yt-dlp==2026.07.04
-
-      - name: Validate YouTube proxy secret
+      - name: Validate YouTube API key secret
         if: matrix.agent == 'youtube-trends'
         env:
-          YOUTUBE_PROXY_URL: ${{ secrets.YOUTUBE_PROXY_URL }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
-          if [ -z "$YOUTUBE_PROXY_URL" ]; then
-            echo "::error::YOUTUBE_PROXY_URL is not configured — yt-dlp returns 0 on the GHA datacenter IP without a residential proxy"
+          if [ -z "$YOUTUBE_API_KEY" ]; then
+            echo "::error::YOUTUBE_API_KEY is not configured — the YouTube Data API v3 source requires it"
             exit 1
           fi
 
@@ -129,10 +125,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.HYPERADAR_GITHUB_TOKEN || github.token }}
           ROMBOT_COMMUNITY_ASK_TOKEN: ${{ secrets.ROMBOT_COMMUNITY_ASK_TOKEN }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
-          # Residential proxy for yt-dlp: scoped to youtube-trends via the
-          # Validate YouTube proxy secret step above; the source reads it from
-          # os.environ, so other agents silently ignore it when unset.
-          YOUTUBE_PROXY_URL: ${{ secrets.YOUTUBE_PROXY_URL }}
+          # YouTube Data API v3 key: scoped to youtube-trends via the
+          # Validate YouTube API key secret step above; the source reads it
+          # from os.environ, so other agents silently ignore it when unset.
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: uv run --frozen python main.py
 
   generate-digest:
