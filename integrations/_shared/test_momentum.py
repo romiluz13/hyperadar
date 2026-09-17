@@ -7,9 +7,11 @@ Pure function tests — no network, no database.
 from _shared.momentum import (
     _consistency,
     _is_monotonic_growth,
+    _PUBLISH_SCORE_THRESHOLD,
     _velocity,
     compute_momentum_score,
     passes_fake_star_filter,
+    publish_score_threshold,
     should_publish_hidden_gem,
 )
 
@@ -298,3 +300,60 @@ def test_consistency_31_day_history_can_get_3_windows():
     history = [_snapshot(100 + i * 5, max(1, (100 + i * 5) // 10)) for i in range(31)]
     count = _consistency(history)
     assert count == 3, f"31-day history with growth should get 3 windows, got {count}"
+
+
+# ─── publish_score_threshold (pool-scaled gate) ───
+
+
+def test_threshold_empty_pool_falls_back_to_cold_start_default():
+    """No scoreable repos yet → keep the cold-start default."""
+    assert publish_score_threshold([]) == _PUBLISH_SCORE_THRESHOLD
+
+
+def test_threshold_respects_floor_for_weak_pools():
+    """A pool of weak scores must not gate below the floor."""
+    assert publish_score_threshold([10, 12, 15]) == 30
+
+
+def test_threshold_picks_80th_percentile_of_pool():
+    """The threshold is the pool's 80th percentile, not a hardcoded cutoff."""
+    scores = [30, 40, 50, 60, 70, 80, 90, 95, 98, 100]
+    assert publish_score_threshold(scores) == 95
+
+
+def test_threshold_small_pool_gates_at_the_stronger_score():
+    """Nearest-rank percentile: a 2-repo pool gates at the HIGHER score.
+
+    Locks the fix for the interpolation index that picked the lower value in
+    small pools, letting the whole pool through.
+    """
+    assert publish_score_threshold([48, 68]) == 68
+
+
+def test_threshold_single_repo_pool_is_its_own_score():
+    """A lone candidate sets its own bar — only behavioral gates decide."""
+    assert publish_score_threshold([55]) == 55
+
+
+def test_threshold_never_exceeds_pool_max():
+    """The threshold can never exceed the best score in the pool."""
+    scores = [20, 25, 30, 35]
+    assert publish_score_threshold(scores) <= max(scores)
+
+
+def test_publishing_gate_honors_score_threshold_override():
+    """A repo below the pool-scaled threshold is rejected even if it would
+    clear the cold-start default of 48."""
+    assert not should_publish_hidden_gem(
+        50, 5, 2, 0.1, 999, True, score_threshold=70
+    )
+
+
+def test_publishing_gate_score_threshold_none_uses_default():
+    """No override → the cold-start default applies."""
+    assert should_publish_hidden_gem(
+        50, 5, 2, 0.1, 999, True, score_threshold=None
+    )
+    assert not should_publish_hidden_gem(
+        40, 5, 2, 0.1, 999, True, score_threshold=None
+    )

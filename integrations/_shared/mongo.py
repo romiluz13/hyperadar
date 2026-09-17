@@ -311,3 +311,25 @@ async def get_momentum_history(
 async def get_prior_post_count(project_id: str) -> int:
     """How many posts already exist for this project (dedup + sustainedness hint)."""
     return await _get_db().posts.count_documents({"project.url": project_id})
+
+
+async def get_last_published_days(db, project_url: str) -> int:
+    """Days since the most recent post for this project URL, across ALL agents.
+
+    ``find_one`` without a sort returns an arbitrary post (natural order,
+    usually the oldest) — which silently defeated every cooldown, because a
+    months-old publication made recently-posted repos look fresh again.
+    Sort by ``postedAt`` descending so the newest publication decides.
+    Returns 999 if the project was never posted.
+    """
+    post = await db.posts.find_one(
+        {"project.url": project_url},
+        {"postedAt": 1},
+        sort=[("postedAt", -1)],
+    )
+    if not post or not post.get("postedAt"):
+        return 999
+    posted = post["postedAt"]
+    if posted.tzinfo is None:
+        posted = posted.replace(tzinfo=timezone.utc)
+    return max(0, (datetime.now(timezone.utc) - posted).days)

@@ -226,16 +226,29 @@ async def test_momentum_novelty_bonus_uses_prior_post_count(db, monkeypatch):
     db.posts.insert_one(old_post)
 
     try:
-        results = await github_source.fetch_trending_candidates_with_momentum(async_db)
-        by_url = {r["url"]: r for r in results}
+        both = await github_source.fetch_trending_candidates_with_momentum(async_db)
+        by_url = {r["url"]: r for r in both}
 
         assert fresh_url in by_url, "Fresh repo should pass the gate"
-        assert prior_url in by_url, (
-            "Repo with old prior post should still pass the cooldown gate"
+        # Pool-scaled threshold: with two near-identical repos in the pool the
+        # bar is the fresh repo's score, so the 2-point-lower prior-post repo
+        # is crowded out — the intended top-slice behavior.
+        assert prior_url not in by_url, (
+            "Prior-post repo should be crowded out by the pool-scaled "
+            "threshold when a fresher twin is in the pool"
+        )
+        fresh_score = by_url[fresh_url]["momentumScore"]
+
+        # Alone in the pool, the prior-post repo sets its own bar and passes.
+        db.signals.delete_many({"projectId": fresh_url})
+        alone = await github_source.fetch_trending_candidates_with_momentum(async_db)
+        prior = [r for r in alone if r["url"] == prior_url]
+        assert prior, (
+            "Repo with old prior post (>14d cooldown) should pass when it "
+            "sets the threshold itself"
         )
 
-        fresh_score = by_url[fresh_url]["momentumScore"]
-        prior_score = by_url[prior_url]["momentumScore"]
+        prior_score = prior[0]["momentumScore"]
         assert fresh_score > prior_score, (
             f"Fresh repo ({fresh_score}) should out-score prior-post repo "
             f"({prior_score}) — novelty bonus +5 vs +3"
@@ -243,3 +256,109 @@ async def test_momentum_novelty_bonus_uses_prior_post_count(db, monkeypatch):
     finally:
         db.signals.delete_many({"projectId": {"$in": [fresh_url, prior_url]}})
         db.posts.delete_many({"project.url": {"$in": [fresh_url, prior_url]}})
+
+
+@pytest.mark.asyncio
+async def test_momentum_cooldown_counts_from_newest_post(db, monkeypatch):
+    """THE regression: a repo with an OLD post and a RECENT post is excluded.
+
+    The pre-fix ``find_one`` (unsorted) returned the old post, so this repo
+    passed the cooldown every single day and was recycled for weeks.
+    """
+    from github_radar import github_source
+
+    async def fake_track(db):
+        return 0
+
+    monkeypatch.setattr(github_source, "track_daily_snapshots", fake_track)
+
+    async_db = mongo._get_db()
+    repo_url = "https://github.com/test/newest-post-cooldown"
+
+    stars = [200 + i * 6 for i in range(14)]
+    snaps = _snapshots(stars, forks=30)
+    for s in snaps:
+        s["projectId"] = repo_url
+
+    db.signals.delete_many({"projectId": repo_url})
+    db.posts.delete_many({"project.url": repo_url})
+    db.signals.insert_many(snaps)
+    db.posts.insert_many(
+        [
+            {
+                "agentHandle": "@github-radar",
+                "body": "old post",
+                "postedAt": datetime.now(timezone.utc) - timedelta(days=45),
+                "project": {"url": repo_url, "title": "Recycled Repo"},
+                "portSyncStatus": "synced",
+            },
+            {
+                "agentHandle": "@hidden-gems",
+                "body": "recent post",
+                "postedAt": datetime.now(timezone.utc) - timedelta(days=1),
+                "project": {"url": repo_url, "title": "Recycled Repo"},
+                "portSyncStatus": "synced",
+            },
+        ]
+    )
+
+    try:
+        results = await github_source.fetch_trending_candidates_with_momentum(async_db)
+        assert repo_url not in [r["url"] for r in results], (
+            "Repo posted yesterday must be excluded even though it also has a "
+            "45-day-old post"
+        )
+    finally:
+        db.signals.delete_many({"projectId": repo_url})
+        db.posts.delete_many({"project.url": repo_url})
+
+
+@pytest.mark.asyncio
+async def test_momentum_threshold_scales_to_pool(db, monkeypatch):
+    """The publish threshold is the pool's 80th percentile, not a fixed 48.
+
+    A solid repo that would clear the cold-start default of 48 is excluded
+    when a clearly stronger repo is in today's pool — and passes when it is
+    the only candidate. This is what stops the feed from being a firehose.
+    """
+    from github_radar import github_source
+
+    async def fake_track(db):
+        return 0
+
+    monkeypatch.setattr(github_source, "track_daily_snapshots", fake_track)
+
+    async_db = mongo._get_db()
+    strong_url = "https://github.com/test/pool-strong"
+    weaker_url = "https://github.com/test/pool-weaker"
+
+    strong_snaps = _snapshots([200 + i * 8 for i in range(14)], forks=40)
+    for s in strong_snaps:
+        s["projectId"] = strong_url
+    weaker_snaps = _snapshots([20 + i * 2 for i in range(14)], forks=6)
+    for s in weaker_snaps:
+        s["projectId"] = weaker_url
+
+    db.signals.delete_many({"projectId": {"$in": [strong_url, weaker_url]}})
+    db.posts.delete_many({"project.url": {"$in": [strong_url, weaker_url]}})
+    db.signals.insert_many(strong_snaps + weaker_snaps)
+
+    try:
+        both = await github_source.fetch_trending_candidates_with_momentum(async_db)
+        both_urls = [r["url"] for r in both]
+        assert strong_url in both_urls
+        assert weaker_url not in both_urls, (
+            "Weaker repo must be excluded when a stronger repo raises the "
+            "pool-scaled threshold above its score"
+        )
+
+        # Now the weaker repo is alone in the pool — the threshold drops to
+        # its own score and it passes on its own merits.
+        db.signals.delete_many({"projectId": strong_url})
+        alone = await github_source.fetch_trending_candidates_with_momentum(async_db)
+        assert weaker_url in [r["url"] for r in alone], (
+            "Weaker repo should pass when it sets the threshold itself"
+        )
+    finally:
+        db.signals.delete_many({"projectId": {"$in": [strong_url, weaker_url]}})
+        db.posts.delete_many({"project.url": {"$in": [strong_url, weaker_url]}})

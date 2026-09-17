@@ -8,6 +8,7 @@ Fake-star filtering uses the fork/star ratio threshold from CMU StarScout
 research (arXiv:2412.13459): ratio < 0.02 is highly suspicious.
 """
 
+import math
 from collections.abc import Sequence
 
 # Weight constants for the Momentum Score
@@ -19,11 +20,14 @@ _CONSISTENCY_WEIGHT = 10
 _VIRAL_BONUS = 10
 
 # Thresholds
-# NOTE: 48 is temporary — lower than the original 55 to account for the
-# gravity-decay weighted velocity being ~72% of raw for uniform growth.
-# Replace with a data-driven threshold (80th percentile of tracked repos)
-# once 7+ days of snapshot data exist (see roadmap task #8).
+# NOTE: 48 is the cold-start default, used only when the tracked pool has no
+# scoreable repos yet. The live threshold is the 80th percentile of the pool
+# (see ``publish_score_threshold`` and roadmap task #8) so genuinely early,
+# low-star repos can pass on relative growth instead of losing to repos the
+# consensus already found.
 _PUBLISH_SCORE_THRESHOLD = 48
+_THRESHOLD_PERCENTILE = 0.8
+_THRESHOLD_FLOOR = 30
 _MIN_FORK_STAR_RATIO = 0.02
 _REPUBLISH_COOLDOWN_DAYS = 14
 _SUSPICIOUS_FORK_STAR_RATIO = 0.02
@@ -233,6 +237,31 @@ def _is_monotonic_growth(history: Sequence[dict]) -> bool:
     return True
 
 
+def publish_score_threshold(
+    pool_scores: Sequence[int],
+    percentile: float = _THRESHOLD_PERCENTILE,
+    floor: int = _THRESHOLD_FLOOR,
+) -> int:
+    """Data-driven publish threshold: 80th percentile of the tracked pool.
+
+    Replaces the temporary hardcoded 48 (roadmap task #8). A fixed threshold
+    structurally requires ~50 stars/week of raw velocity for full marks, so
+    only already-trending repos could pass — the opposite of the
+    "before consensus" thesis. Scaling the threshold to the live pool lets a
+    small repo with strong relative growth qualify on merit. ``floor`` keeps
+    quality when the pool is mostly flat; the hardcoded default is the
+    cold-start fallback for an empty pool.
+    """
+    scores = sorted(pool_scores)
+    if not scores:
+        return _PUBLISH_SCORE_THRESHOLD
+    # Nearest-rank percentile: the value at rank ceil(p*n). The earlier
+    # int(p*(n-1)) index picked the LOWER value in small pools (a 2-repo pool
+    # gated at the weaker score), which let everything through.
+    idx = min(len(scores) - 1, max(0, math.ceil(percentile * len(scores)) - 1))
+    return max(floor, scores[idx])
+
+
 def should_publish_hidden_gem(
     score: int,
     velocity: int,
@@ -240,19 +269,24 @@ def should_publish_hidden_gem(
     fork_star_ratio: float,
     last_published_days: int,
     is_monotonic: bool = True,
+    score_threshold: int | None = None,
 ) -> bool:
     """Gate whether a repo should be published as a hidden gem.
 
     All conditions must be met:
-    - score >= threshold (Momentum Score — currently 48, temporary)
+    - score >= threshold (data-driven percentile of the pool; hardcoded 48
+      only as the cold-start default)
     - velocity > 0 (currently growing)
     - acceleration > 0 (growth is accelerating)
     - fork/star_ratio >= 0.02 (passes fake-star filter)
-    - last_published_days >= 14 (not recently published)
+    - last_published_days >= 14 (not recently published, by ANY agent)
     - is_monotonic (growth is non-decreasing across the tracking window)
     """
+    threshold = (
+        score_threshold if score_threshold is not None else _PUBLISH_SCORE_THRESHOLD
+    )
     return (
-        score >= _PUBLISH_SCORE_THRESHOLD
+        score >= threshold
         and velocity > 0
         and acceleration > 0
         and fork_star_ratio >= _MIN_FORK_STAR_RATIO

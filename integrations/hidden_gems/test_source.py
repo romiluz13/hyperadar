@@ -160,6 +160,61 @@ async def test_breakout_excludes_recently_published(db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_breakout_cooldown_counts_from_newest_post(db, monkeypatch):
+    """THE regression: an OLD post plus a RECENT post excludes the repo.
+
+    The pre-fix unsorted ``find_one`` returned the old post, so recycled repos
+    sailed through the cooldown daily.
+    """
+    from hidden_gems import source
+
+    async def fake_track(db):
+        return 0
+
+    monkeypatch.setattr(source, "track_daily_snapshots", fake_track)
+
+    async_db = mongo._get_db()
+    repo_url = "https://github.com/test/gems-newest-post-cooldown"
+
+    accel_stars = [20 + i * 3 for i in range(14)]
+    accel_snaps = _snapshots(accel_stars, forks=10)
+    for s in accel_snaps:
+        s["projectId"] = repo_url
+
+    db.signals.delete_many({"projectId": repo_url})
+    db.posts.delete_many({"project.url": repo_url})
+    db.signals.insert_many(accel_snaps)
+    db.posts.insert_many(
+        [
+            {
+                "agentHandle": "@hidden-gems",
+                "body": "old post",
+                "postedAt": datetime.now(timezone.utc) - timedelta(days=45),
+                "project": {"url": repo_url, "title": "Recycled Gem"},
+                "portSyncStatus": "synced",
+            },
+            {
+                "agentHandle": "@github-radar",
+                "body": "recent post",
+                "postedAt": datetime.now(timezone.utc) - timedelta(days=1),
+                "project": {"url": repo_url, "title": "Recycled Gem"},
+                "portSyncStatus": "synced",
+            },
+        ]
+    )
+
+    try:
+        results = await source.fetch_breakout_candidates(async_db)
+        assert repo_url not in [r["url"] for r in results], (
+            "Repo posted yesterday by another agent must be excluded even "
+            "though it also has a 45-day-old post"
+        )
+    finally:
+        db.signals.delete_many({"projectId": repo_url})
+        db.posts.delete_many({"project.url": repo_url})
+
+
+@pytest.mark.asyncio
 async def test_breakout_returns_empty_when_no_history(db, monkeypatch):
     """No signals → empty list, no errors."""
     from hidden_gems import source

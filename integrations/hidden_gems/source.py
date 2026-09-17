@@ -17,8 +17,10 @@ from _shared.momentum import (
     _velocity,
     compute_momentum_score,
     passes_fake_star_filter,
+    publish_score_threshold,
     should_publish_hidden_gem,
 )
+from _shared.mongo import get_last_published_days
 from hidden_gems.tracker import track_daily_snapshots
 
 _github_token = os.environ.get("GITHUB_TOKEN", "")
@@ -147,28 +149,15 @@ async def fetch_low_star_github_candidates(max_results: int = 15) -> list[dict]:
     return unique[:max_results]
 
 
-async def _last_published_days(db, project_url: str) -> int:
-    """Days since the most recent post for this project URL. 999 if never posted."""
-    post = await db.posts.find_one(
-        {"project.url": project_url},
-        {"postedAt": 1},
-    )
-    if not post or not post.get("postedAt"):
-        return 999
-    posted = post["postedAt"]
-    if posted.tzinfo is None:
-        posted = posted.replace(tzinfo=timezone.utc)
-    delta = datetime.now(timezone.utc) - posted
-    return max(0, delta.days)
-
-
 async def fetch_breakout_candidates(db) -> list[dict]:
     """Find repos that pass the breakout prediction gate.
 
     1. Store today's snapshots via track_daily_snapshots.
     2. Query the signals time-series for repos with >=7 days of history.
-    3. For each, compute the Momentum Score and check the publishing gate.
-    4. Return only repos that pass, with score and velocity included.
+    3. Score every repo in the pool, then scale the publish threshold to the
+       pool's 80th percentile (``publish_score_threshold``).
+    4. Apply the publishing gate (with cross-agent cooldown) against that
+       threshold and return only repos that pass, with score and velocity.
     """
     await track_daily_snapshots(db)
 
@@ -187,7 +176,10 @@ async def fetch_breakout_candidates(db) -> list[dict]:
         length=None
     )
 
-    results: list[dict] = []
+    # First pass: score every repo in the pool so the publish threshold can
+    # scale to today's distribution instead of a hardcoded cutoff that only
+    # already-trending repos could clear.
+    scored: list[dict] = []
     for doc in candidates_with_history:
         project_url = doc["_id"]
 
@@ -212,15 +204,35 @@ async def fetch_breakout_candidates(db) -> list[dict]:
         if not passes_fake_star_filter(stars, forks):
             continue
 
-        last_pub_days = await _last_published_days(db, project_url)
-        is_monotonic = _is_monotonic_growth(history)
+        scored.append(
+            {
+                "project_url": project_url,
+                "score": score,
+                "velocity": velocity,
+                "acceleration": acceleration,
+                "stars": stars,
+                "forks": forks,
+                "fork_star_ratio": fork_star_ratio,
+                "is_monotonic": _is_monotonic_growth(history),
+            }
+        )
+
+    threshold = publish_score_threshold([row["score"] for row in scored])
+
+    # Second pass: behavioral gates + cross-agent cooldown, against the
+    # pool-scaled threshold.
+    results: list[dict] = []
+    for row in scored:
+        project_url = row["project_url"]
+        last_pub_days = await get_last_published_days(db, project_url)
         if not should_publish_hidden_gem(
-            score,
-            velocity,
-            acceleration,
-            fork_star_ratio,
+            row["score"],
+            row["velocity"],
+            row["acceleration"],
+            row["fork_star_ratio"],
             last_pub_days,
-            is_monotonic,
+            row["is_monotonic"],
+            score_threshold=threshold,
         ):
             continue
 
@@ -233,11 +245,11 @@ async def fetch_breakout_candidates(db) -> list[dict]:
                 "topics": ["ai", "hidden-gem"],
                 "discovery_source": "breakout",
                 "evidence_url": project_url,
-                "github_stars": stars,
-                "github_forks": forks,
-                "momentumScore": score,
-                "velocity": velocity,
-                "acceleration": acceleration,
+                "github_stars": row["stars"],
+                "github_forks": row["forks"],
+                "momentumScore": row["score"],
+                "velocity": row["velocity"],
+                "acceleration": row["acceleration"],
             }
         )
     return results

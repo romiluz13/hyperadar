@@ -14,7 +14,8 @@ from langchain_core.tools import tool
 
 from _shared.agent_catalog import agent_identity
 from _shared.evidence_copy import hidden_gem_evidence_copy, hidden_gem_momentum_copy
-from _shared.mongo import _get_db
+from _shared.momentum import _REPUBLISH_COOLDOWN_DAYS
+from _shared.mongo import _get_db, get_last_published_days
 from _shared.write_post import write_post
 from source import fetch_breakout_candidates, fetch_hn_candidates
 
@@ -86,6 +87,16 @@ async def write_hidden_gem(gem_url: str, verdict: str) -> str:
     if not c:
         return (
             f"ERROR: unknown gem_url {gem_url}. Call fetch_hidden_gem_candidates first."
+        )
+
+    # Cross-agent cooldown: HN discoveries and breakout repos alike are never
+    # reposted (by any agent) inside the republish window.
+    db = _get_db()
+    last_pub = await get_last_published_days(db, gem_url)
+    if last_pub < _REPUBLISH_COOLDOWN_DAYS:
+        return (
+            f"SKIP: {gem_url} was posted {last_pub} day(s) ago by an agent — "
+            f"republish cooldown is {_REPUBLISH_COOLDOWN_DAYS} days."
         )
 
     if c["discovery_source"] == "hacker_news":

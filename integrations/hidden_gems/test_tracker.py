@@ -1,10 +1,39 @@
 """Tests for the hidden-gems daily snapshot tracker."""
 
 import logging
+from datetime import date, datetime, timezone
 
 import pytest
 
 from _shared import mongo
+
+
+def test_discovery_bands_rotate_daily():
+    """Four consecutive days use four different discovery bands, then cycle.
+
+    Locks the fix for the closed discovery loop: a single fixed query
+    re-tracked the same ~100 recently-updated repos forever.
+    """
+    from hidden_gems import tracker
+
+    days = [date(2026, 9, 15), date(2026, 9, 16), date(2026, 9, 17),
+            date(2026, 9, 18), date(2026, 9, 19)]
+    bands = [
+        tracker._band_for_date(datetime(d.year, d.month, d.day, tzinfo=timezone.utc))
+        for d in days
+    ]
+    assert len(set(bands[:4])) == 4, "four consecutive days should use four different bands"
+    assert bands[4] == bands[0], "the rotation should cycle back to the first band"
+    assert all(b in tracker._DISCOVERY_BANDS for b in bands)
+
+
+def test_discovery_bands_are_distinct_queries():
+    """Every band must differ in star range, window, or sort — no duplicates."""
+    from hidden_gems import tracker
+
+    assert len(set(tracker._DISCOVERY_BANDS)) == len(tracker._DISCOVERY_BANDS)
+    sorts = {b[2] for b in tracker._DISCOVERY_BANDS}
+    assert sorts != {"updated"}, "bands must vary sort order, not just star ranges"
 
 
 @pytest.mark.asyncio

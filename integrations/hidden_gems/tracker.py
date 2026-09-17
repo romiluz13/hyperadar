@@ -23,26 +23,45 @@ _headers = (
     else {}
 )
 
-# Search parameters
-_STAR_RANGE = "10..500"
+# Discovery bands — rotated daily so the tracked pool keeps refreshing.
+# A single fixed query (stars:10..500 created:<90d sort:updated) re-tracked
+# the same ~100 recently-updated repos forever: a closed discovery loop. Each
+# day the tracker samples a different slice of the low-star candidate space.
+# (star_range, created_within_days, sort, order)
+_DISCOVERY_BANDS = [
+    ("10..500", 90, "updated", "desc"),  # legacy band: recently updated
+    ("10..100", 30, "updated", "desc"),  # very fresh, tiny repos
+    ("100..500", 30, "stars", "desc"),  # fresh mid-star repos
+    ("10..500", 90, "stars", "asc"),  # least-starred first
+]
 _MAX_RESULTS = 100
 _TOPICS = ["ai", "llm", "agent"]
 
 
+def _band_for_date(now: datetime) -> tuple:
+    """Deterministic daily rotation: one band per day, cycling through all."""
+    return _DISCOVERY_BANDS[now.toordinal() % len(_DISCOVERY_BANDS)]
+
+
 async def _search_candidates(client: httpx.AsyncClient) -> list[dict]:
-    """Search GitHub for recently created low-star repos across AI topics.
+    """Search GitHub for recently created low-star repos across AI topics,
+    using today's rotating discovery band.
 
     Returns a deduplicated list of candidate repos with star/fork counts.
     """
-    since = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc)
+    star_range, created_days, sort, order = _band_for_date(now)
+    since = (now - timedelta(days=created_days)).strftime("%Y-%m-%d")
     all_candidates: list[dict] = []
     for topic in _TOPICS:
         if len(all_candidates) >= _MAX_RESULTS:
             break
         params = {
-            "q": (f"created:>{since} stars:{_STAR_RANGE} topic:{topic} sort:updated"),
-            "sort": "updated",
-            "order": "desc",
+            "q": (
+                f"created:>{since} stars:{star_range} topic:{topic} sort:{sort}"
+            ),
+            "sort": sort,
+            "order": order,
             "per_page": min(_MAX_RESULTS - len(all_candidates), 100),
         }
         try:
@@ -79,9 +98,11 @@ async def _search_candidates(client: httpx.AsyncClient) -> list[dict]:
 async def track_daily_snapshots(db) -> int:
     """Discover candidate repos and store daily star/fork snapshots in signals time-series.
 
-    Discovers candidates via GitHub Search API (stars:10..500, created:<90d,
-    topic:ai/llm/agent, sort:updated, up to 100 repos). For each candidate,
-    stores a signal document in the signals time-series collection with:
+    Discovers candidates via GitHub Search API using today's rotating
+    discovery band (star range, creation window, and sort order rotate daily
+    across ``_DISCOVERY_BANDS``; topic:ai/llm/agent, up to 100 repos). For
+    each candidate, stores a signal document in the signals time-series
+    collection with:
     - capturedAt: current UTC timestamp
     - projectId: the repo URL (meta field)
     - postId: empty string (no post yet — this is a pre-publication snapshot)

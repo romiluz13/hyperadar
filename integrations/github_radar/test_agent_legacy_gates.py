@@ -110,3 +110,58 @@ async def test_legacy_path_applies_cooldown(monkeypatch):
 
     assert "repo-b" in result
     assert "repo-a" not in result
+
+
+# ─── write_hype_post cross-agent cooldown guard ───
+
+
+@pytest.mark.asyncio
+async def test_write_hype_post_guard_blocks_recently_posted_repo(monkeypatch):
+    """The write tool is the last choke point: a repo posted 2 days ago by ANY
+    agent must be refused even if it re-entered the candidate cache."""
+
+    mock_db = MagicMock()
+
+    async def mock_find_one(query, *args, **kwargs):
+        return {"postedAt": datetime.now(timezone.utc) - timedelta(days=2)}
+
+    mock_db.posts.find_one = mock_find_one
+    monkeypatch.setattr(agent.mongo, "_get_db", lambda: mock_db)
+
+    repo_url = "https://github.com/test/guard-repo"
+    agent._CANDIDATE_CACHE[repo_url] = _candidate(repo_url, 100, 10)
+
+    try:
+        result = await agent.write_hype_post.ainvoke(
+            {"repo_url": repo_url, "verdict": "hype looks real"}
+        )
+        assert result.startswith("SKIP")
+        assert "cooldown" in result.lower()
+    finally:
+        agent._CANDIDATE_CACHE.pop(repo_url, None)
+
+
+@pytest.mark.asyncio
+async def test_write_hype_post_guard_blocks_based_on_newest_post(monkeypatch):
+    """Guard regression: with an old AND a recent post for the repo, the recent
+    one decides (the pre-fix unsorted lookup would have let it through)."""
+
+    mock_db = MagicMock()
+
+    async def mock_find_one(query, *args, **kwargs):
+        # Emulate the sorted lookup: newest first.
+        return {"postedAt": datetime.now(timezone.utc) - timedelta(days=1)}
+
+    mock_db.posts.find_one = mock_find_one
+    monkeypatch.setattr(agent.mongo, "_get_db", lambda: mock_db)
+
+    repo_url = "https://github.com/test/guard-newest-repo"
+    agent._CANDIDATE_CACHE[repo_url] = _candidate(repo_url, 100, 10)
+
+    try:
+        result = await agent.write_hype_post.ainvoke(
+            {"repo_url": repo_url, "verdict": "emerging"}
+        )
+        assert result.startswith("SKIP")
+    finally:
+        agent._CANDIDATE_CACHE.pop(repo_url, None)

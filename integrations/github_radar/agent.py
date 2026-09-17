@@ -18,10 +18,9 @@ from langchain_core.tools import tool
 from _shared import mongo
 from _shared.agent_catalog import agent_identity
 from _shared.evidence_copy import github_evidence_copy
-from _shared.momentum import passes_fake_star_filter
+from _shared.momentum import _REPUBLISH_COOLDOWN_DAYS, passes_fake_star_filter
 from _shared.write_post import write_post
 from github_source import (
-    _last_published_days,
     compute_momentum,
     fetch_trending_candidates,
     fetch_trending_candidates_with_momentum,
@@ -86,13 +85,15 @@ async def fetch_trending_repos() -> str:
         if not candidates:
             return "No trending candidates passed the fake-star filter today."
 
-        # Apply 7-day cooldown: skip repos posted < 7 days ago.
+        # Apply the cross-agent republish cooldown (defense-in-depth: the
+        # momentum path already gates, but the write tool is the last choke
+        # point before a post is claimed).
         try:
             async_db = mongo._get_db()
             cooled: list[dict] = []
             for c in candidates:
-                last_pub = await _last_published_days(async_db, c["url"])
-                if last_pub >= 7:
+                last_pub = await mongo.get_last_published_days(async_db, c["url"])
+                if last_pub >= _REPUBLISH_COOLDOWN_DAYS:
                     cooled.append(c)
             candidates = cooled
         except Exception as exc:
@@ -160,6 +161,16 @@ async def write_hype_post(repo_url: str, verdict: str) -> str:
     c = _CANDIDATE_CACHE.get(repo_url)
     if not c:
         return f"ERROR: unknown repo_url {repo_url}. Call fetch_trending_repos first."
+
+    # Cross-agent cooldown: no repo is reposted (by any agent) inside the
+    # republish window, even if it re-entered the candidate cache.
+    async_db = mongo._get_db()
+    last_pub = await mongo.get_last_published_days(async_db, repo_url)
+    if last_pub < _REPUBLISH_COOLDOWN_DAYS:
+        return (
+            f"SKIP: {repo_url} was posted {last_pub} day(s) ago by an agent — "
+            f"republish cooldown is {_REPUBLISH_COOLDOWN_DAYS} days."
+        )
     m = c.get("_momentum") or {
         "momentumScore": 0.0,
         "avgStarsPerWeekSinceCreation": 0.0,

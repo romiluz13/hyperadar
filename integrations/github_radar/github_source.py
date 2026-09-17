@@ -20,8 +20,10 @@ from _shared.momentum import (
     _velocity,
     compute_momentum_score,
     passes_fake_star_filter,
+    publish_score_threshold,
     should_publish_hidden_gem,
 )
+from _shared.mongo import get_last_published_days
 from github_radar.tracker import track_daily_snapshots
 
 _token = os.environ.get("GITHUB_TOKEN", "")
@@ -362,28 +364,15 @@ def compute_momentum(candidate: dict, history: list[dict], prior_posts: int) -> 
 _MIN_HISTORY_DAYS = 7
 
 
-async def _last_published_days(db, project_url: str) -> int:
-    """Days since the most recent post for this project URL. 999 if never posted."""
-    post = await db.posts.find_one(
-        {"project.url": project_url},
-        {"postedAt": 1},
-    )
-    if not post or not post.get("postedAt"):
-        return 999
-    posted = post["postedAt"]
-    if posted.tzinfo is None:
-        posted = posted.replace(tzinfo=timezone.utc)
-    delta = datetime.now(timezone.utc) - posted
-    return max(0, delta.days)
-
-
 async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
     """Fetch trending AI repos using the shared Momentum Score.
 
     1. Store today's snapshots via ``track_daily_snapshots``.
     2. Query the signals time-series for repos with >=7 days of history.
-    3. For each, compute the shared ``compute_momentum_score``.
-    4. Apply the fake-star filter.
+    3. Score every repo in the pool, then scale the publish threshold to the
+       pool's 80th percentile (``publish_score_threshold``).
+    4. Apply the fake-star filter and the publishing gate (with cross-agent
+       cooldown) against that threshold.
     5. Return candidates with momentumScore, velocity, acceleration.
     """
     await track_daily_snapshots(db)
@@ -403,7 +392,10 @@ async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
         length=None
     )
 
-    results: list[dict] = []
+    # First pass: score every repo in the pool so the publish threshold can
+    # scale to today's distribution instead of a hardcoded cutoff that only
+    # already-trending repos could clear.
+    scored: list[dict] = []
     for doc in candidates_with_history:
         project_url = doc["_id"]
 
@@ -429,15 +421,35 @@ async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
         prior_count = await db.posts.count_documents({"project.url": project_url})
         score = compute_momentum_score(history, prior_post_count=prior_count)
 
-        is_monotonic = _is_monotonic_growth(history)
-        last_pub_days = await _last_published_days(db, project_url)
+        scored.append(
+            {
+                "project_url": project_url,
+                "score": score,
+                "velocity": velocity,
+                "acceleration": acceleration,
+                "stars": stars,
+                "forks": forks,
+                "fork_star_ratio": fork_star_ratio,
+                "is_monotonic": _is_monotonic_growth(history),
+            }
+        )
+
+    threshold = publish_score_threshold([row["score"] for row in scored])
+
+    # Second pass: behavioral gates + cross-agent cooldown, against the
+    # pool-scaled threshold.
+    results: list[dict] = []
+    for row in scored:
+        project_url = row["project_url"]
+        last_pub_days = await get_last_published_days(db, project_url)
         if not should_publish_hidden_gem(
-            score,
-            velocity,
-            acceleration,
-            fork_star_ratio,
+            row["score"],
+            row["velocity"],
+            row["acceleration"],
+            row["fork_star_ratio"],
             last_pub_days,
-            is_monotonic,
+            row["is_monotonic"],
+            score_threshold=threshold,
         ):
             continue
 
@@ -450,12 +462,12 @@ async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
                 "topics": ["ai", "github-radar"],
                 "discovery_source": "momentum",
                 "evidence_url": project_url,
-                "stars": stars,
-                "github_stars": stars,
-                "github_forks": forks,
-                "momentumScore": score,
-                "velocity": velocity,
-                "acceleration": acceleration,
+                "stars": row["stars"],
+                "github_stars": row["stars"],
+                "github_forks": row["forks"],
+                "momentumScore": row["score"],
+                "velocity": row["velocity"],
+                "acceleration": row["acceleration"],
             }
         )
     return results
