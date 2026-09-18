@@ -40,9 +40,9 @@ def test_required_checks_per_agent():
         "github_token",
         "hn_algolia",  # the corroboration gate + engagement boost need HN
     )
-    # hidden-gems now depends on HN + arXiv for discovery and engagement.
+    # hidden-gems depends on HN for discovery and engagement.
     assert "hn_algolia" in doctor.required_checks("@hidden-gems")
-    assert "arxiv" in doctor.required_checks("@hidden-gems")
+    assert "arxiv" not in doctor.required_checks("@hidden-gems")
     assert "youtube_key" in doctor.required_checks("@youtube-trends")
     assert "rombot" in doctor.required_checks("@community-radar")
     assert "brightdata" in doctor.required_checks("@reddit-pulse")
@@ -184,13 +184,6 @@ async def test_check_youtube_key_rejected(monkeypatch):
 async def test_check_hn_algolia_ok():
     client = _FakeClient({"get": [_Response(status_code=200)]})
     result = await doctor.check_hn_algolia(client)
-    assert result["status"] == "ok"
-
-
-@pytest.mark.asyncio
-async def test_check_arxiv_reachable():
-    client = _FakeClient({"get": [_Response(status_code=200)]})
-    result = await doctor.check_arxiv(client)
     assert result["status"] == "ok"
 
 

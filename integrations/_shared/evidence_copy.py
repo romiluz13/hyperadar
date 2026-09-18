@@ -83,12 +83,3 @@ def hn_engagement_copy(points: int, comments: int) -> str:
 def community_quote_copy(author: str, text: str, source_label: str = "HN") -> str:
     """Quote a community comment verbatim as evidence copy."""
     return f'{source_label} top comment ({author}): "{text}"'
-
-
-def arxiv_evidence_copy(stars: int, paper_title: str) -> str:
-    """Evidence copy for an arXiv-paper discovery: fresh research, observed repo."""
-    return (
-        f"arXiv paper \"{paper_title[:120]}\" links to this repo; "
-        f"{stars:,} GitHub stars observed. Research-first discovery, days before "
-        "any trending list."
-    )

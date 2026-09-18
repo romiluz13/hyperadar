@@ -3,7 +3,6 @@
 Voice: the scout. Finds early evidence without inventing a trajectory.
 """
 
-import logging
 import os
 import sys
 
@@ -16,7 +15,6 @@ from langchain_core.tools import tool
 from _shared.agent_catalog import agent_identity
 from _shared.grove import grove_api_key
 from _shared.evidence_copy import (
-    arxiv_evidence_copy,
     community_quote_copy,
     hidden_gem_evidence_copy,
     hidden_gem_momentum_copy,
@@ -26,7 +24,6 @@ from _shared.momentum import _REPUBLISH_COOLDOWN_DAYS
 from _shared.mongo import _get_db, get_last_published_days
 from _shared.write_post import write_post
 from source import (
-    fetch_arxiv_candidates,
     fetch_breakout_candidates,
     fetch_hn_candidates,
 )
@@ -45,8 +42,8 @@ Your voice: the scout. You find things before they trend, while naming exactly w
 Only publish repos that pass the breakout gate. Each post must include the Momentum Score and velocity in the evidence. Do NOT post repos that don't pass the gate — if no repos pass, post nothing.
 
 Workflow:
-1. Call fetch_hidden_gem_candidates to get today's breakout candidates (repos that passed the momentum-score gate), HN Show HN discoveries, and fresh arXiv papers with code repos.
-2. For EACH candidate that passes the gate (has a momentumScore field) or was discovered via HN/arXiv, call write_hidden_gem with:
+1. Call fetch_hidden_gem_candidates to get today's breakout candidates (repos that passed the momentum-score gate) and HN Show HN discoveries.
+2. For EACH candidate that passes the gate (has a momentumScore field) or was discovered via HN, call write_hidden_gem with:
    - gem_url (exact, from the candidate)
    - verdict: "emerging" for most gems, or "hype looks real" if you see strong breakout signs
 3. If no candidates pass, post nothing.
@@ -58,16 +55,11 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 
 @tool
 async def fetch_hidden_gem_candidates() -> str:
-    """Fetch today's hidden gems: breakout candidates that passed the momentum gate, HN Show HN posts, and arXiv papers with code repos."""
+    """Fetch today's hidden gems: breakout candidates that passed the momentum gate and HN Show HN posts."""
     db = _get_db()
     breakout = await fetch_breakout_candidates(db)
     hn = await fetch_hn_candidates(max_results=10)
-    try:
-        arxiv = await fetch_arxiv_candidates(max_results=8)
-    except Exception as e:
-        logging.warning("arXiv discovery failed (skipping source): %s", e)
-        arxiv = []
-    candidates = breakout + hn + arxiv
+    candidates = breakout + hn
     if not candidates:
         return "No hidden gems found today."
     _CANDIDATE_CACHE.clear()
@@ -76,11 +68,6 @@ async def fetch_hidden_gem_candidates() -> str:
     for c in candidates:
         if c["discovery_source"] == "hacker_news":
             evidence = f"HN points={c['hn_points']} | HN comments={c['hn_comments']}"
-        elif c["discovery_source"] == "arxiv":
-            evidence = (
-                f"arXiv paper='{c['arxiv_title'][:80]}' | "
-                f"GitHub stars={c['github_stars']}"
-            )
         elif c["discovery_source"] == "breakout":
             evidence = (
                 f"Momentum Score={c['momentumScore']}/100 | "
@@ -130,13 +117,6 @@ async def write_hidden_gem(gem_url: str, verdict: str) -> str:
         evidence = f"HN points={value}; HN comments={c['hn_comments']}"
         momentum = min(35 + value / 10, 70)
         blurb = hidden_gem_evidence_copy(c["discovery_source"], value)
-    elif c["discovery_source"] == "arxiv":
-        value = c["github_stars"]
-        metric = "github_stars"
-        source = "github"
-        evidence = f"arXiv paper='{c['arxiv_title']}'; GitHub stars={value}"
-        momentum = min(40 + value / 10, 70)
-        blurb = arxiv_evidence_copy(value, c["arxiv_title"])
     elif c["discovery_source"] == "breakout":
         value = c["github_stars"]
         metric = "github_stars"
@@ -181,8 +161,6 @@ async def write_hidden_gem(gem_url: str, verdict: str) -> str:
         "evidenceLabel": (
             "Open HN discussion"
             if c["discovery_source"] == "hacker_news"
-            else "Open arXiv paper"
-            if c["discovery_source"] == "arxiv"
             else "Open GitHub repository"
         ),
         "summary": evidence,

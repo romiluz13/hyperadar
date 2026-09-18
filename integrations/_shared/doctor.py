@@ -21,7 +21,6 @@ from _shared.grove import grove_api_key
 
 _GITHUB_API = "https://api.github.com"
 _HN_ALGOLIA = "https://hn.algolia.com/api/v1/search"
-_ARXIV_API = "https://export.arxiv.org/api/query"
 _ROMBOT_API_URL = "https://api.rombot.uk/api/community-ask"
 _YOUTUBE_API = "https://www.googleapis.com/youtube/v3/videos"
 
@@ -29,7 +28,10 @@ _YOUTUBE_API = "https://www.googleapis.com/youtube/v3/videos"
 AGENT_CHECKS = {
     # github-radar's corroboration gate + engagement boost depend on HN.
     "@github-radar": ("grove", "mongodb", "github_token", "hn_algolia"),
-    "@hidden-gems": ("grove", "mongodb", "github_token", "hn_algolia", "arxiv"),
+    # hidden-gems depends on HN for discovery and the engagement boost. Its
+    # arXiv source was removed (export.arxiv.org unreliably 406s the Python
+    # client), so no arxiv check is required.
+    "@hidden-gems": ("grove", "mongodb", "github_token", "hn_algolia"),
     "@reddit-pulse": ("grove", "mongodb", "brightdata"),
     "@youtube-trends": ("grove", "mongodb", "youtube_key"),
     "@community-radar": ("grove", "mongodb", "rombot"),
@@ -132,24 +134,6 @@ async def check_hn_algolia(client=None) -> dict:
             await client.aclose()
 
 
-async def check_arxiv(client=None) -> dict:
-    owns_client = client is None
-    if client is None:
-        client = httpx.AsyncClient(timeout=15)
-    try:
-        r = await client.get(
-            _ARXIV_API, params={"search_query": "cat:cs.AI", "max_results": 1}
-        )
-        if r.status_code == 200:
-            return _ok("arxiv", "export API reachable")
-        return _fail("arxiv", f"HTTP {r.status_code}")
-    except httpx.HTTPError as e:
-        return _fail("arxiv", f"request failed: {e}")
-    finally:
-        if owns_client:
-            await client.aclose()
-
-
 async def check_rombot(client=None) -> dict:
     """A minimal community-ask call: the token's 401 is what we must catch."""
     token = os.environ.get("ROMBOT_COMMUNITY_ASK_TOKEN", "")
@@ -219,7 +203,6 @@ CHECKS = {
     "mongodb": check_mongodb,
     "github_token": check_github_token,
     "hn_algolia": check_hn_algolia,
-    "arxiv": check_arxiv,
     "rombot": check_rombot,
     "youtube_key": check_youtube_key,
     "brightdata": check_brightdata,

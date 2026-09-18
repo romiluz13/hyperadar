@@ -1,14 +1,15 @@
 """Hidden gems source — HN candidates + breakout prediction pipeline.
 
 @hidden-gems finds things BEFORE they blow up: HN Show HN posts linking to
-novel repos, arXiv papers with fresh code repos, and repos identified by the
-momentum-score breakout gate.
+novel repos and repos identified by the momentum-score breakout gate.
+
+arXiv paper discovery was removed: export.arxiv.org inconsistently rejects
+the Python HTTP client with 406 (while accepting curl), so the source could
+not be made reliable.
 """
 
 import logging
 import os
-import re
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -283,147 +284,3 @@ async def fetch_hidden_gems(max_results: int = 8) -> list[dict]:
     hn = await fetch_hn_candidates(max_results=10)
     gh = await fetch_low_star_github_candidates(max_results=15)
     return (hn + gh)[:max_results]
-
-
-# ─── arXiv discovery: papers with code repos, days before trending ───
-
-_ARXIV_API_URL = "https://export.arxiv.org/api/query"
-_ARXIV_CATEGORIES = "cat:cs.AI OR cat:cs.CL OR cat:cs.LG"
-# A paper older than this is research coverage, not a fresh discovery.
-_ARXIV_MAX_AGE_DAYS = 14
-# Traction floor: a paper-linked repo with <10 stars has no observable
-# community signal yet; the tracker's search bands will pick it up once it
-# accrues history instead.
-_ARXIV_MIN_STARS = 10
-_ARXIV_FETCH_LIMIT = 50
-_ATOM_NS = "{http://www.w3.org/2005/Atom}"
-_GITHUB_LINK_RE = re.compile(
-    r"github\.com/([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)", re.IGNORECASE
-)
-
-
-def _clean_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()
-
-
-def parse_arxiv_entries(xml_text: str) -> list[dict]:
-    """Parse an arXiv Atom feed into entry dicts (title, summary, published, url).
-
-    Pure function over the raw XML so the parser is testable without network.
-    Entries missing a title, summary, or date are dropped.
-    """
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        return []
-    entries = []
-    for entry in root.findall(f"{_ATOM_NS}entry"):
-        title = _clean_text(entry.findtext(f"{_ATOM_NS}title") or "")
-        summary = _clean_text(entry.findtext(f"{_ATOM_NS}summary") or "")
-        published = entry.findtext(f"{_ATOM_NS}published") or ""
-        url = ""
-        for link in entry.findall(f"{_ATOM_NS}link"):
-            if (link.get("type") or "") == "application/pdf":
-                continue
-            url = link.get("href") or url
-        if not title or not summary or not published:
-            continue
-        entries.append(
-            {"title": title, "summary": summary, "published": published, "url": url}
-        )
-    return entries
-
-
-def _published_within_days(published: str, now: datetime, max_days: int) -> bool:
-    try:
-        parsed = datetime.fromisoformat(published.replace("Z", "+00:00"))
-    except (ValueError, TypeError):  # TypeError: a naive date breaks now - parsed
-        return False
-    return now - parsed <= timedelta(days=max_days)
-
-
-def _extract_repo_url(text: str) -> str | None:
-    match = _GITHUB_LINK_RE.search(text or "")
-    if not match:
-        return None
-    slug = match.group(1).rstrip(".")
-    if slug.lower().endswith(".git"):  # clone URLs name the repo, not a page
-        slug = slug[: -len(".git")]
-    return f"https://github.com/{slug}"
-
-
-async def fetch_arxiv_candidates(
-    max_results: int = 8, client: httpx.AsyncClient | None = None
-) -> list[dict]:
-    """Discover fresh arXiv papers (cs.AI/CL/LG) that link to a GitHub repo.
-
-    Papers surface research-linked repos days before any trending list; each
-    repo is enriched via the GitHub API and must clear the traction floor
-    (>=10 stars) to become a candidate. One feed request + one repo request
-    per unique repo — arXiv asks clients to stay near one request per 3s,
-    which a single daily run satisfies.
-    """
-    now = datetime.now(timezone.utc)
-    owns_client = client is None
-    if client is None:
-        client = httpx.AsyncClient(timeout=30)
-    try:
-        r = await client.get(
-            _ARXIV_API_URL,
-            params={
-                "search_query": _ARXIV_CATEGORIES,
-                "sortBy": "submittedDate",
-                "sortOrder": "descending",
-                "max_results": _ARXIV_FETCH_LIMIT,
-            },
-        )
-        r.raise_for_status()
-        entries = parse_arxiv_entries(r.text)
-
-        candidates: list[dict] = []
-        seen_repos: set[str] = set()
-        for entry in entries:
-            if not _published_within_days(entry["published"], now, _ARXIV_MAX_AGE_DAYS):
-                continue
-            repo_url = _extract_repo_url(entry["summary"])
-            if not repo_url or repo_url in seen_repos:
-                continue
-            seen_repos.add(repo_url)
-
-            owner_repo = repo_url.removeprefix("https://github.com/")
-            try:
-                repo_r = await client.get(
-                    f"https://api.github.com/repos/{owner_repo}", headers=_headers
-                )
-                if repo_r.status_code != 200:
-                    continue
-                data = repo_r.json()
-            except Exception as e:
-                logging.warning("GitHub enrich failed for %s: %s", repo_url, e)
-                continue
-
-            stars = data.get("stargazers_count", 0)
-            if stars < _ARXIV_MIN_STARS:
-                continue
-
-            candidates.append(
-                {
-                    "url": repo_url,
-                    "title": data.get("full_name") or owner_repo,
-                    "kind": "repo",
-                    "description": data.get("description") or entry["title"],
-                    "topics": ["arxiv", "hidden-gem", "ai"],
-                    "discovery_source": "arxiv",
-                    "evidence_url": entry["url"] or repo_url,
-                    "github_stars": stars,
-                    "github_forks": data.get("forks_count", 0),
-                    "arxiv_title": entry["title"],
-                    "arxiv_published": entry["published"],
-                }
-            )
-            if len(candidates) >= max_results:
-                break
-        return candidates
-    finally:
-        if owns_client:
-            await client.aclose()
