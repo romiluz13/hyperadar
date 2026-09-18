@@ -16,6 +16,7 @@ import httpx
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _shared.agent_catalog import AGENT_CATALOG  # noqa: E402
+from _shared.grove import grove_api_key  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ async def _call_grove(posts: list[dict]) -> list[dict]:
             f"{os.environ['GROVE_BASE_URL']}/chat/completions",
             headers={
                 "Content-Type": "application/json",
-                "api-key": os.environ["GROVE_API_KEY"],
+                "api-key": grove_api_key(),
             },
             json={
                 "model": os.environ["GROVE_MODEL"],

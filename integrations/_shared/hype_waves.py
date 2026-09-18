@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pymongo  # noqa: E402
 
 from _shared.agent_catalog import AGENT_CATALOG  # noqa: E402
+from _shared.grove import grove_api_key  # noqa: E402
 
 SOURCE_AGENT_HANDLES = [
     agent["handle"] for agent in AGENT_CATALOG if agent["source_type"] != "aggregator"
@@ -107,7 +108,7 @@ async def label_cluster(cluster: list[dict]) -> str:
                 f"{os.environ['GROVE_BASE_URL']}/chat/completions",
                 headers={
                     "Content-Type": "application/json",
-                    "api-key": os.environ["GROVE_API_KEY"],
+                    "api-key": grove_api_key(),
                 },
                 json={
                     "model": os.environ["GROVE_MODEL"],

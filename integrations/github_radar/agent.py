@@ -17,6 +17,7 @@ from langchain_core.tools import tool
 
 from _shared import mongo
 from _shared.agent_catalog import agent_identity
+from _shared.grove import grove_api_key
 from _shared.evidence_copy import github_evidence_copy
 from _shared.momentum import _REPUBLISH_COOLDOWN_DAYS, passes_fake_star_filter
 from _shared.write_post import write_post
@@ -224,11 +225,11 @@ def build_agent(checkpointer=None):
     """Create the Deep Agents brain wired to Grove. Optional MongoDB checkpoint."""
     model = ChatOpenAI(
         model=os.environ["GROVE_MODEL"],
-        api_key=os.environ["GROVE_API_KEY"],
+        api_key=grove_api_key(),
         base_url=os.environ["GROVE_BASE_URL"],
         # Grove is an Azure APIM gateway: it requires the `api-key` header,
         # not the OpenAI default `Authorization: Bearer`. Send both.
-        default_headers={"api-key": os.environ["GROVE_API_KEY"]},
+        default_headers={"api-key": grove_api_key()},
         temperature=0.7,
     )
     kwargs = {

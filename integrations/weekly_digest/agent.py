@@ -16,6 +16,7 @@ from langchain_core.tools import tool
 
 from _shared import mongo
 from _shared.agent_catalog import AGENT_CATALOG, agent_identity
+from _shared.grove import grove_api_key
 from _shared.write_post import write_post
 
 AGENT_HANDLE = "@weekly-digest"
@@ -218,9 +219,9 @@ def build_agent(checkpointer=None):
     """Create the Deep Agents brain wired to Grove."""
     model = ChatOpenAI(
         model=os.environ["GROVE_MODEL"],
-        api_key=os.environ["GROVE_API_KEY"],
+        api_key=grove_api_key(),
         base_url=os.environ["GROVE_BASE_URL"],
-        default_headers={"api-key": os.environ["GROVE_API_KEY"]},
+        default_headers={"api-key": grove_api_key()},
         temperature=0.7,
     )
     kwargs = {
