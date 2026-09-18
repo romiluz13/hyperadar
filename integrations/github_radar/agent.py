@@ -17,8 +17,14 @@ from langchain_core.tools import tool
 
 from _shared import mongo
 from _shared.agent_catalog import agent_identity
+from _shared.corroboration import corroborated_candidates
+from _shared.engagement import engagement_boost
 from _shared.grove import grove_api_key
-from _shared.evidence_copy import github_evidence_copy
+from _shared.evidence_copy import (
+    community_quote_copy,
+    github_evidence_copy,
+    hn_engagement_copy,
+)
 from _shared.momentum import _REPUBLISH_COOLDOWN_DAYS, passes_fake_star_filter
 from _shared.write_post import write_post
 from github_source import (
@@ -40,6 +46,8 @@ Your voice: terse and data-forward. Distinguish a lifetime average from observed
 
 Workflow:
 1. Call fetch_trending_repos to get today's candidate repos with their momentum data.
+   Every candidate is cross-source corroborated: an independent source (HN story or
+   Reddit thread) noticed it in the same window, not GitHub stars alone.
 2. For EACH candidate that genuinely looks like it's breaking out (momentumScore >= 40),
    call write_hype_post with:
    - repo_url (exact, from the candidate)
@@ -57,18 +65,37 @@ async def fetch_trending_repos() -> str:
 
     Tries the shared Momentum Score path (``fetch_trending_candidates_with_momentum``)
     when a database is available, falling back to the legacy ``fetch_trending_candidates``
-    path when the DB is not reachable.
+    path only when the DB is unreachable or no repo has enough history yet. Every
+    candidate then passes the cross-source corroboration gate (an HN story or Reddit
+    thread noticed it in the same window), and HN engagement is added to the published
+    momentum score. A momentum pool that the gate empties is reported as-is — it never
+    falls back to the weaker legacy bar.
 
     Returns a compact text listing of candidates with their momentum scores so you
     can decide which to post about.
     """
     candidates: list[dict] = []
+    momentum_candidates: list[dict] = []
     try:
         async_db = mongo._get_db()
-        candidates = await fetch_trending_candidates_with_momentum(async_db)
+        momentum_candidates = await fetch_trending_candidates_with_momentum(async_db)
     except Exception as exc:
         logging.warning("Momentum path unavailable, falling back to legacy: %s", exc)
-        candidates = []
+        momentum_candidates = []
+
+    if momentum_candidates:
+        # Cross-source corroboration gate: GitHub discovery + at least one
+        # independent community source (HN story / Reddit thread) in the same
+        # window. Single-source star velocity alone is not a publishable
+        # signal. A corroborated-empty pool here is a real "nothing reached
+        # consensus today" outcome — it must NOT fall through to the weaker
+        # legacy bar, which exists only for cold-start/no-history runs.
+        candidates = await corroborated_candidates(momentum_candidates)
+        if not candidates:
+            return (
+                "No trending candidates passed the cross-source corroboration "
+                "gate today (no independent HN/Reddit signal in the window)."
+            )
 
     if not candidates:
         # Legacy fallback: no DB or no repos with enough history yet.
@@ -102,6 +129,13 @@ async def fetch_trending_repos() -> str:
         if not candidates:
             return "No trending candidates passed the cooldown filter today."
 
+        candidates = await corroborated_candidates(candidates)
+        if not candidates:
+            return (
+                "No trending candidates passed the cross-source corroboration "
+                "gate today (no independent HN/Reddit signal in the window)."
+            )
+
         lines = []
         for c in candidates:
             project_id = c["url"]
@@ -112,13 +146,14 @@ async def fetch_trending_repos() -> str:
             )
             prior_posts = await mongo.get_prior_post_count(project_id)
             m = compute_momentum(c, history, prior_posts)
+            m["momentumScore"] = _engagement_weighted_score(m["momentumScore"], c)
             c["_momentum"] = m  # cache for the write step
             lines.append(
                 f"- {c['title']} | {c['url']}\n"
                 f"  stars={c['stars']} | avg_stars/wk_since_creation="
                 f"{m['avgStarsPerWeekSinceCreation']} | momentumScore={m['momentumScore']} | "
                 f"sustainedSixWeekGrowth={m['sustainedSixWeekGrowth']} | "
-                f"novel={m['novel']}\n"
+                f"novel={m['novel']} | {_engagement_line(c)}\n"
                 f"  desc: {c['description'][:120]}"
             )
         _CANDIDATE_CACHE.update({c["url"]: c for c in candidates})
@@ -127,8 +162,8 @@ async def fetch_trending_repos() -> str:
     # Shared Momentum Score path: candidates already have momentumScore/velocity.
     lines = []
     for c in candidates:
-        c["_momentum"] = {
-            "momentumScore": c["momentumScore"],
+        m = {
+            "momentumScore": _engagement_weighted_score(c["momentumScore"], c),
             "velocity": c["velocity"],
             "acceleration": c["acceleration"],
             # Legacy fields expected by write_hype_post — not computed in the
@@ -137,14 +172,37 @@ async def fetch_trending_repos() -> str:
             "avgStarsPerWeekSinceCreation": 0.0,
             "sustainedSixWeekGrowth": False,
         }
+        c["_momentum"] = m
         lines.append(
             f"- {c['title']} | {c['url']}\n"
-            f"  stars={c['stars']} | momentumScore={c['momentumScore']} | "
-            f"velocity={c['velocity']} | acceleration={c['acceleration']}\n"
+            f"  stars={c['stars']} | momentumScore={m['momentumScore']} | "
+            f"velocity={c['velocity']} | acceleration={c['acceleration']} | "
+            f"{_engagement_line(c)}\n"
             f"  desc: {c['description'][:120]}"
         )
     _CANDIDATE_CACHE.update({c["url"]: c for c in candidates})
     return "\n".join(lines)
+
+
+def _engagement_weighted_score(score: float, candidate: dict) -> float:
+    """Add HN engagement (post-gate) to a candidate's momentum score, capped at 100."""
+    eng = candidate.get("_hn_engagement")
+    if not eng:
+        return score
+    return min(100.0, score + engagement_boost(eng["points"], eng["comments"]))
+
+
+def _engagement_line(candidate: dict) -> str:
+    """One evidence line for the LLM: HN engagement when measured, plus the
+    corroborating sources (a Reddit-only candidate still shows its sources)."""
+    eng = candidate.get("_hn_engagement")
+    sources = ",".join(candidate.get("corroborated_by", []))
+    if not eng:
+        return f"hn=None | corroborated_by={sources}" if sources else "hn=None"
+    return (
+        f"hn_points={eng['points']} | hn_comments={eng['comments']} | "
+        f"corroborated_by={sources}"
+    )
 
 
 _CANDIDATE_CACHE: dict[str, dict] = {}
@@ -182,6 +240,22 @@ async def write_hype_post(repo_url: str, verdict: str) -> str:
         c["stars"],
         m["sustainedSixWeekGrowth"],
     )
+    summary_extras = []
+    eng = c.get("_hn_engagement")
+    if eng:
+        engagement_line = hn_engagement_copy(eng["points"], eng["comments"])
+        blurb = f"{blurb} {engagement_line}"
+        summary_extras.append(engagement_line.rstrip("."))
+        if eng.get("top_comment"):
+            blurb = (
+                f"{blurb} "
+                + community_quote_copy(
+                    eng["top_comment"]["author"], eng["top_comment"]["text"]
+                )
+            )
+    corroborated_by = c.get("corroborated_by") or []
+    if corroborated_by:
+        summary_extras.append("corroborated_by=" + ",".join(corroborated_by))
 
     project_doc = {
         "url": c["url"],
@@ -204,6 +278,7 @@ async def write_hype_post(repo_url: str, verdict: str) -> str:
             f"GitHub stars={c['stars']}; avg since creation="
             f"{m['avgStarsPerWeekSinceCreation']}/wk; "
             f"6-week sustained={'yes' if m['sustainedSixWeekGrowth'] else 'not proven'}"
+            + ("; " + "; ".join(summary_extras) if summary_extras else "")
         ),
     }
     post_id = await write_post(

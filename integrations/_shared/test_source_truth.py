@@ -2200,6 +2200,13 @@ async def test_runner_stops_an_agent_invocation_that_exceeds_its_deadline(monkey
         lambda *_args, **_kwargs: FakeCheckpointer(),
     )
     monkeypatch.setattr(port_client, "upsert_agent", lambda *_args: {"ok": True})
+    # The doctor preflight makes live credential calls; this test is about
+    # deadline enforcement, so the doctor is stubbed out (it has its own
+    # hermetic suite in _shared/test_doctor.py).
+    async def fake_preflight(agent_handle):
+        return []
+
+    monkeypatch.setattr(runner_module.doctor, "preflight", fake_preflight)
     monkeypatch.setattr(
         runner_module.write_post,
         "repair_pending_posts",

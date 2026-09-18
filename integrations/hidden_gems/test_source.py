@@ -61,6 +61,12 @@ async def test_breakout_returns_only_passing_repos(db, monkeypatch):
 
     monkeypatch.setattr(source, "track_daily_snapshots", fake_track)
 
+    # No HN story → no engagement boost → the raw gate score is asserted below.
+    async def fake_engagement(repo_url, client=None):
+        return None
+
+    monkeypatch.setattr(source, "fetch_hn_engagement", fake_engagement)
+
     async_db = mongo._get_db()
 
     # Accelerating repo: 14 days, stars growing from 20→72 (4/day)
@@ -125,6 +131,12 @@ async def test_breakout_excludes_recently_published(db, monkeypatch):
 
     monkeypatch.setattr(source, "track_daily_snapshots", fake_track)
 
+    # Hermetic even if the gate order changes: no live HN in tests.
+    async def fake_engagement(repo_url, client=None):
+        return None
+
+    monkeypatch.setattr(source, "fetch_hn_engagement", fake_engagement)
+
     async_db = mongo._get_db()
     repo_url = "https://github.com/test/recently-published"
 
@@ -172,6 +184,12 @@ async def test_breakout_cooldown_counts_from_newest_post(db, monkeypatch):
         return 0
 
     monkeypatch.setattr(source, "track_daily_snapshots", fake_track)
+
+    # Hermetic even if the gate order changes: no live HN in tests.
+    async def fake_engagement(repo_url, client=None):
+        return None
+
+    monkeypatch.setattr(source, "fetch_hn_engagement", fake_engagement)
 
     async_db = mongo._get_db()
     repo_url = "https://github.com/test/gems-newest-post-cooldown"
@@ -227,3 +245,72 @@ async def test_breakout_returns_empty_when_no_history(db, monkeypatch):
     async_db = mongo._get_db()
     results = await source.fetch_breakout_candidates(async_db)
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_breakout_engagement_boost_applied_post_gate(db, monkeypatch):
+    """HN engagement raises the PUBLISHED score, never the gate decision.
+
+    The pool-scaled threshold is computed from raw gate scores; the boost is
+    applied after, so a repo cannot gate-crash via HN points — but a repo
+    that passed carries engagement-weighted momentum and HN evidence fields.
+    """
+    from hidden_gems import source
+
+    async def fake_track(db):
+        return 0
+
+    monkeypatch.setattr(source, "track_daily_snapshots", fake_track)
+
+    repo_url = "https://github.com/test/engagement-boosted"
+    holder = {"engagement": None}
+
+    async def fake_engagement(url, client=None):
+        assert url == repo_url
+        return holder["engagement"]
+
+    monkeypatch.setattr(source, "fetch_hn_engagement", fake_engagement)
+
+    async_db = mongo._get_db()
+    accel_stars = [20 + i * 4 for i in range(14)]
+    accel_snaps = _snapshots(accel_stars, forks=10)
+    for s in accel_snaps:
+        s["projectId"] = repo_url
+
+    db.signals.delete_many({"projectId": repo_url})
+    db.posts.delete_many({"project.url": repo_url})
+    db.signals.insert_many(accel_snaps)
+
+    try:
+        # Pass 1: no HN story — the raw gate score.
+        raw = [
+            r
+            for r in await source.fetch_breakout_candidates(async_db)
+            if r["url"] == repo_url
+        ]
+        assert len(raw) == 1
+        base_score = raw[0]["momentumScore"]
+        assert "hn_points" not in raw[0]
+
+        # Pass 2: front-page HN story — published score rises by the boost.
+        holder["engagement"] = {
+            "points": 200,
+            "comments": 100,
+            "story_url": "https://news.ycombinator.com/item?id=1",
+            "story_title": "Show HN: Engagement boosted",
+            "top_comment": {"author": "alice", "text": "genuinely useful"},
+        }
+        boosted = [
+            r
+            for r in await source.fetch_breakout_candidates(async_db)
+            if r["url"] == repo_url
+        ]
+        assert len(boosted) == 1
+        expected = min(100, base_score + 15)  # full points (10) + comments (5)
+        assert boosted[0]["momentumScore"] == expected
+        assert boosted[0]["hn_points"] == 200
+        assert boosted[0]["hn_comments"] == 100
+        assert boosted[0]["hn_top_comment"]["author"] == "alice"
+    finally:
+        db.signals.delete_many({"projectId": repo_url})
+        db.posts.delete_many({"project.url": repo_url})

@@ -25,9 +25,21 @@ def _candidate(url: str, stars: int, forks: int) -> dict:
     }
 
 
+def _bypass_corroboration(monkeypatch):
+    """These tests exercise the legacy gates; the corroboration gate (which
+    calls live HN/Reddit) has its own hermetic suite in _shared."""
+
+    async def pass_through(candidates, **kwargs):
+        return candidates
+
+    monkeypatch.setattr(agent, "corroborated_candidates", pass_through)
+
+
 @pytest.mark.asyncio
 async def test_legacy_path_filters_fake_stars(monkeypatch):
     """Legacy fallback applies passes_fake_star_filter to candidates."""
+
+    _bypass_corroboration(monkeypatch)
 
     async def empty_momentum(db):
         return []
@@ -70,6 +82,8 @@ async def test_legacy_path_filters_fake_stars(monkeypatch):
 async def test_legacy_path_applies_cooldown(monkeypatch):
     """Legacy fallback skips repos posted < 7 days ago."""
 
+    _bypass_corroboration(monkeypatch)
+
     mock_db = MagicMock()
 
     async def mock_find_one(query, *args, **kwargs):
@@ -110,6 +124,45 @@ async def test_legacy_path_applies_cooldown(monkeypatch):
 
     assert "repo-b" in result
     assert "repo-a" not in result
+
+
+@pytest.mark.asyncio
+async def test_momentum_pool_emptied_by_corroboration_does_not_fall_back(monkeypatch):
+    """A momentum pool the corroboration gate empties is reported as-is.
+
+    Regression guard: the gate's "nothing reached consensus today" outcome
+    must NOT fall through to the weaker legacy bar — the momentum gate has
+    already rejected those repos once today.
+    """
+    mock_db = MagicMock()
+    monkeypatch.setattr(agent.mongo, "_get_db", lambda: mock_db)
+
+    candidate = _candidate("https://github.com/test/gated-repo", 100, 10)
+
+    async def momentum_candidates(db):
+        return [candidate]
+
+    monkeypatch.setattr(
+        agent, "fetch_trending_candidates_with_momentum", momentum_candidates
+    )
+
+    async def drop_everything(candidates, **kwargs):
+        return []  # the gate empties the pool
+
+    monkeypatch.setattr(agent, "corroborated_candidates", drop_everything)
+
+    legacy_called = []
+
+    async def legacy_fetch(max_results=10):
+        legacy_called.append(max_results)
+        return [candidate]
+
+    monkeypatch.setattr(agent, "fetch_trending_candidates", legacy_fetch)
+
+    result = await agent.fetch_trending_repos.ainvoke({})
+
+    assert "cross-source corroboration" in result
+    assert legacy_called == [], "legacy fallback must not run for a gated pool"
 
 
 # ─── write_hype_post cross-agent cooldown guard ───

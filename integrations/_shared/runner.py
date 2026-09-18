@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from langgraph.checkpoint.mongodb import MongoDBSaver  # noqa: E402
 
 from _shared import mongo  # noqa: E402
-from _shared import port_client, write_post  # noqa: E402
+from _shared import doctor, port_client, write_post  # noqa: E402
 
 AGENT_INVOCATION_TIMEOUT_SECONDS = 20 * 60
 
@@ -114,6 +114,14 @@ async def _run_agent_cycle(
     agent_handle, agent_name, agent_bio, source_type, build_agent_fn
 ):
     """Run one cycle while its MongoDB client remains owned by this loop."""
+    # 0. Source doctor: live credential/source health into the run log.
+    #    Diagnostics only — a FAIL here must not kill the run before the
+    #    runner's own health semantics (agent_was_active/_run_ok) can speak.
+    try:
+        await doctor.preflight(agent_handle)
+    except Exception as e:
+        print(f"[doctor] preflight skipped: {e}", file=sys.stderr, flush=True)
+
     # 1. Ensure the agent exists in the Port catalog
     port_client.require_success(
         port_client.upsert_agent(agent_handle, agent_name, agent_bio, source_type),

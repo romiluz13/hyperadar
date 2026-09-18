@@ -357,3 +357,51 @@ def test_publishing_gate_score_threshold_none_uses_default():
     assert not should_publish_hidden_gem(
         40, 5, 2, 0.1, 999, True, score_threshold=None
     )
+
+
+# --- Engagement boost tests ---
+
+
+def test_engagement_boost_adds_to_total():
+    """External HN attention adds to the momentum total, post-gate."""
+    history = []
+    s = 20
+    for _ in range(14):
+        s += 5
+        history.append(_snapshot(s, s // 10))
+    base_score = compute_momentum_score(history)
+    boosted = compute_momentum_score(history, engagement_boost=15)
+    assert boosted == base_score + 15
+
+
+def test_engagement_boost_partial_adds_proportionally():
+    history = [_snapshot(100 + i * 5, 10) for i in range(14)]
+    base_score = compute_momentum_score(history)
+    boosted = compute_momentum_score(history, engagement_boost=7)
+    assert boosted == base_score + 7
+
+
+def test_engagement_boost_clamped_to_100():
+    """The boost cannot push a score above the 100 ceiling."""
+    history = []
+    s = 0
+    for day in range(30):
+        s += 100 + day * 10
+        history.append(_snapshot(s, s))
+    score = compute_momentum_score(history, engagement_boost=15)
+    assert score == 100
+
+
+def test_engagement_boost_negative_is_clamped_to_zero():
+    """A malformed negative boost must never subtract from GitHub signals."""
+    history = [_snapshot(100 + i * 5, 10) for i in range(14)]
+    base_score = compute_momentum_score(history)
+    assert compute_momentum_score(history, engagement_boost=-5) == base_score
+
+
+def test_engagement_boost_default_is_zero():
+    """Backward compatibility: no boost argument → unchanged score."""
+    history = [_snapshot(100 + i * 5, 10) for i in range(14)]
+    assert compute_momentum_score(history) == compute_momentum_score(
+        history, engagement_boost=0
+    )

@@ -143,7 +143,11 @@ def _viral_bonus(history: Sequence[dict]) -> int:
     return 0
 
 
-def compute_momentum_score(history: Sequence[dict], prior_post_count: int = 0) -> int:
+def compute_momentum_score(
+    history: Sequence[dict],
+    prior_post_count: int = 0,
+    engagement_boost: int = 0,
+) -> int:
     """Compute a 0–100 Momentum Score from a repo's signal history.
 
     Each history entry is a daily snapshot with at least:
@@ -159,6 +163,12 @@ def compute_momentum_score(history: Sequence[dict], prior_post_count: int = 0) -
     - Consistency (10%): positive velocity across multiple windows
     + Viral Bonus (+10): if >5× baseline spike
     + Novelty Bonus (+5/+3/0): first/second/3+ publication
+    + Engagement Boost (0–15): HN points/comments measured on the same repo
+      (applied after the pool-scaled gate so the threshold distribution stays
+      GitHub-native)
+
+    ``engagement_boost`` is a positive-only addition; negative values are
+    clamped to 0.
     """
     if not history or len(history) < 2:
         return 0
@@ -209,6 +219,7 @@ def compute_momentum_score(history: Sequence[dict], prior_post_count: int = 0) -
         + consistency_score
         + bonus
         + novelty_bonus
+        + max(0, engagement_boost)
     )
     return min(100, max(0, total))
 
