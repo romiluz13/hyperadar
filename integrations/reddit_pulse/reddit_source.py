@@ -124,13 +124,30 @@ async def _last_posted_days(db, project_url: str) -> int:
     return max(0, delta.days)
 
 
-async def _save_reddit_snapshot(db, url: str, upvotes: int, comments: int) -> None:
-    """Save a per-run engagement snapshot for delta-based discovery."""
+async def _save_reddit_snapshot(
+    db,
+    url: str,
+    upvotes: int,
+    comments: int,
+    title: str = "",
+    description: str = "",
+    subreddit: str = "",
+) -> None:
+    """Save a per-run engagement snapshot for delta-based discovery.
+
+    The snapshot doubles as the cross-source corroboration corpus: title +
+    description let the @github-radar gate match repos mentioned in threads
+    (including threads that never became posts), so the text fields are part
+    of the contract, not decoration.
+    """
     await db.reddit_post_snapshots.insert_one(
         {
             "url": _normalize_reddit_url(url),
             "upvotes": upvotes,
             "comments": comments,
+            "title": title[:200],
+            "description": description[:500],
+            "subreddit": subreddit,
             "capturedAt": datetime.now(timezone.utc),
         }
     )
@@ -290,7 +307,15 @@ async def fetch_reddit_candidates(max_results: int = 10, db=None) -> list[dict]:
         prior = await _last_reddit_snapshot(db, c["url"])
         prior_upvotes = prior.get("upvotes", 0) if prior else 0
         c["upvotes_delta"] = max(0, c["num_upvotes"] - prior_upvotes)
-        await _save_reddit_snapshot(db, c["url"], c["num_upvotes"], c["num_comments"])
+        await _save_reddit_snapshot(
+            db,
+            c["url"],
+            c["num_upvotes"],
+            c["num_comments"],
+            title=c["title"],
+            description=c["description"],
+            subreddit=c.get("subreddit", ""),
+        )
 
     # Attach heat scores to all unique candidates (before the gate).
     attach_reddit_heat(unique)

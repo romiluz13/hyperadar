@@ -13,6 +13,7 @@ run health is decided by ``_run_ok``.
 """
 
 import os
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -26,8 +27,15 @@ _YOUTUBE_API = "https://www.googleapis.com/youtube/v3/videos"
 
 # Which checks each agent's run actually depends on. Keyed by agent handle.
 AGENT_CHECKS = {
-    # github-radar's corroboration gate + engagement boost depend on HN.
-    "@github-radar": ("grove", "mongodb", "github_token", "hn_algolia"),
+    # github-radar's corroboration gate depends on HN and on the
+    # @reddit-pulse corpus (Reddit's public search API is 403-blocked).
+    "@github-radar": (
+        "grove",
+        "mongodb",
+        "github_token",
+        "hn_algolia",
+        "reddit_corpus",
+    ),
     # hidden-gems depends on HN for discovery and the engagement boost. Its
     # arXiv source was removed (export.arxiv.org unreliably 406s the Python
     # client), so no arxiv check is required.
@@ -198,6 +206,31 @@ async def check_brightdata() -> dict:
     return _fail("brightdata", "BRIGHTDATA_API_KEY not set")
 
 
+async def check_reddit_corpus() -> dict:
+    """Fresh @reddit-pulse snapshots: the gate's Reddit leg depends on them.
+
+    Reddit's public search API 403-blocks unauthenticated clients, so the
+    corroboration gate matches against the corpus @reddit-pulse collects.
+    A corpus older than two days means the Reddit leg is blind — the gate
+    still runs on HN alone, but the operator should know.
+    """
+    try:
+        db = mongo._get_db()
+        since = datetime.now(timezone.utc) - timedelta(hours=48)
+        count = await db.reddit_post_snapshots.count_documents(
+            {"capturedAt": {"$gte": since}}
+        )
+    except Exception as e:
+        return _fail("reddit_corpus", f"count query failed: {e}")
+    if count > 0:
+        return _ok("reddit_corpus", f"{count} thread snapshots in the last 48h")
+    return _fail(
+        "reddit_corpus",
+        "no snapshots in the last 48h — @reddit-pulse is stale or never ran; "
+        "the gate's Reddit leg is blind",
+    )
+
+
 CHECKS = {
     "grove": check_grove,
     "mongodb": check_mongodb,
@@ -206,6 +239,7 @@ CHECKS = {
     "rombot": check_rombot,
     "youtube_key": check_youtube_key,
     "brightdata": check_brightdata,
+    "reddit_corpus": check_reddit_corpus,
 }
 
 

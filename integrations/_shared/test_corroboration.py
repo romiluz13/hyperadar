@@ -1,8 +1,10 @@
 """Tests for the cross-source corroboration gate (2+ sources to publish)."""
 
+import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -54,7 +56,7 @@ async def test_keeps_candidate_with_two_sources():
     async def hn_fetch(url):
         return _HN_STORY
 
-    async def reddit_fetch(url):
+    async def reddit_fetch(url, corpus=None):
         return False
 
     kept = await corroboration.corroborated_candidates(
@@ -70,7 +72,7 @@ async def test_keeps_candidate_with_reddit_instead_of_hn():
     async def hn_fetch(url):
         return None
 
-    async def reddit_fetch(url):
+    async def reddit_fetch(url, corpus=None):
         return True
 
     kept = await corroboration.corroborated_candidates(
@@ -88,7 +90,7 @@ async def test_drops_single_source_candidate():
     async def hn_fetch(url):
         return None
 
-    async def reddit_fetch(url):
+    async def reddit_fetch(url, corpus=None):
         return False
 
     kept = await corroboration.corroborated_candidates(
@@ -102,7 +104,7 @@ async def test_reddit_unknown_does_not_corroborate():
     async def hn_fetch(url):
         return None
 
-    async def reddit_fetch(url):
+    async def reddit_fetch(url, corpus=None):
         return None  # blocked / failed check
 
     kept = await corroboration.corroborated_candidates(
@@ -116,7 +118,7 @@ async def test_both_external_sources_listed():
     async def hn_fetch(url):
         return _HN_STORY
 
-    async def reddit_fetch(url):
+    async def reddit_fetch(url, corpus=None):
         return True
 
     kept = await corroboration.corroborated_candidates(
@@ -130,7 +132,7 @@ async def test_filters_per_candidate():
     async def hn_fetch(url):
         return _HN_STORY if "hot-repo" in url else None
 
-    async def reddit_fetch(url):
+    async def reddit_fetch(url, corpus=None):
         return False
 
     kept = await corroboration.corroborated_candidates(
@@ -286,3 +288,192 @@ async def test_reddit_mention_non_github_url_returns_none():
     result = await corroboration.fetch_reddit_mention("https://example.com", client)
     assert result is None
     assert client.calls == []
+
+
+# ─── corpus leg (@reddit-pulse snapshots) ───
+
+
+class _FakeCursor:
+    def __init__(self, docs):
+        self._docs = list(docs)
+
+    async def to_list(self, length=None):
+        return self._docs
+
+
+class _FakeSnapshots:
+    def __init__(self, docs):
+        self._docs = list(docs)
+        self.queries = []
+
+    def find(self, query, projection):
+        self.queries.append(query)
+        return _FakeCursor(self._docs)
+
+
+class _FakeDb:
+    def __init__(self, docs):
+        self.reddit_post_snapshots = _FakeSnapshots(docs)
+
+
+class _NoNetworkClient:
+    """Any live call during a corpus-authoritative test is a bug."""
+
+    async def get(self, url, **kwargs):
+        raise AssertionError(f"live Reddit search must not run: {url}")
+
+
+@pytest.mark.asyncio
+async def test_corpus_mention_in_title():
+    """The corpus answers authoritatively — no live Reddit call at all."""
+    result = await corroboration.fetch_reddit_mention(
+        "https://github.com/owner/repo",
+        _NoNetworkClient(),
+        corpus=["Show HN-adjacent: owner/repo is great"],
+    )
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_corpus_mention_in_description_case_insensitive():
+    result = await corroboration.fetch_reddit_mention(
+        "https://github.com/owner/repo",
+        _NoNetworkClient(),
+        corpus=["anyone tried this? ", "paper thread about Owner/Repo here"],
+    )
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_corpus_mention_requires_slug_boundary():
+    """A thread about owner/repo-utils must not corroborate owner/repo."""
+    result = await corroboration.fetch_reddit_mention(
+        "https://github.com/owner/repo",
+        _NoNetworkClient(),
+        corpus=["owner/repo-utils discussion", "check out owner/repo2"],
+    )
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_empty_corpus_falls_back_to_live():
+    """No @reddit-pulse data → the (usually blocked) live leg is the fallback."""
+    now = time.time()
+    payload = {
+        "data": {
+            "children": [
+                {"data": {"title": "owner/repo thread", "created_utc": now - 60}}
+            ]
+        }
+    }
+    client = _FakeClient([_Response(payload=payload)])
+    result = await corroboration.fetch_reddit_mention(
+        "https://github.com/owner/repo", client, corpus=[]
+    )
+    assert result is True
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_corpus_absent_falls_back_to_live():
+    payload = {"data": {"children": []}}
+    client = _FakeClient([_Response(payload=payload)])
+    result = await corroboration.fetch_reddit_mention(
+        "https://github.com/owner/repo", client, corpus=None
+    )
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_load_reddit_corpus_reads_window_and_text():
+    db = _FakeDb(
+        [
+            {"title": "owner/repo thread", "description": "nice"},
+            {"title": "other", "description": "github.com/owner/repo discussed"},
+        ]
+    )
+    corpus = await corroboration.load_reddit_corpus(db)
+    assert corpus == [
+        "owner/repo thread nice",
+        "other github.com/owner/repo discussed",
+    ]
+    (query,) = db.reddit_post_snapshots.queries
+    since = query["capturedAt"]["$gte"]
+    age_days = (
+        datetime.now(timezone.utc) - since
+    ).total_seconds() / 86400
+    assert 13.9 < age_days < 14.1  # the corroboration window, not 30d
+
+
+@pytest.mark.asyncio
+async def test_load_reddit_corpus_db_error_returns_empty():
+    class _BrokenSnapshots:
+        def find(self, query, projection):
+            raise RuntimeError("atlas down")
+
+    class _BrokenDb:
+        reddit_post_snapshots = _BrokenSnapshots()
+
+    corpus = await corroboration.load_reddit_corpus(_BrokenDb())
+    assert corpus == []
+
+
+@pytest.mark.asyncio
+async def test_blocked_live_leg_warns_once_per_process(monkeypatch, caplog):
+    monkeypatch.setattr(corroboration, "_live_reddit_warned", False)
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            result = await corroboration.fetch_reddit_mention(
+                "https://github.com/owner/repo", _FakeClient([_Response(403)])
+            )
+            assert result is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "@reddit-pulse corpus" in warnings[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_corroborated_candidates_preloads_corpus_once():
+    """The corpus is one query per pool, not one per candidate."""
+    db = _FakeDb([{"title": "owner/hot-repo thread", "description": ""}])
+    seen = []
+
+    async def reddit_fetch(url, corpus=None):
+        seen.append(corpus)
+        slug = url.rsplit("/", 1)[-1]
+        return bool(corpus and any(slug in t for t in corpus))
+
+    async def hn_fetch(url):
+        return None
+
+    kept = await corroboration.corroborated_candidates(
+        [
+            _candidate(url="https://github.com/owner/hot-repo"),
+            _candidate(url="https://github.com/owner/cold-repo"),
+        ],
+        db=db,
+        hn_fetch=hn_fetch,
+        reddit_fetch=reddit_fetch,
+    )
+    assert len(db.reddit_post_snapshots.queries) == 1
+    assert seen == [
+        ["owner/hot-repo thread "],
+        ["owner/hot-repo thread "],
+    ]
+    assert [c["url"] for c in kept] == ["https://github.com/owner/hot-repo"]
+    assert kept[0]["corroborated_by"] == ["github", "reddit"]
+
+
+@pytest.mark.asyncio
+async def test_corroborated_candidates_without_db_passes_none_corpus():
+    async def reddit_fetch(url, corpus=None):
+        assert corpus is None
+        return False
+
+    async def hn_fetch(url):
+        return _HN_STORY
+
+    kept = await corroboration.corroborated_candidates(
+        [_candidate()], hn_fetch=hn_fetch, reddit_fetch=reddit_fetch
+    )
+    assert len(kept) == 1

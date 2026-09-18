@@ -39,6 +39,7 @@ def test_required_checks_per_agent():
         "mongodb",
         "github_token",
         "hn_algolia",  # the corroboration gate + engagement boost need HN
+        "reddit_corpus",  # the gate's Reddit leg matches against this corpus
     )
     # hidden-gems depends on HN for discovery and engagement.
     assert "hn_algolia" in doctor.required_checks("@hidden-gems")
@@ -69,19 +70,24 @@ async def test_preflight_prints_lines_and_never_raises(capsys, monkeypatch):
     async def fake_hn_algolia():
         return {"name": "hn_algolia", "status": "ok", "detail": "search API reachable"}
 
+    async def fake_reddit_corpus():
+        return {"name": "reddit_corpus", "status": "ok", "detail": "42 snapshots"}
+
     monkeypatch.setitem(doctor.CHECKS, "grove", fake_grove)
     monkeypatch.setitem(doctor.CHECKS, "mongodb", fake_mongodb)
     monkeypatch.setitem(doctor.CHECKS, "github_token", fake_github_token)
     monkeypatch.setitem(doctor.CHECKS, "hn_algolia", fake_hn_algolia)
+    monkeypatch.setitem(doctor.CHECKS, "reddit_corpus", fake_reddit_corpus)
 
     results = await doctor.preflight("@github-radar")
 
-    assert [r["status"] for r in results] == ["ok", "fail", "fail", "ok"]
+    assert [r["status"] for r in results] == ["ok", "fail", "fail", "ok", "ok"]
     out = capsys.readouterr().out
     assert "[doctor] grove: OK — gateway accepted" in out
     assert "[doctor] mongodb: FAIL — ping failed: x" in out
     assert "[doctor] github_token: FAIL — check crashed: kaboom" in out
     assert "[doctor] hn_algolia: OK — search API reachable" in out
+    assert "[doctor] reddit_corpus: OK — 42 snapshots" in out
 
 
 # ─── individual checks ───
@@ -212,5 +218,52 @@ async def test_check_mongodb_ping(monkeypatch):
 
     monkeypatch.setattr(doctor.mongo, "_get_db", lambda: _BrokenDb())
     result = await doctor.check_mongodb()
+    assert result["status"] == "fail"
+    assert "atlas unreachable" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_check_reddit_corpus_fresh(monkeypatch):
+    class _FakeSnapshots:
+        async def count_documents(self, query):
+            return 42
+
+    class _FakeDb:
+        reddit_post_snapshots = _FakeSnapshots()
+
+    monkeypatch.setattr(doctor.mongo, "_get_db", lambda: _FakeDb())
+    result = await doctor.check_reddit_corpus()
+    assert result["status"] == "ok"
+    assert "42" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_check_reddit_corpus_stale_fails(monkeypatch):
+    """A stale corpus means the gate's Reddit leg is blind — must surface."""
+
+    class _FakeSnapshots:
+        async def count_documents(self, query):
+            return 0
+
+    class _FakeDb:
+        reddit_post_snapshots = _FakeSnapshots()
+
+    monkeypatch.setattr(doctor.mongo, "_get_db", lambda: _FakeDb())
+    result = await doctor.check_reddit_corpus()
+    assert result["status"] == "fail"
+    assert "blind" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_check_reddit_corpus_db_error_fails(monkeypatch):
+    class _FakeSnapshots:
+        async def count_documents(self, query):
+            raise RuntimeError("atlas unreachable")
+
+    class _FakeDb:
+        reddit_post_snapshots = _FakeSnapshots()
+
+    monkeypatch.setattr(doctor.mongo, "_get_db", lambda: _FakeDb())
+    result = await doctor.check_reddit_corpus()
     assert result["status"] == "fail"
     assert "atlas unreachable" in result["detail"]

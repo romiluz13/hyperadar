@@ -78,19 +78,28 @@ def pick_top_comment(children: list) -> dict | None:
     return None
 
 
+def slug_mentioned(slug: str, text: str) -> bool:
+    """True when ``owner/repo`` appears in *text* at a slug boundary.
+
+    Substring containment would steal stories about "owner/repo-utils" or
+    "owner/repo2" for this repo; the negative lookahead requires the match
+    to end at a non-slug character. Case-insensitive: paper abstracts and
+    thread titles write GitHub slugs in any case.
+    """
+    if not slug or not text:
+        return False
+    return bool(
+        re.search(
+            re.escape(slug) + r"(?![A-Za-z0-9_.\-])", text, re.IGNORECASE
+        )
+    )
+
+
 def _story_matches(hit: dict, repo_url: str, slug: str) -> bool:
     story_url = (hit.get("url") or "").rstrip("/")
     if story_url and story_url == (repo_url or "").rstrip("/"):
         return True
-    # Substring containment would steal stories about "owner/repo-utils" or
-    # "owner/repo2" for this repo; require a slug boundary after the match.
-    return bool(
-        re.search(
-            re.escape(slug) + r"(?![A-Za-z0-9_.\-])",
-            hit.get("title") or "",
-            re.IGNORECASE,
-        )
-    )
+    return slug_mentioned(slug, hit.get("title") or "")
 
 
 async def fetch_hn_engagement(

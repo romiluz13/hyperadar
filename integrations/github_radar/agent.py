@@ -90,7 +90,7 @@ async def fetch_trending_repos() -> str:
         # signal. A corroborated-empty pool here is a real "nothing reached
         # consensus today" outcome — it must NOT fall through to the weaker
         # legacy bar, which exists only for cold-start/no-history runs.
-        candidates = await corroborated_candidates(momentum_candidates)
+        candidates = await corroborated_candidates(momentum_candidates, db=async_db)
         if not candidates:
             return (
                 "No trending candidates passed the cross-source corroboration "
@@ -129,7 +129,13 @@ async def fetch_trending_repos() -> str:
         if not candidates:
             return "No trending candidates passed the cooldown filter today."
 
-        candidates = await corroborated_candidates(candidates)
+        # The corpus for the gate's Reddit leg lives in Mongo; without a DB
+        # the gate falls back to (usually 403-blocked) live Reddit search.
+        try:
+            gate_db = mongo._get_db()
+        except Exception:
+            gate_db = None
+        candidates = await corroborated_candidates(candidates, db=gate_db)
         if not candidates:
             return (
                 "No trending candidates passed the cross-source corroboration "

@@ -585,3 +585,31 @@ async def test_gate_rejects_below_heat_threshold(monkeypatch):
     # 20 upvotes/1h → velocity=8, recency≈18, depth=min(10,int(1/20*50))=2, novelty=10
     # total ≈ 38 < 40 → gate rejects (below threshold).
     assert source._normalize_reddit_url(lukewarm_url) not in urls
+
+
+@pytest.mark.asyncio
+async def test_snapshot_stores_thread_text_for_corpus():
+    """Snapshots double as the @github-radar corroboration corpus.
+
+    The title/description text is what the cross-source gate boundary-matches
+    repos against — losing it would silently blind the gate's Reddit leg.
+    """
+    source = load_source()
+    db = FakeDb()
+    await source._save_reddit_snapshot(
+        db,
+        "https://www.reddit.com/r/LocalLLaMA/comments/abc/?utm_source=share",
+        50,
+        10,
+        title="Check out github.com/owner/repo",
+        description="Really solid new tool",
+        subreddit="LocalLLaMA",
+    )
+    (doc,) = db.reddit_post_snapshots._docs
+    assert doc["title"] == "Check out github.com/owner/repo"
+    assert doc["description"] == "Really solid new tool"
+    assert doc["subreddit"] == "LocalLLaMA"
+    assert doc["url"] == "https://www.reddit.com/r/LocalLLaMA/comments/abc"
+    assert doc["upvotes"] == 50
+    assert doc["comments"] == 10
+    assert "capturedAt" in doc
