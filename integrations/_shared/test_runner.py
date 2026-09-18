@@ -61,3 +61,48 @@ def test_extract_tool_trace_handles_missing_messages_key():
     """A result without a 'messages' key yields an empty trace, not a crash."""
     result = {"other": "data"}
     assert runner._extract_tool_trace(result) == []
+
+
+# ─── Run health (_run_ok): quiet days are healthy, silent runs are not ───
+
+
+def test_run_ok_synced_posts_pass():
+    """The normal day: posts written and synced, nothing pending."""
+    assert runner._run_ok(
+        posts_written=5, synced_this_run=5, pending_port_syncs=0, agent_was_active=True
+    )
+
+
+def test_run_ok_healthy_quiet_day_passes():
+    """0 posts with the agent actively fetching/writing = gates did their job.
+
+    The pool-scaled threshold and republish cooldown can legitimately reject
+    every candidate. That must not fail the run (hidden-gems 2026-09-18).
+    """
+    assert runner._run_ok(
+        posts_written=0, synced_this_run=0, pending_port_syncs=0, agent_was_active=True
+    )
+
+
+def test_run_ok_silent_agent_fails():
+    """0 posts and the agent never called a fetch_*/write_* tool = broken run.
+
+    community-radar's source 401: tool_trace showed no fetch or write call.
+    """
+    assert not runner._run_ok(
+        posts_written=0, synced_this_run=0, pending_port_syncs=0, agent_was_active=False
+    )
+
+
+def test_run_ok_pending_syncs_fail():
+    """Posts stuck pending Port sync fail even when the agent was active."""
+    assert not runner._run_ok(
+        posts_written=2, synced_this_run=0, pending_port_syncs=2, agent_was_active=True
+    )
+
+
+def test_run_ok_written_but_never_synced_fails():
+    """Posts written this run, none synced, none pending = suspicious state."""
+    assert not runner._run_ok(
+        posts_written=3, synced_this_run=0, pending_port_syncs=0, agent_was_active=True
+    )

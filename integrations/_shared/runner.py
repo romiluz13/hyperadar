@@ -54,7 +54,13 @@ def _extract_tool_trace(result) -> list[str]:
     return tool_calls
 
 
-async def summarize_run(agent_handle: str, thread_id: str, start_of_day: datetime):
+async def summarize_run(
+    agent_handle: str,
+    thread_id: str,
+    start_of_day: datetime,
+    *,
+    agent_was_active: bool,
+):
     posts_today = await mongo.db.posts.count_documents(
         {"agentHandle": agent_handle, "postedAt": {"$gte": start_of_day}}
     )
@@ -73,8 +79,25 @@ async def summarize_run(agent_handle: str, thread_id: str, start_of_day: datetim
         "posts_written": posts_written,
         "synced_this_run": synced_this_run,
         "pending_port_syncs": pending_port_syncs,
-        "ok": synced_this_run > 0 and pending_port_syncs == 0,
+        "ok": _run_ok(
+            posts_written, synced_this_run, pending_port_syncs, agent_was_active
+        ),
     }
+
+
+def _run_ok(posts_written, synced_this_run, pending_port_syncs, agent_was_active):
+    """A run is healthy when Port sync is clean AND the agent actually worked.
+
+    A quiet day — every candidate gated by the pool-scaled threshold or the
+    republish cooldown, 0 posts — is the system working as designed, not a
+    failure. A run where the agent never called a fetch_*/write_* tool (broken
+    source or broken agent) or left Port syncs pending is a failure.
+    """
+    if pending_port_syncs != 0:
+        return False
+    if synced_this_run > 0:
+        return True
+    return posts_written == 0 and agent_was_active
 
 
 async def run_agent(agent_handle, agent_name, agent_bio, source_type, build_agent_fn):
@@ -126,12 +149,13 @@ async def _run_agent_cycle(
     finally:
         write_post.current_run_id.reset(token)
 
-    # Log the LLM tool-call trace so the next "wrote 0" event is self-diagnosing:
-    # candidates_returned=0 + write_calls=0 = gate/cooldown (working as designed);
-    # candidates_returned=N + write_calls=0 = a real LLM bug worth chasing.
+    # Log the LLM tool-call trace so a "wrote 0" event is self-diagnosing:
+    # fetch_calls>0 + write_calls=0 = gate/cooldown (healthy quiet day);
+    # fetch_calls=0 + write_calls=0 = a broken source or agent worth chasing.
     tool_calls = _extract_tool_trace(result)
     write_call_count = sum(1 for n in tool_calls if n.startswith("write_"))
     fetch_call_count = sum(1 for n in tool_calls if n.startswith("fetch_"))
+    agent_was_active = (fetch_call_count + write_call_count) > 0
     print(
         f"{agent_handle} runner: fetch_calls={fetch_call_count} "
         f"write_calls={write_call_count} tool_trace={tool_calls}",
@@ -139,7 +163,9 @@ async def _run_agent_cycle(
     )
 
     # 3. Count posts created today by this agent
-    summary = await summarize_run(agent_handle, thread_id, start_of_day)
+    summary = await summarize_run(
+        agent_handle, thread_id, start_of_day, agent_was_active=agent_was_active
+    )
     if summary["ok"]:
         port_client.require_success(
             port_client.record_agent_success(agent_handle),

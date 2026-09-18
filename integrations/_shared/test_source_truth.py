@@ -2038,7 +2038,9 @@ async def test_run_summary_requires_current_run_sync_and_no_historical_pending(d
         }
     ).inserted_id
     try:
-        no_op = await summarize_run(agent_handle, current_run, start_of_day)
+        no_op = await summarize_run(
+            agent_handle, current_run, start_of_day, agent_was_active=False
+        )
         assert no_op["posts_today"] == 1
         assert no_op["synced_this_run"] == 0
         assert no_op["ok"] is False
@@ -2046,7 +2048,9 @@ async def test_run_summary_requires_current_run_sync_and_no_historical_pending(d
         db.posts.update_one(
             {"_id": synced_id}, {"$set": {"portSyncedByRunId": current_run}}
         )
-        converged = await summarize_run(agent_handle, current_run, start_of_day)
+        converged = await summarize_run(
+            agent_handle, current_run, start_of_day, agent_was_active=False
+        )
         assert converged["ok"] is True
 
         db.posts.insert_one(
@@ -2056,7 +2060,9 @@ async def test_run_summary_requires_current_run_sync_and_no_historical_pending(d
                 "portSyncStatus": "pending",
             }
         )
-        blocked = await summarize_run(agent_handle, current_run, start_of_day)
+        blocked = await summarize_run(
+            agent_handle, current_run, start_of_day, agent_was_active=False
+        )
         assert blocked["pending_port_syncs"] == 1
         assert blocked["ok"] is False
     finally:
