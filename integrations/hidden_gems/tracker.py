@@ -16,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from _shared.star_history import backfill_star_history
+
 _github_token = os.environ.get("GITHUB_TOKEN", "")
 _headers = (
     {"Authorization": f"token {_github_token}", "Accept": "application/vnd.github+json"}
@@ -110,7 +112,11 @@ async def track_daily_snapshots(db) -> int:
     - github_forks: current fork count
 
     Idempotent: if a snapshot already exists for this repo+day, skip it.
-    Returns count of new snapshots stored.
+    Cold-start backfill: a repo whose snapshot history is too sparse for the
+    momentum gate (see ``_shared.star_history``) gets its real GitHub star
+    history seeded from the official star-history API, so the repo is
+    scoreable the day it is first discovered instead of after 7+ days.
+    Returns count of new snapshots stored (today's + backfilled).
     """
     now = datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -130,18 +136,23 @@ async def track_daily_snapshots(db) -> int:
                 "capturedAt": {"$gte": day_start, "$lt": day_end},
             }
         )
-        if existing:
-            continue
+        if not existing:
+            await db.signals.insert_one(
+                {
+                    "capturedAt": now,
+                    "projectId": project_id,
+                    "postId": "",
+                    "github_stars": candidate["github_stars"],
+                    "github_forks": candidate["github_forks"],
+                }
+            )
+            new_count += 1
 
-        await db.signals.insert_one(
-            {
-                "capturedAt": now,
-                "projectId": project_id,
-                "postId": "",
-                "github_stars": candidate["github_stars"],
-                "github_forks": candidate["github_forks"],
-            }
+        # Cold-start backfill runs even when today's snapshot already exists
+        # (a repo tracked for 3 days still has gaps to fill); it no-ops once
+        # the repo's history is dense enough.
+        new_count += await backfill_star_history(
+            db, project_id, candidate["github_stars"], candidate["github_forks"]
         )
-        new_count += 1
 
     return new_count

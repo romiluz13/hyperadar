@@ -8,6 +8,11 @@ import pytest
 from _shared import mongo
 
 
+async def _no_backfill(db, project_id, current_stars, current_forks):
+    """Hermetic stand-in for the star-history backfill (no network in tests)."""
+    return 0
+
+
 def test_discovery_bands_rotate_daily():
     """Four consecutive days use four different discovery bands, then cycle.
 
@@ -83,6 +88,7 @@ async def test_track_daily_snapshots_inserts_new_signals(db, monkeypatch):
         return []
 
     monkeypatch.setattr(tracker, "_trending_candidates", no_trending)
+    monkeypatch.setattr(tracker, "backfill_star_history", _no_backfill)
 
     async_db = mongo._get_db()
     # Clean up any pre-existing data for our test repos
@@ -134,6 +140,7 @@ async def test_track_daily_snapshots_idempotent(db, monkeypatch):
         return []
 
     monkeypatch.setattr(tracker, "_trending_candidates", no_trending)
+    monkeypatch.setattr(tracker, "backfill_star_history", _no_backfill)
 
     async_db = mongo._get_db()
     async_db_sync = db
@@ -174,6 +181,7 @@ async def test_track_daily_snapshots_empty_candidates(db, monkeypatch):
         return []
 
     monkeypatch.setattr(tracker, "_trending_candidates", no_trending)
+    monkeypatch.setattr(tracker, "backfill_star_history", _no_backfill)
 
     async_db = mongo._get_db()
     count = await tracker.track_daily_snapshots(async_db)
@@ -284,6 +292,7 @@ async def test_track_daily_snapshots_merges_trending_after_search(db, monkeypatc
         return [overlap, trending_only]
 
     monkeypatch.setattr(tracker, "_trending_candidates", fake_trending)
+    monkeypatch.setattr(tracker, "backfill_star_history", _no_backfill)
 
     async_db = mongo._get_db()
     urls = [search_repo["url"], trending_only["url"]]
@@ -295,3 +304,46 @@ async def test_track_daily_snapshots_merges_trending_after_search(db, monkeypatc
         assert len(stored) == 2
     finally:
         db.signals.delete_many({"projectId": {"$in": urls}})
+
+
+@pytest.mark.asyncio
+async def test_track_daily_snapshots_backfills_cold_start_repo(db, monkeypatch):
+    """A repo seen for the first time gets today's snapshot PLUS a
+    star-history backfill — scoreable from day one instead of after 7+ days
+    of our own snapshots."""
+    from github_radar import tracker
+
+    candidate = {
+        "url": "https://github.com/test/cold-start-repo",
+        "github_stars": 250,
+        "github_forks": 25,
+    }
+
+    async def fake_search(client):
+        return [candidate]
+
+    monkeypatch.setattr(tracker, "_search_candidates", fake_search)
+
+    async def no_trending(client):
+        return []
+
+    monkeypatch.setattr(tracker, "_trending_candidates", no_trending)
+
+    backfill_calls = []
+
+    async def fake_backfill(db_, project_id, current_stars, current_forks):
+        backfill_calls.append((project_id, current_stars, current_forks))
+        return 5  # pretend GitHub returned five weeks of history
+
+    monkeypatch.setattr(tracker, "backfill_star_history", fake_backfill)
+
+    async_db = mongo._get_db()
+    db.signals.delete_many({"projectId": candidate["url"]})
+    try:
+        count = await tracker.track_daily_snapshots(async_db)
+        assert count == 6, "1 snapshot for today + 5 backfilled days"
+        assert backfill_calls == [
+            (candidate["url"], candidate["github_stars"], candidate["github_forks"])
+        ]
+    finally:
+        db.signals.delete_many({"projectId": candidate["url"]})
