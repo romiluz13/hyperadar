@@ -110,20 +110,19 @@ class TestClusterProjects:
         ]
 
     def test_wave_membership_uses_only_recent_source_agents(self):
-        from datetime import datetime, timezone
+        from _shared.agent_catalog import AGENT_CATALOG
 
         since = datetime(2026, 7, 6, tzinfo=timezone.utc)
         query = _recent_source_post_filter(since)
 
+        expected_source_agents = [
+            agent["handle"]
+            for agent in AGENT_CATALOG
+            if agent["source_type"] != "aggregator"
+        ]
         assert query["postedAt"] == {"$gte": since}
-        assert query["agentHandle"] == {
-            "$in": [
-                "@github-radar",
-                "@reddit-pulse",
-                "@youtube-trends",
-                "@hidden-gems",
-            ]
-        }
+        assert query["agentHandle"] == {"$in": expected_source_agents}
+        assert "@weekly-digest" not in query["agentHandle"]["$in"]
         assert query["portSyncStatus"] == "synced"
         assert query["evidenceContractVersion"] == 2
 
@@ -145,64 +144,74 @@ class TestHypeWavesStorage:
             assert "avgMomentum" in wave
 
 
-def test_compute_hype_waves_closes_its_sync_client(monkeypatch):
-    class EmptyCursor:
+@pytest.mark.asyncio
+async def test_compute_hype_waves_reuses_the_shared_client_without_closing_it(
+    monkeypatch,
+):
+    """compute_hype_waves goes through the shared async client and never closes it."""
+    from _shared import mongo as _mongo
+
+    class ProjectsCursor:
         def sort(self, *_args):
             return self
 
         def limit(self, *_args):
             return self
 
-        def __iter__(self):
-            return iter(())
-
-    class FakeCollection:
-        def distinct(self, *_args):
+        async def to_list(self, *_args, **_kwargs):
             return []
 
+    class Posts:
+        async def distinct(self, *_args, **_kwargs):
+            return []
+
+    class Projects:
         def find(self, *_args, **_kwargs):
-            return EmptyCursor()
+            return ProjectsCursor()
 
-    class FakeDatabase:
-        def __init__(self, client):
-            self.client = client
-            self.posts = FakeCollection()
-            self.projects = FakeCollection()
+    class Database:
+        posts = Posts()
+        projects = Projects()
 
-    class FakeClient:
-        def __init__(self):
-            self.closed = False
-            self.database = FakeDatabase(self)
+    closed = []
 
-        def __getitem__(self, _name):
-            return self.database
+    async def record_close():
+        closed.append(True)
 
-        def close(self):
-            self.closed = True
+    monkeypatch.setattr(_mongo, "_get_db", lambda: Database())
+    monkeypatch.setattr(_mongo, "close_client", record_close)
 
-    client = FakeClient()
-    monkeypatch.setattr(hype_waves.pymongo, "MongoClient", lambda *_args: client)
-
-    assert hype_waves.compute_hype_waves() == []
-    assert client.closed
+    assert await hype_waves.compute_hype_waves() == []
+    assert closed == []
 
 
-def test_computed_waves_are_private_until_the_digest_port_twin_is_synced(monkeypatch):
+@pytest.mark.asyncio
+async def test_computed_waves_are_private_until_the_digest_port_twin_is_synced(
+    monkeypatch,
+):
     project_url = "https://example.com/agent-memory"
+    updates = []
 
-    class Cursor(list):
-        def sort(self, *_args):
+    class PostsCursor:
+        def __init__(self, docs):
+            self._docs = docs
+
+        def __aiter__(self):
+            self._iterator = iter(self._docs)
             return self
 
-        def limit(self, *_args):
-            return self
+        async def __anext__(self):
+            try:
+                return next(self._iterator)
+            except StopIteration:
+                raise StopAsyncIteration from None
 
     class Posts:
-        def distinct(self, *_args):
+        async def distinct(self, *_args, **_kwargs):
             return [project_url]
 
         def find(self, *_args, **_kwargs):
-            return Cursor(
+            return PostsCursor(
                 [
                     {
                         "agentHandle": "@github-radar",
@@ -211,9 +220,22 @@ def test_computed_waves_are_private_until_the_digest_port_twin_is_synced(monkeyp
                 ]
             )
 
+    class ProjectsCursor:
+        def __init__(self, docs):
+            self._docs = docs
+
+        def sort(self, *_args):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        async def to_list(self, *_args, **_kwargs):
+            return self._docs
+
     class Projects:
         def find(self, *_args, **_kwargs):
-            return Cursor(
+            return ProjectsCursor(
                 [
                     {
                         "title": "Agent Memory",
@@ -225,20 +247,22 @@ def test_computed_waves_are_private_until_the_digest_port_twin_is_synced(monkeyp
             )
 
     class Digests:
-        update = None
-
-        def update_one(self, *_args, **kwargs):
-            self.update = kwargs.get("update") or _args[1]
+        async def update_one(self, *_args, **kwargs):
+            updates.append(kwargs.get("update") or _args[1])
 
     class Database:
         posts = Posts()
         projects = Projects()
         digests = Digests()
 
-    monkeypatch.setattr(hype_waves, "label_cluster", lambda _cluster: "agent memory")
+    async def fake_label(_cluster):
+        return "agent memory"
 
-    hype_waves._compute_hype_waves(
+    monkeypatch.setattr(hype_waves, "label_cluster", fake_label)
+
+    waves = await hype_waves._compute_hype_waves(
         Database(), datetime(2026, 7, 13, tzinfo=timezone.utc)
     )
 
-    assert Database.digests.update["$set"]["publicationSyncStatus"] == "pending"
+    assert waves[0]["label"] == "agent memory"
+    assert updates[-1]["$set"]["publicationSyncStatus"] == "pending"

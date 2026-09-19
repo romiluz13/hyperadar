@@ -443,9 +443,12 @@ async def test_weekly_digest_summary_is_derived_only_from_synchronized_wave_coun
         published.update({"project": args[4], "body": args[5]})
         return "507f1f77bcf86cd799439011"
 
+    async def synchronized_waves():
+        return waves
+
     monkeypatch.setattr(agent.mongo, "_get_db", lambda: Database())
     monkeypatch.setattr(agent, "write_post", capture_write)
-    monkeypatch.setattr(hype_waves, "compute_hype_waves", lambda: waves)
+    monkeypatch.setattr(hype_waves, "compute_hype_waves", synchronized_waves)
 
     await agent.write_digest.coroutine()
 
@@ -503,7 +506,7 @@ async def test_weekly_digest_retry_resynchronizes_the_exact_staged_snapshot(
     class Database:
         digests = Digests()
 
-    def recompute_newer_waves():
+    async def recompute_newer_waves():
         nonlocal compute_calls
         compute_calls += 1
         return [
@@ -570,20 +573,21 @@ def test_weekly_digest_rank_comes_from_clustered_project_scores():
 
 
 def test_weekly_digest_input_dedupes_source_projects_before_the_limit():
+    from _shared.agent_catalog import AGENT_CATALOG
+
     agent = load_source("weekly_digest/agent.py", "weekly_digest_pipeline_agent")
     since = datetime.now(timezone.utc) - timedelta(days=7)
 
     pipeline = agent.weekly_post_pipeline(since)
 
+    expected_source_agents = [
+        agent["handle"]
+        for agent in AGENT_CATALOG
+        if agent["source_type"] != "aggregator"
+    ]
     assert list(pipeline[0]) == ["$match"]
-    assert pipeline[0]["$match"]["agentHandle"] == {
-        "$in": [
-            "@github-radar",
-            "@reddit-pulse",
-            "@youtube-trends",
-            "@hidden-gems",
-        ]
-    }
+    assert pipeline[0]["$match"]["agentHandle"] == {"$in": expected_source_agents}
+    assert "@weekly-digest" not in pipeline[0]["$match"]["agentHandle"]["$in"]
     assert pipeline[0]["$match"]["evidenceContractVersion"] == 2
     assert pipeline[1:] == [
         {"$sort": {"rankScore": -1, "postedAt": -1}},
@@ -621,7 +625,10 @@ async def test_weekly_digest_publishes_only_after_write_post_succeeds(monkeypatc
     monkeypatch.setattr(agent.mongo, "_get_db", lambda: database)
     assert "db" not in vars(agent.mongo)
     monkeypatch.setattr(agent, "write_post", successful_write)
-    monkeypatch.setattr(hype_waves, "compute_hype_waves", lambda: [])
+    async def no_waves():
+        return []
+
+    monkeypatch.setattr(hype_waves, "compute_hype_waves", no_waves)
 
     await agent.write_digest.coroutine()
 
@@ -652,7 +659,10 @@ async def test_weekly_digest_remains_private_when_write_post_fails(monkeypatch):
     database = Database()
     monkeypatch.setattr(agent.mongo, "_get_db", lambda: database)
     monkeypatch.setattr(agent, "write_post", failed_write)
-    monkeypatch.setattr(hype_waves, "compute_hype_waves", lambda: [])
+    async def no_waves():
+        return []
+
+    monkeypatch.setattr(hype_waves, "compute_hype_waves", no_waves)
 
     with pytest.raises(RuntimeError, match="Port unavailable"):
         await agent.write_digest.coroutine()
@@ -702,10 +712,9 @@ async def test_episode_seed_closes_its_sync_and_async_mongo_clients(monkeypatch)
 async def test_reddit_candidate_returns_structured_upvote_data(monkeypatch):
     source = load_source("reddit_pulse/reddit_source.py", "reddit_truth_source")
     monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-    full_url = (
-        "https://www.reddit.com/r/LocalLLaMA/comments/abc123/"
-        "a_complete_title_that_must_never_be_truncated/"
-    )
+    # The canonical thread URL is rebuilt from post_id + community_name (not
+    # taken from a url field) and normalized without a trailing slash.
+    canonical_url = "https://www.reddit.com/r/LocalLLaMA/comments/abc123"
     subprocess_calls = []
 
     async def fake_create_subprocess_exec(*args, **_kwargs):
@@ -714,12 +723,12 @@ async def test_reddit_candidate_returns_structured_upvote_data(monkeypatch):
             json.dumps(
                 [
                     {
-                        "url": full_url,
+                        "post_id": "abc123",
+                        "community_name": "LocalLLaMA",
                         "title": "A complete Reddit title | with a separator",
                         "description": "Search result description",
                         "num_upvotes": 342,
                         "num_comments": 89,
-                        "community_name": "LocalLLaMA",
                     }
                 ]
             )
@@ -729,26 +738,35 @@ async def test_reddit_candidate_returns_structured_upvote_data(monkeypatch):
         source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
     )
 
-    # Mock db so cooldown filtering works without a live MongoDB connection.
+    # Mock db so cooldown filtering and delta snapshots work without a live
+    # MongoDB connection.
     class FakePosts:
         async def find_one(self, *_args, **_kwargs):
             return None
 
+    class FakeSnapshots:
+        async def find_one(self, *_args, **_kwargs):
+            return None
+
+        async def insert_one(self, *_args, **_kwargs):
+            return None
+
     class FakeDb:
         posts = FakePosts()
+        reddit_post_snapshots = FakeSnapshots()
 
     candidates = await source.fetch_reddit_candidates(max_results=1, db=FakeDb())
 
     assert "reddit_posts" in subprocess_calls[0]
     assert "--format" in subprocess_calls[0]
-    assert candidates[0]["url"] == full_url
+    assert candidates[0]["url"] == canonical_url
     assert candidates[0]["title"] == "A complete Reddit title | with a separator"
     assert candidates[0]["num_upvotes"] == 342
     assert candidates[0]["num_comments"] == 89
     assert candidates[0]["subreddit"] == "LocalLLaMA"
     assert candidates[0]["visibility_score"] > 0
     assert candidates[0]["engagement_velocity"] > 0
-    assert candidates[0]["evidence_url"] == full_url
+    assert candidates[0]["evidence_url"] == canonical_url
 
 
 @pytest.mark.asyncio
@@ -860,7 +878,24 @@ async def test_reddit_source_kills_its_command_when_the_run_is_cancelled(monkeyp
         source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
     )
 
-    task = asyncio.create_task(source.fetch_reddit_candidates(max_results=1))
+    class FakePosts:
+        async def find_one(self, *_args, **_kwargs):
+            return None
+
+    class FakeSnapshots:
+        async def find_one(self, *_args, **_kwargs):
+            return None
+
+        async def insert_one(self, *_args, **_kwargs):
+            return None
+
+    class FakeDb:
+        posts = FakePosts()
+        reddit_post_snapshots = FakeSnapshots()
+
+    task = asyncio.create_task(
+        source.fetch_reddit_candidates(max_results=1, db=FakeDb())
+    )
     while not processes:
         await asyncio.sleep(0)
     task.cancel()
@@ -2152,6 +2187,7 @@ async def test_runner_repairs_historical_pending_posts_before_source_scan(
             "Repairs stored twins",
             "test",
             lambda **_kwargs: QuietAgent(),
+            {},
         )
 
         repaired = db.posts.find_one({"_id": post_id})
@@ -2221,6 +2257,7 @@ async def test_runner_stops_an_agent_invocation_that_exceeds_its_deadline(monkey
                 "Timeout proof",
                 "test",
                 lambda **_kwargs: HangingAgent(),
+                {},
             ),
             timeout=0.2,
         )

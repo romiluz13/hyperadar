@@ -118,6 +118,20 @@ npm run build
       thread ID, synchronized post ID, and UTC timestamp before claiming this
       governed path completed in production.
 
+## Observe production health
+
+- [ ] Optionally configure `ALERT_WEBHOOK_URL` (a Slack-compatible incoming
+      webhook) as a GitHub Actions secret. The daily-radar-refresh `notify` job
+      posts there when any agent or the digest job fails; without the secret it
+      only prints a warning banner in the run log.
+- [ ] Confirm every scheduled agent run writes one `agent_runs` document in
+      MongoDB (`ok`, post/sync counts, doctor findings, crash errors) — this is
+      what the digest API health payload reads.
+- [ ] Confirm `GET /api/daily-digest` returns `generatedAt`, `sourceHealth`
+      (per source agent: `lastRunAt`, `lastOkAt`, `ok`), and `degraded`, so a
+      broken or stale source surfaces to the RomBot reader instead of silently
+      serving the last stored digest.
+
 ## Claim discipline
 
 - [ ] Do not claim automated crash resume; each run currently uses a fresh thread.

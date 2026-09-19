@@ -165,3 +165,29 @@ jobs:
           print('digest generated:', result is not None)
           print('items:', len(result['items']) if result else 0)
           "
+
+  notify:
+    name: Notify on failure
+    needs: [run-all-agents, generate-digest]
+    if: always() && (needs.run-all-agents.result != 'success' || needs.generate-digest.result != 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Post failure alert
+        env:
+          # Slack-compatible incoming webhook. Optional: without it the job
+          # only prints a visible warning banner in the run log.
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          AGENTS_RESULT: ${{ needs.run-all-agents.result }}
+          DIGEST_RESULT: ${{ needs.generate-digest.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$ALERT_WEBHOOK_URL" ]; then
+            echo "::warning::HypeRadar daily refresh failed (agents: $AGENTS_RESULT, digest: $DIGEST_RESULT) but ALERT_WEBHOOK_URL is not configured — add it to repository secrets to receive push notifications."
+            exit 0
+          fi
+          payload=$(printf '{"text": "HypeRadar daily refresh FAILED — agents: %s, digest: %s. The feed may be stale: %s"}' "$AGENTS_RESULT" "$DIGEST_RESULT" "$RUN_URL")
+          curl -sS -f -X POST "$ALERT_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$payload"

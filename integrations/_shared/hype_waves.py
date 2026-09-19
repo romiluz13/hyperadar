@@ -14,19 +14,12 @@ import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pymongo  # noqa: E402
-
 from _shared.agent_catalog import AGENT_CATALOG  # noqa: E402
 from _shared.grove import grove_api_key  # noqa: E402
 
 SOURCE_AGENT_HANDLES = [
     agent["handle"] for agent in AGENT_CATALOG if agent["source_type"] != "aggregator"
 ]
-
-
-def _get_db():
-    client = pymongo.MongoClient(os.environ["MONGODB_URI"])
-    return client[os.environ.get("MONGODB_DB", "hyperadar")]
 
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:

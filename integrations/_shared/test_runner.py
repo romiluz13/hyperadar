@@ -12,6 +12,8 @@ import os
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _shared import runner  # noqa: E402
@@ -106,3 +108,116 @@ def test_run_ok_written_but_never_synced_fails():
     assert not runner._run_ok(
         posts_written=3, synced_this_run=0, pending_port_syncs=0, agent_was_active=True
     )
+
+
+# ─── Run-health records: every run leaves evidence in agent_runs ───
+
+
+class _RunHealthDb:
+    """Fake db capturing agent_runs upserts; optionally fails on write."""
+
+    def __init__(self, fail=False):
+        self.records = []
+        self.fail = fail
+
+    def _get_db(self):
+        return self
+
+    @property
+    def agent_runs(self):
+        return self
+
+    async def update_one(self, query, update, **_kwargs):
+        if self.fail:
+            raise RuntimeError("agent_runs unavailable")
+        self.records.append((query, update))
+
+
+@pytest.mark.asyncio
+async def test_crashed_run_leaves_a_failed_agent_runs_record(monkeypatch):
+    """A run that crashes mid-cycle must still record ok=False + the error."""
+    fake = _RunHealthDb()
+
+    async def fake_close():
+        pass
+
+    async def crashing_cycle(*_args, **_kwargs):
+        raise RuntimeError("source exploded")
+
+    monkeypatch.setattr(runner.mongo, "_get_db", lambda: fake._get_db())
+    monkeypatch.setattr(runner.mongo, "close_client", fake_close)
+    monkeypatch.setattr(runner, "_run_agent_cycle", crashing_cycle)
+
+    with pytest.raises(RuntimeError, match="source exploded"):
+        await runner.run_agent("@reddit-pulse", "Reddit Pulse", "bio", "reddit", None)
+
+    assert len(fake.records) == 1
+    query, update = fake.records[0]
+    record = update["$set"]
+    assert query["threadId"].startswith("@reddit-pulse:crash:")
+    assert record["agentHandle"] == "@reddit-pulse"
+    assert record["ok"] is False
+    assert "source exploded" in record["error"]
+    assert "finishedAt" in record
+
+
+@pytest.mark.asyncio
+async def test_unhealthy_run_records_its_summary_and_doctor_findings(monkeypatch):
+    """The record carries the run summary plus the doctor's FAIL lines."""
+    fake = _RunHealthDb()
+
+    async def fake_close():
+        pass
+
+    async def silent_cycle(_handle, _name, _bio, _source, _build, _run_record):
+        _run_record["threadId"] = "@community-radar:run:1"
+        _run_record["doctor"] = [
+            {"name": "rombot", "status": "fail", "detail": "HTTP 401 — token rejected"}
+        ]
+        _run_record["fetchCalls"] = 0
+        _run_record["writeCalls"] = 0
+        return {
+            "thread_id": "@community-radar:run:1",
+            "posts_today": 0,
+            "posts_written": 0,
+            "synced_this_run": 0,
+            "pending_port_syncs": 0,
+            "ok": False,
+        }
+
+    monkeypatch.setattr(runner.mongo, "_get_db", lambda: fake._get_db())
+    monkeypatch.setattr(runner.mongo, "close_client", fake_close)
+    monkeypatch.setattr(runner, "_run_agent_cycle", silent_cycle)
+
+    summary = await runner.run_agent(
+        "@community-radar", "AI Agents Community", "bio", "community", None
+    )
+
+    assert summary["ok"] is False
+    assert len(fake.records) == 1
+    record = fake.records[0][1]["$set"]
+    assert record["threadId"] == "@community-radar:run:1"
+    assert record["ok"] is False
+    assert record["doctor"][0]["name"] == "rombot"
+    assert record["fetchCalls"] == 0
+    assert "error" not in record
+
+
+@pytest.mark.asyncio
+async def test_recording_failure_never_masks_the_runs_own_error(monkeypatch):
+    """A broken agent_runs write is logged, not raised past the run's outcome."""
+    fake = _RunHealthDb(fail=True)
+
+    async def fake_close():
+        pass
+
+    async def crashing_cycle(*_args, **_kwargs):
+        raise RuntimeError("source exploded")
+
+    monkeypatch.setattr(runner.mongo, "_get_db", lambda: fake._get_db())
+    monkeypatch.setattr(runner.mongo, "close_client", fake_close)
+    monkeypatch.setattr(runner, "_run_agent_cycle", crashing_cycle)
+
+    # The run's own error surfaces; the recording failure is only logged.
+    with pytest.raises(RuntimeError, match="source exploded"):
+        await runner.run_agent("@reddit-pulse", "Reddit Pulse", "bio", "reddit", None)

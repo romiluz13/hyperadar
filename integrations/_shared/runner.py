@@ -25,6 +25,25 @@ from _shared import doctor, port_client, write_post  # noqa: E402
 AGENT_INVOCATION_TIMEOUT_SECONDS = 20 * 60
 
 
+async def _record_run_health(record: dict) -> None:
+    """Persist one run-health document to the agent_runs collection.
+
+    The record is diagnostics: a recording failure must never mask the run's
+    own outcome, so every error here is logged and swallowed.
+    """
+    try:
+        db = mongo._get_db()
+        await db.agent_runs.update_one(
+            {"threadId": record["threadId"]}, {"$set": record}, upsert=True
+        )
+    except Exception as e:
+        print(
+            f"WARNING: run-health recording failed for {record.get('agentHandle')}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def _extract_tool_trace(result) -> list[str]:
     """Extract the ordered tool-call names from an agent.ainvoke result.
 
@@ -101,24 +120,49 @@ def _run_ok(posts_written, synced_this_run, pending_port_syncs, agent_was_active
 
 
 async def run_agent(agent_handle, agent_name, agent_bio, source_type, build_agent_fn):
-    """Run one agent cycle. Returns a summary dict."""
+    """Run one agent cycle. Returns a summary dict.
+
+    Every run — healthy, unhealthy, or crashed — leaves one agent_runs document
+    in MongoDB so a broken source is queryable evidence, not a red GHA icon
+    buried in the Actions log.
+    """
+    started_at = datetime.now(timezone.utc)
+    run_record: dict = {"agentHandle": agent_handle, "ok": False, "doctor": []}
     try:
-        return await _run_agent_cycle(
-            agent_handle, agent_name, agent_bio, source_type, build_agent_fn
+        summary = await _run_agent_cycle(
+            agent_handle,
+            agent_name,
+            agent_bio,
+            source_type,
+            build_agent_fn,
+            run_record,
         )
+        run_record["ok"] = summary["ok"]
+        run_record["postsWritten"] = summary["posts_written"]
+        run_record["syncedThisRun"] = summary["synced_this_run"]
+        run_record["pendingPortSyncs"] = summary["pending_port_syncs"]
+        return summary
+    except Exception as error:
+        run_record["error"] = repr(error)
+        raise
     finally:
+        run_record["threadId"] = run_record.get("threadId") or (
+            f"{agent_handle}:crash:{started_at.isoformat()}"
+        )
+        run_record["finishedAt"] = datetime.now(timezone.utc)
+        await _record_run_health(run_record)
         await mongo.close_client()
 
 
 async def _run_agent_cycle(
-    agent_handle, agent_name, agent_bio, source_type, build_agent_fn
+    agent_handle, agent_name, agent_bio, source_type, build_agent_fn, run_record
 ):
     """Run one cycle while its MongoDB client remains owned by this loop."""
     # 0. Source doctor: live credential/source health into the run log.
     #    Diagnostics only — a FAIL here must not kill the run before the
     #    runner's own health semantics (agent_was_active/_run_ok) can speak.
     try:
-        await doctor.preflight(agent_handle)
+        run_record["doctor"] = await doctor.preflight(agent_handle)
     except Exception as e:
         print(f"[doctor] preflight skipped: {e}", file=sys.stderr, flush=True)
 
@@ -130,6 +174,7 @@ async def _run_agent_cycle(
 
     # 2. MongoDBSaver checkpoint (durable and inspectable for this run)
     thread_id = f"{agent_handle}:{datetime.now(timezone.utc).isoformat()}"
+    run_record["threadId"] = thread_id
     config = {"configurable": {"thread_id": thread_id}}
     start_of_day = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -163,6 +208,8 @@ async def _run_agent_cycle(
     tool_calls = _extract_tool_trace(result)
     write_call_count = sum(1 for n in tool_calls if n.startswith("write_"))
     fetch_call_count = sum(1 for n in tool_calls if n.startswith("fetch_"))
+    run_record["fetchCalls"] = fetch_call_count
+    run_record["writeCalls"] = write_call_count
     agent_was_active = (fetch_call_count + write_call_count) > 0
     print(
         f"{agent_handle} runner: fetch_calls={fetch_call_count} "

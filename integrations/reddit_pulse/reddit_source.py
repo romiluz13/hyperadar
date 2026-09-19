@@ -287,9 +287,17 @@ async def fetch_reddit_candidates(max_results: int = 10, db=None) -> list[dict]:
     # limit), soft-fail per subreddit (one timeout does not blank the run).
     tasks = [asyncio.ensure_future(_fetch_one_subreddit(s)) for s in SUBREDDITS]
     all_posts: list[dict] = []
-    for coro in asyncio.as_completed(tasks):
-        posts = await coro
-        all_posts.extend(posts)
+    try:
+        for coro in asyncio.as_completed(tasks):
+            posts = await coro
+            all_posts.extend(posts)
+    except asyncio.CancelledError:
+        # The run was cancelled: tear down every in-flight subreddit fetch so
+        # no bdata subprocess outlives the cancelled run.
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
     # Deduplicate by URL
     seen = set()
