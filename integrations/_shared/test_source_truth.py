@@ -772,6 +772,10 @@ async def test_reddit_candidate_returns_structured_upvote_data(monkeypatch):
 @pytest.mark.asyncio
 async def test_community_source_parses_rombot_api_response(monkeypatch):
     """The community source calls the RomBot API and parses the text answer."""
+    # Imported before the environ monkeypatch below: _shared.write_post reads
+    # MONGODB_URI from os.environ at import time.
+    from _shared.write_post import validate_publication_input
+
     source = load_source("community_ask/source.py", "community_truth_source")
     monkeypatch.setattr(
         source.os, "environ", {"ROMBOT_COMMUNITY_ASK_TOKEN": "fake-token"}
@@ -828,6 +832,25 @@ async def test_community_source_parses_rombot_api_response(monkeypatch):
     assert candidates[0]["visibility_score"] > 0
     assert candidates[1]["title"] == "Coding agents replacing IDE plugins"
     assert candidates[1]["num_contributors"] == 12  # upper bound of ~8-12
+    # Regression (2026-09-20 production crash): fragment-only anchors like
+    # "#community-corpus/..." are rejected by validate_publication_input, and
+    # a shared anchor collapsed every topic into one project. Internal URLs
+    # must use the hyperadar:// scheme and stay distinct per topic.
+    assert candidates[0]["url"] != candidates[1]["url"]
+    for candidate in candidates:
+        assert candidate["url"].startswith("hyperadar://community-corpus/")
+        validate_publication_input(
+            {
+                "url": candidate["url"],
+                "title": candidate["title"],
+                "kind": candidate["kind"],
+                "description": candidate["description"],
+                "topics": candidate["topics"],
+                "momentumScore": candidate["visibility_score"],
+            },
+            "hype looks real",
+            candidate["visibility_score"],
+        )
 
 
 def test_community_evidence_copy_describes_real_discourse():

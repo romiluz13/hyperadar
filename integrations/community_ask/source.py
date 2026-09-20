@@ -121,9 +121,12 @@ def _parse_community_answer(answer: str) -> list[dict]:
         topic_slug = topic[:60].lower().replace(" ", "-").replace("—", "-")
         candidates.append(
             {
-                # No external URL — the community corpus is private.
-                # Use an internal anchor so the feed doesn't link out.
-                "url": f"#community-corpus/{topic_slug}",
+                # No external URL — the community corpus is private. Use the
+                # internal hyperadar:// scheme (same convention as weekly
+                # digest projects) so each topic gets a distinct project
+                # identity without linking out; write_post validates the
+                # scheme and the web app renders these as internal posts.
+                "url": f"hyperadar://community-corpus/{topic_slug}",
                 "title": topic[:200],
                 "kind": "discussion",
                 "description": (summary or f"Discussed by {who}")[:500],
