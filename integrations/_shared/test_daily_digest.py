@@ -7,7 +7,7 @@ Seam: the filter construction, Grove LLM call, and MongoDB storage in
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -32,9 +32,11 @@ def _make_post(
     verdict: str = "hype looks real",
     kind: str = "repo",
     signal: dict | None = None,
+    title: str | None = None,
+    description: str | None = None,
 ) -> dict:
     """Build a post document that matches the real write_post.py schema."""
-    return {
+    post = {
         "_id": f"post{i}",
         "agentHandle": agent,
         "body": body,
@@ -42,12 +44,15 @@ def _make_post(
         "rankScore": rank_score + i,
         "signal": signal or {},
         "project": {
-            "title": f"repo-{i}",
+            "title": title if title is not None else f"repo-{i}",
             "url": f"https://example.com/repo-{i}",
             "kind": kind,
             "momentumScore": momentum_score,
         },
     }
+    if description is not None:
+        post["project"]["description"] = description
+    return post
 
 
 class TestDailyPostFilter:
@@ -252,10 +257,37 @@ class _FakeDigests:
         self.upserted = (query, update, upsert)
 
 
+class _FakeSignalCursor:
+    def __init__(self, docs):
+        self._docs = list(docs)
+
+    def sort(self, key, direction=1):
+        self._docs.sort(key=lambda doc: doc[key], reverse=direction < 0)
+        return self
+
+    async def to_list(self, length):
+        return list(self._docs)
+
+
+class _FakeSignals:
+    """Equality-filtered time-series collection, like the producers query it."""
+
+    def __init__(self, docs):
+        self._docs = docs
+
+    def find(self, query, projection=None):
+        return _FakeSignalCursor(
+            doc
+            for doc in self._docs
+            if all(doc.get(key) == value for key, value in query.items())
+        )
+
+
 class _FakeDatabase:
-    def __init__(self, posts):
+    def __init__(self, posts, signals=None):
         self.posts = _FakePosts(posts)
         self.digests = _FakeDigests()
+        self.signals = _FakeSignals(signals or [])
 
 
 class TestGenerateDailyDigest:
@@ -545,6 +577,377 @@ class TestGenerateDailyDigest:
             )
         for count in agent_counts.values():
             assert count <= 2
+
+
+class TestDigestItemWhat:
+    """`what`: one plain line saying what the project is, for the RomBot digest."""
+
+    NOW = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
+
+    async def _digest(self, monkeypatch, posts, grove_picks):
+        async def fake_call_grove(_posts):
+            return grove_picks
+
+        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts), now=self.NOW
+        )
+        assert result is not None
+        return result["items"]
+
+    async def test_what_is_the_project_description_with_whitespace_collapsed(
+        self, monkeypatch
+    ):
+        post = _make_post(
+            0,
+            description="  A git hook\n that won't let you push\tcode you can't explain.  ",
+        )
+        items = await self._digest(monkeypatch, [post], [{"id": 0, "blurb": "b"}])
+        assert (
+            items[0]["what"]
+            == "A git hook that won't let you push code you can't explain."
+        )
+
+    async def test_long_description_is_cut_at_a_word_boundary_within_140(
+        self, monkeypatch
+    ):
+        words = " ".join(f"word{n:02d}" for n in range(40))
+        post = _make_post(0, description=words)
+        items = await self._digest(monkeypatch, [post], [{"id": 0, "blurb": "b"}])
+        what = items[0]["what"]
+        assert len(what) <= 140
+        assert words.startswith(what)
+        assert words[len(what)] == " "
+
+    async def test_description_of_exactly_140_characters_is_kept_whole(
+        self, monkeypatch
+    ):
+        text = " ".join(["a" * 19] * 6 + ["a" * 20])
+        assert len(text) == 140
+        post = _make_post(0, description=text)
+        items = await self._digest(monkeypatch, [post], [{"id": 0, "blurb": "b"}])
+        assert items[0]["what"] == text
+
+    async def test_word_boundary_right_after_character_140_keeps_all_140(
+        self, monkeypatch
+    ):
+        text = " ".join(["a" * 19] * 6 + ["a" * 20])
+        post = _make_post(0, description=f"{text} tail")
+        items = await self._digest(monkeypatch, [post], [{"id": 0, "blurb": "b"}])
+        assert items[0]["what"] == text
+
+    async def test_single_word_longer_than_140_is_hard_cut(self, monkeypatch):
+        post = _make_post(0, description="x" * 300)
+        items = await self._digest(monkeypatch, [post], [{"id": 0, "blurb": "b"}])
+        assert items[0]["what"] == "x" * 140
+
+    async def test_grove_supplies_what_only_when_description_is_empty(
+        self, monkeypatch
+    ):
+        posts = [
+            _make_post(0, description=""),
+            _make_post(1, agent="@youtube-trends", description="Real description."),
+        ]
+        picks = [
+            {"id": 0, "blurb": "b0", "what": "  A tool\nfor agents  "},
+            {"id": 1, "blurb": "b1", "what": "Invented by the model"},
+        ]
+        items = await self._digest(monkeypatch, posts, picks)
+        assert items[0]["what"] == "A tool for agents"
+        assert items[1]["what"] == "Real description."
+
+    async def test_what_is_null_when_description_and_grove_are_empty(self, monkeypatch):
+        posts = [
+            _make_post(0),
+            _make_post(1, agent="@youtube-trends", description="   "),
+            _make_post(2, agent="@reddit-pulse", description=""),
+        ]
+        picks = [
+            {"id": 0, "blurb": "b0"},
+            {"id": 1, "blurb": "b1", "what": ""},
+            {"id": 2, "blurb": "b2", "what": 42},
+        ]
+        items = await self._digest(monkeypatch, posts, picks)
+        assert [item["what"] for item in items] == [None, None, None]
+
+    async def test_backfilled_item_gets_what_from_description_only(self, monkeypatch):
+        posts = [
+            _make_post(0, description="Picked."),
+            _make_post(1, agent="@youtube-trends", description="Backfilled one."),
+            _make_post(2, agent="@reddit-pulse", description=""),
+        ]
+        items = await self._digest(monkeypatch, posts, [{"id": 0, "blurb": "b0"}])
+        assert [item["what"] for item in items] == ["Picked.", "Backfilled one.", None]
+
+    async def test_what_is_html_unescaped_like_the_title(self, monkeypatch):
+        posts = [
+            _make_post(0, description="Tom &amp; Jerry&#39;s &lt;agent&gt;&nbsp;kit"),
+            _make_post(1, agent="@reddit-pulse", description=""),
+        ]
+        picks = [
+            {"id": 0, "blurb": "b0"},
+            {"id": 1, "blurb": "b1", "what": "Q&amp;A bot"},
+        ]
+        items = await self._digest(monkeypatch, posts, picks)
+        assert items[0]["what"] == "Tom & Jerry's <agent> kit"
+        assert items[1]["what"] == "Q&A bot"
+
+    async def test_videos_carry_no_what_because_their_description_is_a_byline(
+        self, monkeypatch
+    ):
+        byline = "By Some Channel \u00b7 230,000 views"
+        posts = [
+            _make_post(0, agent="@youtube-trends", kind="video", description=byline),
+            _make_post(1, agent="@youtube-trends", kind="video", description=byline),
+            _make_post(2, description="A real repo description."),
+        ]
+        picks = [
+            {"id": 0, "blurb": "b0", "what": "Invented for a video"},
+            {"id": 2, "blurb": "b2"},
+        ]
+        items = await self._digest(monkeypatch, posts, picks)
+        assert [item["kind"] for item in items] == ["video", "repo", "video"]
+        assert [item["what"] for item in items] == [
+            None,
+            "A real repo description.",
+            None,
+        ]
+
+    def test_prompt_never_asks_grove_for_what_on_a_video(self):
+        posts = [
+            _make_post(0, kind="video", description=""),
+            _make_post(1, agent="@reddit-pulse", description=""),
+        ]
+        prompt = _build_grove_prompt(posts)
+        assert "[1]" in prompt
+        assert "[0, 1]" not in prompt
+
+    def test_prompt_asks_for_what_only_on_posts_without_a_description(self):
+        posts = [
+            _make_post(0, description="Has one."),
+            _make_post(1, agent="@youtube-trends", description=""),
+            _make_post(2, agent="@reddit-pulse"),
+        ]
+        prompt = _build_grove_prompt(posts)
+        assert '"what"' in prompt
+        assert "[1, 2]" in prompt
+
+    def test_prompt_does_not_ask_for_what_when_every_post_has_a_description(self):
+        prompt = _build_grove_prompt([_make_post(0, description="Has one.")])
+        assert '"what"' not in prompt
+
+
+class TestDigestItemTitleAndVerdict:
+    """Titles reach RomBot as plain text; the post's verdict rides along."""
+
+    NOW = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
+
+    async def _items(self, monkeypatch, posts, picks):
+        async def fake_call_grove(_posts):
+            return picks
+
+        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts), now=self.NOW
+        )
+        assert result is not None
+        return result["items"]
+
+    async def test_title_is_html_unescaped_for_picked_and_backfilled_items(
+        self, monkeypatch
+    ):
+        posts = [
+            _make_post(0, title="Tom &amp; Jerry&#39;s &quot;agent&quot;"),
+            _make_post(1, agent="@youtube-trends", title="Plain &lt;b&gt; title"),
+        ]
+        items = await self._items(monkeypatch, posts, [{"id": 0, "blurb": "b"}])
+        assert items[0]["title"] == 'Tom & Jerry\'s "agent"'
+        assert items[1]["title"] == "Plain <b> title"
+
+    async def test_verdict_is_the_posts_verdict(self, monkeypatch):
+        posts = [
+            _make_post(0, verdict="emerging"),
+            _make_post(1, agent="@youtube-trends", verdict="cooling"),
+        ]
+        items = await self._items(monkeypatch, posts, [{"id": 0, "blurb": "b"}])
+        assert [item["verdict"] for item in items] == ["emerging", "cooling"]
+
+    async def test_missing_or_empty_verdict_is_null(self, monkeypatch):
+        no_verdict = _make_post(0)
+        del no_verdict["verdict"]
+        posts = [
+            no_verdict,
+            _make_post(1, agent="@youtube-trends", verdict=""),
+        ]
+        items = await self._items(monkeypatch, posts, [{"id": 0, "blurb": "b"}])
+        assert [item["verdict"] for item in items] == [None, None]
+
+
+PROJECT_URL = "https://example.com/repo-0"
+DAY = timedelta(days=1)
+
+
+def _snapshot(stars: int, captured: datetime, project_url: str = PROJECT_URL) -> dict:
+    return {
+        "projectId": project_url,
+        "postId": "",
+        "capturedAt": captured,
+        "github_stars": stars,
+        "github_forks": 3,
+    }
+
+
+def _daily_snapshots(star_counts: list[int], first_day: datetime) -> list[dict]:
+    return [
+        _snapshot(stars, first_day + n * DAY) for n, stars in enumerate(star_counts)
+    ]
+
+
+class TestWeeklyStarGain:
+    """Raw star gain over the last 8 daily snapshots, plus the window it covers."""
+
+    FIRST_DAY = datetime(2026, 7, 10, 0, 23, tzinfo=timezone.utc)
+
+    async def _gain(self, docs):
+        return await daily_digest._weekly_star_gain(
+            _FakeDatabase([], signals=docs), PROJECT_URL
+        )
+
+    async def test_no_snapshots_or_one_snapshot_is_unknown(self):
+        assert await self._gain([]) == (None, None)
+        assert await self._gain(_daily_snapshots([500], self.FIRST_DAY)) == (None, None)
+
+    async def test_eight_daily_snapshots_give_the_gain_over_seven_days(self):
+        docs = _daily_snapshots(
+            [1000, 1010, 1030, 1035, 1050, 1090, 1100, 1130], self.FIRST_DAY
+        )
+        assert await self._gain(docs) == (130, 7)
+
+    async def test_only_the_last_eight_snapshots_count_whatever_the_storage_order(self):
+        counts = [100 * n for n in range(12)]
+        docs = _daily_snapshots(counts, self.FIRST_DAY)
+        docs.reverse()
+        assert await self._gain(docs) == (700, 7)
+
+    async def test_fewer_snapshots_give_the_shorter_window_they_cover(self):
+        docs = _daily_snapshots([200, 230, 260], self.FIRST_DAY)
+        assert await self._gain(docs) == (60, 2)
+
+    async def test_sparse_snapshots_report_the_wider_window_they_really_span(self):
+        docs = [
+            _snapshot(100, self.FIRST_DAY),
+            _snapshot(180, self.FIRST_DAY + 10 * DAY),
+        ]
+        assert await self._gain(docs) == (80, 10)
+
+    async def test_documents_that_are_not_star_snapshots_are_ignored(self):
+        docs = _daily_snapshots([100, 130, 160], self.FIRST_DAY)
+        docs.append(
+            {
+                "projectId": PROJECT_URL,
+                "postId": "",
+                "capturedAt": self.FIRST_DAY + 3 * DAY,
+                "note": "no star count",
+            }
+        )
+        docs.append(
+            {
+                "projectId": PROJECT_URL,
+                "postId": "post9",
+                "capturedAt": self.FIRST_DAY + 4 * DAY,
+                "source": "github",
+                "metric": "github_stars",
+                "value": 99999,
+                "delta": 0,
+            }
+        )
+        docs.append(
+            _snapshot(777, self.FIRST_DAY + 5 * DAY, "https://example.com/other")
+        )
+        assert await self._gain(docs) == (60, 2)
+
+    async def test_backfilled_noon_and_organic_midnight_snapshots_round_the_window(
+        self,
+    ):
+        noon = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+        docs = _daily_snapshots([100, 110, 120, 130, 140, 150, 160], noon)
+        docs.append(_snapshot(175, datetime(2026, 7, 17, 0, 23, tzinfo=timezone.utc)))
+        assert await self._gain(docs) == (75, 7)
+
+    async def test_star_loss_is_a_measured_zero_not_unknown(self):
+        docs = _daily_snapshots([500, 480, 470], self.FIRST_DAY)
+        assert await self._gain(docs) == (0, 2)
+
+
+class TestDigestItemWeeklyGain:
+    """The item carries the gain so RomBot can say how fast a repo is growing."""
+
+    NOW = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
+
+    async def test_picked_and_backfilled_repo_items_carry_gain_and_window(
+        self, monkeypatch
+    ):
+        posts = [_make_post(0), _make_post(1, agent="@hidden-gems")]
+        first_day = datetime(2026, 7, 16, 0, 23, tzinfo=timezone.utc)
+        signals = _daily_snapshots(
+            [1000, 1020, 1050, 1080, 1100, 1150, 1180, 1240], first_day
+        ) + _daily_snapshots(
+            [50, 52, 60, 61, 61, 70, 80, 90],
+            first_day,
+        )
+        for doc in signals[8:]:
+            doc["projectId"] = "https://example.com/repo-1"
+
+        async def fake_call_grove(_posts):
+            return [{"id": 0, "blurb": "b0"}]
+
+        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts, signals=signals), now=self.NOW
+        )
+
+        assert result is not None
+        picked, backfilled = result["items"]
+        assert (picked["weeklyGain"], picked["weeklyGainWindowDays"]) == (240, 7)
+        assert (backfilled["weeklyGain"], backfilled["weeklyGainWindowDays"]) == (40, 7)
+
+    async def test_a_failing_snapshot_read_leaves_the_gain_unknown_not_the_digest_lost(
+        self, monkeypatch
+    ):
+        class _BrokenSignals:
+            def find(self, *args, **kwargs):
+                raise RuntimeError("signals unavailable")
+
+        db = _FakeDatabase([_make_post(0)])
+        db.signals = _BrokenSignals()
+
+        async def fake_call_grove(_posts):
+            return [{"id": 0, "blurb": "b0"}]
+
+        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+        result = await daily_digest.generate_daily_digest(db=db, now=self.NOW)
+
+        assert result is not None
+        assert db.digests.upserted is not None
+        item = result["items"][0]
+        assert item["weeklyGain"] is None
+        assert item["weeklyGainWindowDays"] is None
+
+    async def test_item_without_snapshots_has_null_gain_and_window(self, monkeypatch):
+        posts = [_make_post(0, agent="@youtube-trends", kind="video")]
+
+        async def fake_call_grove(_posts):
+            return [{"id": 0, "blurb": "b0"}]
+
+        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts), now=self.NOW
+        )
+
+        assert result is not None
+        item = result["items"][0]
+        assert item["weeklyGain"] is None
+        assert item["weeklyGainWindowDays"] is None
 
 
 class TestDailyDigestAgentHandles:

@@ -15,9 +15,15 @@ export type DailyDigestItem = {
 	signalMetric: string | null;
 	signalValue: number | null;
 	signalDelta: number | null;
+	/** Always null: nothing writes these three, so do not read them. */
 	stars: number | null;
 	velocity: number | null;
 	contributorCount: number | null;
+	/** Optional: digests stored before these fields existed lack them. */
+	what?: string | null;
+	verdict?: string | null;
+	weeklyGain?: number | null;
+	weeklyGainWindowDays?: number | null;
 };
 
 export type SourceHealth = {

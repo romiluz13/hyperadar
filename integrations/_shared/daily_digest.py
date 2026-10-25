@@ -5,6 +5,7 @@ blurb the top 5 (max 2 per source), stores the digest in the digests
 collection.
 """
 
+import html
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _shared.agent_catalog import AGENT_CATALOG  # noqa: E402
 from _shared.grove import grove_api_key  # noqa: E402
+from _shared.momentum import _raw_velocity  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,62 @@ DAILY_DIGEST_AGENT_HANDLES = [
 
 DAILY_DIGEST_MAX_ITEMS = 5
 DAILY_DIGEST_MAX_PER_AGENT = 2
+DAILY_DIGEST_WHAT_MAX_CHARS = 140
+STAR_SNAPSHOTS_READ = 8
+
+
+def _clean_what(text: object) -> str | None:
+    """Decode HTML entities, collapse whitespace, cut at a word boundary to 140."""
+    if not isinstance(text, str):
+        return None
+    collapsed = " ".join(html.unescape(text).split())
+    if not collapsed:
+        return None
+    head = collapsed[: DAILY_DIGEST_WHAT_MAX_CHARS + 1]
+    if len(head) <= DAILY_DIGEST_WHAT_MAX_CHARS:
+        return head
+    if " " not in head:
+        return head[:DAILY_DIGEST_WHAT_MAX_CHARS]
+    return head.rsplit(" ", 1)[0]
+
+
+def _item_what(project: dict, grove_what: object) -> str | None:
+    """The project's own description wins; Grove's line is only a fallback.
+
+    A video's stored description is a byline, "By <channel> · N views"
+    (youtube_trends/source.py), not what the video is, so videos carry no `what`.
+    """
+    if project.get("kind") == "video":
+        return None
+    return _clean_what(project.get("description")) or _clean_what(grove_what)
+
+
+async def _weekly_star_gain(db, project_url: str) -> tuple[int | None, int | None]:
+    """Raw star gain over the last daily snapshots and the days they really span.
+
+    Reads the tracker's snapshots the way github_radar does (projectId plus an
+    empty postId, oldest first). Both values are None below two snapshots:
+    unknown, not zero. The window comes from the timestamps because backfilled
+    snapshots are stamped 12:00Z and organic ones at run time. This is
+    enrichment: any failure leaves the gain unknown instead of losing the digest.
+    """
+    try:
+        docs = (
+            await db.signals.find(
+                {"projectId": project_url, "postId": ""},
+                {"capturedAt": 1, "github_stars": 1, "_id": 0},
+            )
+            .sort("capturedAt", 1)
+            .to_list(None)
+        )
+        history = [doc for doc in docs if "github_stars" in doc][-STAR_SNAPSHOTS_READ:]
+        if len(history) < 2:
+            return None, None
+        span = history[-1]["capturedAt"] - history[0]["capturedAt"]
+        return _raw_velocity(history, 7), round(span.total_seconds() / 86400)
+    except Exception as e:
+        logger.warning("Weekly star gain skipped for '%s': %s", project_url, e)
+        return None, None
 
 
 def _daily_post_filter(since: datetime) -> dict:
@@ -58,12 +116,27 @@ def _build_grove_prompt(posts: list[dict]) -> str:
             }
         )
 
+    needs_what = [
+        i
+        for i, post in enumerate(posts)
+        if post.get("project", {}).get("kind") != "video"
+        and not _clean_what(post.get("project", {}).get("description"))
+    ]
+    what_request = (
+        'For posts with these ids, also return a key "what": a plain line of '
+        "at most 12 words saying what the project is, based only on its title "
+        f"and body: {json.dumps(needs_what)}. "
+        if needs_what
+        else ""
+    )
+
     return (
         "You are the HypeRadar editor. "
         "Pick the top 5 most interesting/hyped items from the following posts. "
         f"Max 2 from the same source (agentHandle). "
         "For each, write a one-line English blurb explaining why it's hyped. "
         "Return as a JSON array of objects with keys: id, blurb. "
+        f"{what_request}"
         f"Posts: {json.dumps(items)}"
     )
 
@@ -138,14 +211,19 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
         agent_counts[agent] = agent_counts.get(agent, 0) + 1
         project = post.get("project", {})
         signal = post.get("signal", {})
+        weekly_gain, window_days = await _weekly_star_gain(db, project.get("url", ""))
         items.append(
             {
                 "rank": len(items) + 1,
                 "agentHandle": agent,
-                "title": project.get("title", ""),
+                "title": html.unescape(project.get("title", "")),
                 "url": project.get("url", ""),
                 "kind": project.get("kind", "repo"),
                 "blurb": pick.get("blurb", ""),
+                "what": _item_what(project, pick.get("what")),
+                "verdict": post.get("verdict") or None,
+                "weeklyGain": weekly_gain,
+                "weeklyGainWindowDays": window_days,
                 "score": post.get("rankScore", 0),
                 "signalSource": signal.get("source"),
                 "signalMetric": signal.get("metric"),
@@ -173,14 +251,21 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
             agent_counts[agent] = agent_counts.get(agent, 0) + 1
             project = post.get("project", {})
             signal = post.get("signal", {})
+            weekly_gain, window_days = await _weekly_star_gain(
+                db, project.get("url", "")
+            )
             items.append(
                 {
                     "rank": len(items) + 1,
                     "agentHandle": agent,
-                    "title": project.get("title", ""),
+                    "title": html.unescape(project.get("title", "")),
                     "url": project.get("url", ""),
                     "kind": project.get("kind", "repo"),
                     "blurb": post.get("body", "")[:100],
+                    "what": _item_what(project, None),
+                    "verdict": post.get("verdict") or None,
+                    "weeklyGain": weekly_gain,
+                    "weeklyGainWindowDays": window_days,
                     "score": post.get("rankScore", 0),
                     "signalSource": signal.get("source"),
                     "signalMetric": signal.get("metric"),

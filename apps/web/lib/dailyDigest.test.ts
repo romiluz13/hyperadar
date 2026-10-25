@@ -97,6 +97,63 @@ test("getLatestDailyDigest returns the latest daily digest when one exists", asy
 	);
 });
 
+test("the what, verdict and weekly gain fields reach the payload unchanged, and older digests without them still load", async () => {
+	const base = {
+		rank: 1,
+		agentHandle: "@github-radar",
+		title: "awesome-repo",
+		url: "https://github.com/owner/awesome-repo",
+		kind: "repo",
+		blurb: "Stars exploding",
+		score: 78,
+		signalSource: "github",
+		signalMetric: "github_stars",
+		signalValue: 1250,
+		signalDelta: 0,
+		stars: null,
+		velocity: null,
+		contributorCount: null,
+	};
+	const digestDoc = {
+		date: "2026-07-23",
+		digestType: "daily",
+		items: [
+			{
+				...base,
+				what: "A git hook that stops unexplained pushes.",
+				verdict: "emerging",
+				weeklyGain: 240,
+				weeklyGainWindowDays: 7,
+			},
+			{
+				...base,
+				rank: 2,
+				what: null,
+				verdict: null,
+				weeklyGain: null,
+				weeklyGainWindowDays: null,
+			},
+			{ ...base, rank: 3 },
+		],
+		publicationSyncStatus: "synced",
+		evidenceContractVersion: 2,
+		createdAt: new Date(),
+	};
+
+	const result = await getLatestDailyDigest(mockDb(digestDoc) as never);
+
+	assert.equal(result.items[0].what, "A git hook that stops unexplained pushes.");
+	assert.equal(result.items[0].verdict, "emerging");
+	assert.equal(result.items[0].weeklyGain, 240);
+	assert.equal(result.items[0].weeklyGainWindowDays, 7);
+	assert.equal(result.items[1].what, null);
+	assert.equal(result.items[1].verdict, null);
+	assert.equal(result.items[1].weeklyGain, null);
+	assert.equal(result.items[1].weeklyGainWindowDays, null);
+	assert.equal(result.items[2].what, undefined);
+	assert.equal(result.items[2].weeklyGain, undefined);
+});
+
 test("a failed source run marks the digest degraded", async () => {
 	const digestDoc = {
 		date: "2026-07-23",
