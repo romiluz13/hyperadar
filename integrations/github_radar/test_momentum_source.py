@@ -362,3 +362,127 @@ async def test_momentum_threshold_scales_to_pool(db, monkeypatch):
     finally:
         db.signals.delete_many({"projectId": {"$in": [strong_url, weaker_url]}})
         db.posts.delete_many({"project.url": {"$in": [strong_url, weaker_url]}})
+
+
+@pytest.mark.asyncio
+async def test_momentum_candidate_carries_the_github_about_description(
+    db, monkeypatch
+):
+    """The momentum path stores the repo's own About line, not an empty string."""
+    from github_radar import github_source
+
+    async def fake_track(db):
+        return 0
+
+    async def fake_about(client, owner, repo):
+        return "An AI agent toolkit that plans and executes tasks"
+
+    monkeypatch.setattr(github_source, "track_daily_snapshots", fake_track)
+    monkeypatch.setattr(github_source, "_repo_about_description", fake_about)
+
+    async_db = mongo._get_db()
+    repo_url = "https://github.com/test/about-description"
+
+    snaps = _snapshots([200 + i * 6 for i in range(14)], forks=30)
+    for s in snaps:
+        s["projectId"] = repo_url
+
+    db.signals.delete_many({"projectId": repo_url})
+    db.posts.delete_many({"project.url": repo_url})
+    db.signals.insert_many(snaps)
+
+    try:
+        results = await github_source.fetch_trending_candidates_with_momentum(async_db)
+        passing = [r for r in results if r["url"] == repo_url][0]
+        assert passing["description"] == (
+            "An AI agent toolkit that plans and executes tasks"
+        )
+    finally:
+        db.signals.delete_many({"projectId": repo_url})
+        db.posts.delete_many({"project.url": repo_url})
+
+
+@pytest.mark.asyncio
+async def test_momentum_about_failure_fails_soft_to_empty_description(
+    db, monkeypatch
+):
+    """When the About fetch fails, the candidate keeps an empty description
+    instead of losing the digest."""
+    from github_radar import github_source
+
+    async def fake_track(db):
+        return 0
+
+    async def fake_about(client, owner, repo):
+        return ""
+
+    monkeypatch.setattr(github_source, "track_daily_snapshots", fake_track)
+    monkeypatch.setattr(github_source, "_repo_about_description", fake_about)
+
+    async_db = mongo._get_db()
+    repo_url = "https://github.com/test/about-fails"
+
+    snaps = _snapshots([200 + i * 6 for i in range(14)], forks=30)
+    for s in snaps:
+        s["projectId"] = repo_url
+
+    db.signals.delete_many({"projectId": repo_url})
+    db.posts.delete_many({"project.url": repo_url})
+    db.signals.insert_many(snaps)
+
+    try:
+        results = await github_source.fetch_trending_candidates_with_momentum(async_db)
+        passing = [r for r in results if r["url"] == repo_url][0]
+        assert passing["description"] == ""
+    finally:
+        db.signals.delete_many({"projectId": repo_url})
+        db.posts.delete_many({"project.url": repo_url})
+
+
+@pytest.mark.asyncio
+async def test_momentum_client_follows_redirects(db, monkeypatch):
+    """A renamed repo answers its About GET with a 301; the client must be
+    built with follow_redirects=True or the clause is lost silently."""
+    from github_radar import github_source
+
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def fake_track(db):
+        return 0
+
+    async def fake_about(client, owner, repo):
+        return "An about line"
+
+    monkeypatch.setattr(github_source.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(github_source, "track_daily_snapshots", fake_track)
+    monkeypatch.setattr(github_source, "_repo_about_description", fake_about)
+
+    async_db = mongo._get_db()
+    repo_url = "https://github.com/test/about-redirects"
+
+    snaps = _snapshots([200 + i * 6 for i in range(14)], forks=30)
+    for s in snaps:
+        s["projectId"] = repo_url
+
+    db.signals.delete_many({"projectId": repo_url})
+    db.posts.delete_many({"project.url": repo_url})
+    db.signals.insert_many(snaps)
+
+    try:
+        await github_source.fetch_trending_candidates_with_momentum(async_db)
+        assert captured.get("follow_redirects") is True, (
+            "The momentum About client must follow redirects (renamed repos 301)"
+        )
+    finally:
+        db.signals.delete_many({"projectId": repo_url})
+        db.posts.delete_many({"project.url": repo_url})

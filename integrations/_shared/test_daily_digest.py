@@ -34,6 +34,7 @@ def _make_post(
     signal: dict | None = None,
     title: str | None = None,
     description: str | None = None,
+    url: str | None = None,
 ) -> dict:
     """Build a post document that matches the real write_post.py schema."""
     post = {
@@ -45,7 +46,7 @@ def _make_post(
         "signal": signal or {},
         "project": {
             "title": title if title is not None else f"repo-{i}",
-            "url": f"https://example.com/repo-{i}",
+            "url": url if url is not None else f"https://example.com/repo-{i}",
             "kind": kind,
             "momentumScore": momentum_score,
         },
@@ -334,7 +335,13 @@ class TestGenerateDailyDigest:
                 {"id": 1, "blurb": "Viral agent framework explainer."},
             ]
 
+        async def fake_about_fetch(client, owner, repo):
+            return None
+
         monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+        monkeypatch.setattr(
+            daily_digest, "_fetch_github_about_description", fake_about_fetch
+        )
 
         result = await daily_digest.generate_daily_digest(db=db, now=now)
 
@@ -733,9 +740,206 @@ class TestDigestItemWhat:
             None,
         ]
 
+    def test_item_what_skips_grove_for_a_github_repo_without_description(self):
+        """A GitHub repo without a stored description gets its About line via
+        the enrichment pass or nothing — Grove must not guess for it."""
+        github_project = {
+            "kind": "repo",
+            "url": "https://github.com/JetBrains/thinkrail",
+            "description": "",
+        }
+        assert daily_digest._item_what(github_project, "A Grove guess") is None
+
+    def test_item_what_keeps_the_grove_fallback_for_non_github_repos(self):
+        other_host = {
+            "kind": "repo",
+            "url": "https://gitlab.com/foo/bar",
+            "description": "",
+        }
+        assert daily_digest._item_what(other_host, "A Grove line") == "A Grove line"
+
+    def test_clean_what_drops_a_dangling_trailing_conjunction(self):
+        """A 140-char cut can land mid-list ("... data-backed charts and");
+        the clause must not end on the connective."""
+        text = " ".join(["filler"] * 19) + " and " + "x" * 40
+        assert daily_digest._clean_what(text) == " ".join(["filler"] * 19)
+
+    async def test_github_repo_without_description_gets_the_authors_about_line(
+        self, monkeypatch
+    ):
+        """The digest fetches the repo's About line once and uses it as `what`;
+        Grove's guess is not used for a GitHub repo."""
+        posts = [
+            _make_post(
+                0, url="https://github.com/JetBrains/thinkrail", description=""
+            )
+        ]
+        calls = []
+
+        async def fake_fetch(client, owner, repo):
+            calls.append((owner, repo))
+            return "Vibe code with pi in a lightweight, real IDE"
+
+        monkeypatch.setattr(
+            daily_digest, "_fetch_github_about_description", fake_fetch
+        )
+        items = await self._digest(
+            monkeypatch, posts, [{"id": 0, "blurb": "b", "what": "A Grove guess"}]
+        )
+        assert items[0]["what"] == "Vibe code with pi in a lightweight, real IDE"
+        assert calls == [("JetBrains", "thinkrail")]
+
+    async def test_github_about_failure_leaves_what_null_not_a_grove_guess(
+        self, monkeypatch
+    ):
+        posts = [_make_post(0, url="https://github.com/o/r", description="")]
+
+        async def fake_fetch(client, owner, repo):
+            return None
+
+        monkeypatch.setattr(
+            daily_digest, "_fetch_github_about_description", fake_fetch
+        )
+        items = await self._digest(
+            monkeypatch, posts, [{"id": 0, "blurb": "b", "what": "A digit free guess"}]
+        )
+        assert items[0]["what"] is None
+
+    async def test_non_github_repos_keep_the_grove_fallback_and_are_not_fetched(
+        self, monkeypatch
+    ):
+        posts = [_make_post(0, url="https://gitlab.com/foo/bar", description="")]
+        calls = []
+
+        async def fake_fetch(client, owner, repo):
+            calls.append((owner, repo))
+            return "Should not be fetched"
+
+        monkeypatch.setattr(
+            daily_digest, "_fetch_github_about_description", fake_fetch
+        )
+        items = await self._digest(
+            monkeypatch, posts, [{"id": 0, "blurb": "b", "what": "A Grove line"}]
+        )
+        assert items[0]["what"] == "A Grove line"
+        assert calls == []
+
+    async def test_the_about_backstop_dedupes_repeated_repos(self, monkeypatch):
+        """Two items pointing at the same repo cost one API call."""
+        url = "https://github.com/JetBrains/thinkrail"
+        posts = [
+            _make_post(0, url=url, description=""),
+            _make_post(1, agent="@youtube-trends", url=url, description=""),
+        ]
+        calls = []
+
+        async def fake_fetch(client, owner, repo):
+            calls.append((owner, repo))
+            return "An IDE that adapts to you"
+
+        monkeypatch.setattr(
+            daily_digest, "_fetch_github_about_description", fake_fetch
+        )
+        items = await self._digest(monkeypatch, posts, [{"id": 0, "blurb": "b"}])
+        assert calls == [("JetBrains", "thinkrail")]
+        assert [item["what"] for item in items] == ["An IDE that adapts to you"] * 2
+
+    async def test_backfilled_github_items_get_the_about_line_too(self, monkeypatch):
+        posts = [
+            _make_post(0, description="Picked."),
+            _make_post(
+                1,
+                agent="@youtube-trends",
+                url="https://github.com/o/backfilled",
+                description="",
+            ),
+        ]
+
+        async def fake_fetch(client, owner, repo):
+            return "Backfilled description"
+
+        monkeypatch.setattr(
+            daily_digest, "_fetch_github_about_description", fake_fetch
+        )
+        items = await self._digest(monkeypatch, posts, [{"id": 0, "blurb": "b"}])
+        assert [item["what"] for item in items] == [
+            "Picked.",
+            "Backfilled description",
+        ]
+
+    async def test_subpath_github_urls_are_not_fetched(self, monkeypatch):
+        """Only strict repo URLs are enriched; an issues link is not a repo."""
+        posts = [_make_post(0, url="https://github.com/o/r/issues", description="")]
+        calls = []
+
+        async def fake_fetch(client, owner, repo):
+            calls.append((owner, repo))
+            return "Should not be fetched"
+
+        monkeypatch.setattr(
+            daily_digest, "_fetch_github_about_description", fake_fetch
+        )
+        items = await self._digest(
+            monkeypatch, posts, [{"id": 0, "blurb": "b", "what": "A Grove line"}]
+        )
+        assert calls == []
+        assert items[0]["what"] == "A Grove line"
+
+    async def test_dot_git_suffix_urls_are_enriched(self, monkeypatch):
+        posts = [_make_post(0, url="https://github.com/o/r.git", description="")]
+        calls = []
+
+        async def fake_fetch(client, owner, repo):
+            calls.append((owner, repo))
+            return "An about line"
+
+        monkeypatch.setattr(
+            daily_digest, "_fetch_github_about_description", fake_fetch
+        )
+        items = await self._digest(monkeypatch, posts, [{"id": 0, "blurb": "b"}])
+        assert calls == [("o", "r")]
+        assert items[0]["what"] == "An about line"
+
+    async def test_video_with_a_github_url_is_not_fetched(self, monkeypatch):
+        """The backstop only serves kind repo; a video's byline is not a what."""
+        posts = [
+            _make_post(
+                0,
+                agent="@youtube-trends",
+                kind="video",
+                url="https://github.com/o/r",
+                description="",
+            )
+        ]
+        calls = []
+
+        async def fake_fetch(client, owner, repo):
+            calls.append((owner, repo))
+            return "Should not be fetched"
+
+        monkeypatch.setattr(
+            daily_digest, "_fetch_github_about_description", fake_fetch
+        )
+        items = await self._digest(
+            monkeypatch, posts, [{"id": 0, "blurb": "b", "what": "A video guess"}]
+        )
+        assert calls == []
+        assert items[0]["what"] is None
+
     def test_prompt_never_asks_grove_for_what_on_a_video(self):
         posts = [
             _make_post(0, kind="video", description=""),
+            _make_post(1, agent="@reddit-pulse", description=""),
+        ]
+        prompt = _build_grove_prompt(posts)
+        assert "[1]" in prompt
+        assert "[0, 1]" not in prompt
+
+    def test_prompt_never_asks_grove_for_what_on_a_github_repo(self):
+        """Grove's answer for a GitHub repo is always discarded (the About
+        backstop owns it), so the prompt does not pay for it."""
+        posts = [
+            _make_post(0, url="https://github.com/o/r", description=""),
             _make_post(1, agent="@reddit-pulse", description=""),
         ]
         prompt = _build_grove_prompt(posts)

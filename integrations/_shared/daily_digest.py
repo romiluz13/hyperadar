@@ -5,10 +5,12 @@ blurb the top 5 (max 2 per source), stores the digest in the digests
 collection.
 """
 
+import asyncio
 import html
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -33,6 +35,15 @@ DAILY_DIGEST_MAX_PER_AGENT = 2
 DAILY_DIGEST_WHAT_MAX_CHARS = 140
 STAR_SNAPSHOTS_READ = 8
 
+_GITHUB_REPO_URL = re.compile(
+    r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$"
+)
+# A 140-char cut can land mid-list ("... data-backed charts and"); the clause
+# must never end on the connective that pointed at the dropped remainder.
+_DANGLING_CONNECTIVES = {"and", "or", "with", "for", "&"}
+_ABOUT_FETCH_TIMEOUT_SECONDS = 5.0
+_ABOUT_PER_REPO_SLEEP_SECONDS = 0.1
+
 
 def _clean_what(text: object) -> str | None:
     """Decode HTML entities, collapse whitespace, cut at a word boundary to 140."""
@@ -42,11 +53,102 @@ def _clean_what(text: object) -> str | None:
     if not collapsed:
         return None
     head = collapsed[: DAILY_DIGEST_WHAT_MAX_CHARS + 1]
-    if len(head) <= DAILY_DIGEST_WHAT_MAX_CHARS:
-        return head
-    if " " not in head:
-        return head[:DAILY_DIGEST_WHAT_MAX_CHARS]
-    return head.rsplit(" ", 1)[0]
+    if len(head) > DAILY_DIGEST_WHAT_MAX_CHARS:
+        if " " not in head:
+            head = head[:DAILY_DIGEST_WHAT_MAX_CHARS]
+        else:
+            head = head.rsplit(" ", 1)[0]
+    while True:
+        head = head.rstrip(",;:·—–- ")
+        last = head.rsplit(" ", 1)[-1] if head else ""
+        if last.lower() in _DANGLING_CONNECTIVES and " " in head:
+            head = head.rsplit(" ", 1)[0]
+        else:
+            break
+    return head or None
+
+
+def _github_owner_repo(url: object) -> tuple[str, str] | None:
+    """OWNER/REPO from a strict github.com URL; other hosts and subpaths are skipped.
+
+    Twin of github_radar.github_source._github_owner_repo — keep the two in
+    sync: a URL one accepts and the other rejects decides whether a repo is
+    published with its description or enriched at digest time.
+    """
+    if not isinstance(url, str):
+        return None
+    match = _GITHUB_REPO_URL.match(url.strip())
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _github_api_headers() -> dict:
+    """Same opportunistic token as github_radar: authenticated when the env has it."""
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"token {token}"
+    return headers
+
+
+async def _fetch_github_about_description(
+    client: httpx.AsyncClient, owner: str, repo: str
+) -> str | None:
+    """The repo's own About line, or None on any failure — never a guess."""
+    try:
+        response = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}",
+            headers=_github_api_headers(),
+        )
+    except httpx.HTTPError as e:
+        logger.warning("GitHub About fetch failed for %s/%s: %s", owner, repo, e)
+        return None
+    if response.status_code != 200:
+        logger.info(
+            "GitHub About fetch for %s/%s returned %d", owner, repo, response.status_code
+        )
+        return None
+    try:
+        return _clean_what(response.json().get("description"))
+    except ValueError:
+        return None
+
+
+async def _enrich_missing_repo_whats(items: list[dict]) -> None:
+    """Fill `what` for GitHub repo items whose description is empty.
+
+    The momentum producer historically stored an empty description; this is the
+    fail-soft backstop: the author's own About line, fetched once per distinct
+    repo, bounded by the digest's own item maximum. Any failure leaves `what`
+    null — the renderer says so honestly instead of inventing a description.
+    """
+    wanted: dict[tuple[str, str], list[dict]] = {}
+    for item in items:
+        if item.get("kind") != "repo" or item.get("what"):
+            continue
+        owner_repo = _github_owner_repo(item.get("url"))
+        if owner_repo:
+            wanted.setdefault(owner_repo, []).append(item)
+    if not wanted:
+        return
+    async with httpx.AsyncClient(
+        timeout=_ABOUT_FETCH_TIMEOUT_SECONDS, follow_redirects=True
+    ) as client:
+        for (owner, repo), targets in wanted.items():
+            # Same guarantee as _weekly_star_gain: enrichment must never cost
+            # the digest, so one broken repo leaves its items' what null.
+            try:
+                description = await _fetch_github_about_description(
+                    client, owner, repo
+                )
+            except Exception as e:
+                logger.warning("About backstop skipped for %s/%s: %s", owner, repo, e)
+                description = None
+            if description:
+                for item in targets:
+                    item["what"] = description
+            await asyncio.sleep(_ABOUT_PER_REPO_SLEEP_SECONDS)
 
 
 def _item_what(project: dict, grove_what: object) -> str | None:
@@ -57,12 +159,16 @@ def _item_what(project: dict, grove_what: object) -> str | None:
     Grove writes its line from the post body, which carries star counts and the
     blurb's growth claims, so a Grove line with any digit in it is dropped: the
     only numbers RomBot may print come from the digest's own numeric fields.
+    A GitHub repo without a stored description gets its author's About line via
+    _enrich_missing_repo_whats, or nothing — Grove must not guess for it.
     """
     if project.get("kind") == "video":
         return None
     description = _clean_what(project.get("description"))
     if description:
         return description
+    if _github_owner_repo(project.get("url")):
+        return None
     fallback = _clean_what(grove_what)
     if fallback and not any(char.isdigit() for char in fallback):
         return fallback
@@ -130,6 +236,7 @@ def _build_grove_prompt(posts: list[dict]) -> str:
         for i, post in enumerate(posts)
         if post.get("project", {}).get("kind") != "video"
         and not _clean_what(post.get("project", {}).get("description"))
+        and not _github_owner_repo(post.get("project", {}).get("url"))
     ]
     what_request = (
         'For posts with these ids, also return a key "what": a plain line of '
@@ -287,6 +394,8 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
                     "contributorCount": None,
                 }
             )
+
+    await _enrich_missing_repo_whats(items)
 
     date_str = now.strftime("%Y-%m-%d")
     digest = {

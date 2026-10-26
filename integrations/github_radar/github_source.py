@@ -217,6 +217,44 @@ def _passes_fake_star_filter(stars: int, forks) -> bool:
     return passes_fake_star_filter(stars, forks)
 
 
+def _github_owner_repo(url: object) -> tuple[str, str] | None:
+    """OWNER/REPO from a strict github.com URL; other hosts and subpaths are skipped.
+
+    Twin of _shared.daily_digest._github_owner_repo — keep the two in sync: a
+    URL one accepts and the other rejects decides whether a repo is published
+    with its description or enriched at digest time.
+    """
+    if not isinstance(url, str):
+        return None
+    parts = [p for p in url[len("https://github.com/") :].split("/") if p]
+    if not url.startswith("https://github.com/") or len(parts) != 2:
+        return None
+    owner, repo = parts
+    if repo.endswith(".git"):
+        repo = repo[: -len(".git")]
+    if not owner or not repo:
+        return None
+    return owner, repo
+
+
+async def _repo_about_description(client, owner, repo) -> str:
+    """The repo's own About line for a momentum candidate; "" on any failure.
+
+    The client must be built with follow_redirects=True: a renamed repo
+    answers its About GET with a 301 to the new owner/repo, and httpx does
+    not follow redirects by default — the clause would be lost silently.
+    """
+    response = await _fetch_repo_with_retry(
+        client, f"https://api.github.com/repos/{owner}/{repo}"
+    )
+    if response is None or response.status_code != 200:
+        return ""
+    try:
+        return (response.json().get("description") or "").strip()
+    except ValueError:
+        return ""
+
+
 async def fetch_trending_candidates(max_results: int = 10) -> list[dict]:
     """Fetch trending candidate repos via OSSInsight velocity, Search API fallback.
 
@@ -437,37 +475,48 @@ async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
     threshold = publish_score_threshold([row["score"] for row in scored])
 
     # Second pass: behavioral gates + cross-agent cooldown, against the
-    # pool-scaled threshold.
+    # pool-scaled threshold. Published candidates get the repo's own About
+    # line as their description (fail-soft to "") instead of a hard-coded
+    # empty string, so downstream consumers have a `what`.
     results: list[dict] = []
-    for row in scored:
-        project_url = row["project_url"]
-        last_pub_days = await get_last_published_days(db, project_url)
-        if not should_publish_hidden_gem(
-            row["score"],
-            row["velocity"],
-            row["acceleration"],
-            row["fork_star_ratio"],
-            last_pub_days,
-            row["is_monotonic"],
-            score_threshold=threshold,
-        ):
-            continue
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        for row in scored:
+            project_url = row["project_url"]
+            last_pub_days = await get_last_published_days(db, project_url)
+            if not should_publish_hidden_gem(
+                row["score"],
+                row["velocity"],
+                row["acceleration"],
+                row["fork_star_ratio"],
+                last_pub_days,
+                row["is_monotonic"],
+                score_threshold=threshold,
+            ):
+                continue
 
-        results.append(
-            {
-                "url": project_url,
-                "title": project_url.rsplit("/", 1)[-1],
-                "kind": "repo",
-                "description": "",
-                "topics": ["ai", "github-radar"],
-                "discovery_source": "momentum",
-                "evidence_url": project_url,
-                "stars": row["stars"],
-                "github_stars": row["stars"],
-                "github_forks": row["forks"],
-                "momentumScore": row["score"],
-                "velocity": row["velocity"],
-                "acceleration": row["acceleration"],
-            }
-        )
+            description = ""
+            owner_repo = _github_owner_repo(project_url)
+            if owner_repo:
+                description = await _repo_about_description(
+                    client, owner_repo[0], owner_repo[1]
+                )
+                await asyncio.sleep(_PER_REPO_SLEEP_SECONDS)
+
+            results.append(
+                {
+                    "url": project_url,
+                    "title": project_url.rsplit("/", 1)[-1],
+                    "kind": "repo",
+                    "description": description,
+                    "topics": ["ai", "github-radar"],
+                    "discovery_source": "momentum",
+                    "evidence_url": project_url,
+                    "stars": row["stars"],
+                    "github_stars": row["stars"],
+                    "github_forks": row["forks"],
+                    "momentumScore": row["score"],
+                    "velocity": row["velocity"],
+                    "acceleration": row["acceleration"],
+                }
+            )
     return results
