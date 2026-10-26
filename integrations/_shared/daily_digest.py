@@ -54,10 +54,19 @@ def _item_what(project: dict, grove_what: object) -> str | None:
 
     A video's stored description is a byline, "By <channel> · N views"
     (youtube_trends/source.py), not what the video is, so videos carry no `what`.
+    Grove writes its line from the post body, which carries star counts and the
+    blurb's growth claims, so a Grove line with any digit in it is dropped: the
+    only numbers RomBot may print come from the digest's own numeric fields.
     """
     if project.get("kind") == "video":
         return None
-    return _clean_what(project.get("description")) or _clean_what(grove_what)
+    description = _clean_what(project.get("description"))
+    if description:
+        return description
+    fallback = _clean_what(grove_what)
+    if fallback and not any(char.isdigit() for char in fallback):
+        return fallback
+    return None
 
 
 async def _weekly_star_gain(db, project_url: str) -> tuple[int | None, int | None]:
@@ -125,7 +134,9 @@ def _build_grove_prompt(posts: list[dict]) -> str:
     what_request = (
         'For posts with these ids, also return a key "what": a plain line of '
         "at most 12 words saying what the project is, based only on its title "
-        f"and body: {json.dumps(needs_what)}. "
+        "and body, with no numbers, no star counts and no hype words; if the "
+        "title and body do not say what it is, return an empty string: "
+        f"{json.dumps(needs_what)}. "
         if needs_what
         else ""
     )

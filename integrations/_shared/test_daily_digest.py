@@ -656,6 +656,26 @@ class TestDigestItemWhat:
         assert items[0]["what"] == "A tool for agents"
         assert items[1]["what"] == "Real description."
 
+    async def test_grove_what_with_a_number_is_dropped_but_a_description_keeps_its_numbers(
+        self, monkeypatch
+    ):
+        posts = [
+            _make_post(0, description=""),
+            _make_post(1, agent="@youtube-trends", description=""),
+            _make_post(2, agent="@reddit-pulse", description="A Python 3 agent kit."),
+        ]
+        picks = [
+            {"id": 0, "blurb": "b0", "what": "A project named x with 12,113 stars"},
+            {"id": 1, "blurb": "b1", "what": "A terminal tool for agents"},
+            {"id": 2, "blurb": "b2", "what": "Invented by the model"},
+        ]
+        items = await self._digest(monkeypatch, posts, picks)
+        assert [item["what"] for item in items] == [
+            None,
+            "A terminal tool for agents",
+            "A Python 3 agent kit.",
+        ]
+
     async def test_what_is_null_when_description_and_grove_are_empty(self, monkeypatch):
         posts = [
             _make_post(0),
@@ -731,6 +751,11 @@ class TestDigestItemWhat:
         prompt = _build_grove_prompt(posts)
         assert '"what"' in prompt
         assert "[1, 2]" in prompt
+
+    def test_prompt_lets_grove_decline_and_forbids_numbers_in_what(self):
+        prompt = _build_grove_prompt([_make_post(0, description="")])
+        assert "no numbers" in prompt
+        assert "empty string" in prompt
 
     def test_prompt_does_not_ask_for_what_when_every_post_has_a_description(self):
         prompt = _build_grove_prompt([_make_post(0, description="Has one.")])
