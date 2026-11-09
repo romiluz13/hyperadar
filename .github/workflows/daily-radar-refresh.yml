@@ -165,6 +165,8 @@ jobs:
           from _shared.daily_digest import generate_daily_digest
           result = asyncio.run(generate_daily_digest())
           print('digest generated:', result is not None)
+          if result is None:
+              raise SystemExit('no digest: no published posts in the last 24h')
           print('items:', len(result['items']) if result else 0)
           "
 
@@ -178,18 +180,19 @@ jobs:
     steps:
       - name: Post failure alert
         env:
-          # Slack-compatible incoming webhook. Optional: without it the job
-          # only prints a visible warning banner in the run log.
+          # ntfy topic URL (https://ntfy.sh/<topic>); the phone app shows the
+          # alert and opens the run on tap.
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           AGENTS_RESULT: ${{ needs.run-all-agents.result }}
           DIGEST_RESULT: ${{ needs.generate-digest.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ -z "$ALERT_WEBHOOK_URL" ]; then
-            echo "::warning::HypeRadar daily refresh failed (agents: $AGENTS_RESULT, digest: $DIGEST_RESULT) but ALERT_WEBHOOK_URL is not configured — add it to repository secrets to receive push notifications."
-            exit 0
+            echo "::error::HypeRadar daily refresh failed (agents: $AGENTS_RESULT, digest: $DIGEST_RESULT) and ALERT_WEBHOOK_URL is not configured, so no alert was sent."
+            exit 1
           fi
-          payload=$(printf '{"text": "HypeRadar daily refresh FAILED — agents: %s, digest: %s. The feed may be stale: %s"}' "$AGENTS_RESULT" "$DIGEST_RESULT" "$RUN_URL")
-          curl -sS -f -X POST "$ALERT_WEBHOOK_URL" \
-            -H 'Content-Type: application/json' \
-            -d "$payload"
+          curl -sS -f --max-time 15 -X POST "$ALERT_WEBHOOK_URL" \
+            -H "Title: HypeRadar daily refresh failed" \
+            -H "Priority: high" \
+            -H "Click: $RUN_URL" \
+            -d "Agents: $AGENTS_RESULT, digest: $DIGEST_RESULT. Tomorrow's digest may be stale. Tap to open the run."
