@@ -23,7 +23,7 @@ from _shared.momentum import (
     publish_score_threshold,
     should_publish_hidden_gem,
 )
-from _shared.mongo import get_last_published_days
+from _shared.mongo import get_last_published_days, load_active_star_histories
 from github_radar.tracker import track_daily_snapshots
 
 _token = os.environ.get("GITHUB_TOKEN", "")
@@ -406,7 +406,7 @@ async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
     """Fetch trending AI repos using the shared Momentum Score.
 
     1. Store today's snapshots via ``track_daily_snapshots``.
-    2. Query the signals time-series for repos with >=7 days of history.
+    2. Load repos snapshotted this week with >=7 days of history, in batch.
     3. Score every repo in the pool, then scale the publish threshold to the
        pool's 80th percentile (``publish_score_threshold``).
     4. Apply the fake-star filter and the publishing gate (with cross-agent
@@ -415,37 +415,15 @@ async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
     """
     await track_daily_snapshots(db)
 
-    # Find all projectIds with >=7 days of pre-publication snapshots.
-    pipeline = [
-        {"$match": {"postId": ""}},
-        {
-            "$group": {
-                "_id": "$projectId",
-                "count": {"$sum": 1},
-            },
-        },
-        {"$match": {"count": {"$gte": _MIN_HISTORY_DAYS}}},
-    ]
-    candidates_with_history = await (await db.signals.aggregate(pipeline)).to_list(
-        length=None
-    )
+    histories, post_counts = await load_active_star_histories(db, _MIN_HISTORY_DAYS)
 
     # First pass: score every repo in the pool so the publish threshold can
     # scale to today's distribution instead of a hardcoded cutoff that only
     # already-trending repos could clear.
     scored: list[dict] = []
-    for doc in candidates_with_history:
+    for doc in histories:
         project_url = doc["_id"]
-
-        # Fetch the full history sorted by capturedAt ascending.
-        cursor = db.signals.find(
-            {"projectId": project_url, "postId": ""},
-            {"capturedAt": 1, "github_stars": 1, "github_forks": 1, "_id": 0},
-        ).sort("capturedAt", 1)
-        history = await cursor.to_list(length=None)
-
-        if len(history) < _MIN_HISTORY_DAYS:
-            continue
+        history = doc["history"]
 
         velocity = _velocity(history, 7)
         acceleration = _acceleration(history)
@@ -456,7 +434,7 @@ async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
         if not passes_fake_star_filter(stars, forks):
             continue
 
-        prior_count = await db.posts.count_documents({"project.url": project_url})
+        prior_count = post_counts.get(project_url, 0)
         score = compute_momentum_score(history, prior_post_count=prior_count)
 
         scored.append(

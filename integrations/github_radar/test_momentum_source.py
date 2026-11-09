@@ -486,3 +486,41 @@ async def test_momentum_client_follows_redirects(db, monkeypatch):
     finally:
         db.signals.delete_many({"projectId": repo_url})
         db.posts.delete_many({"project.url": repo_url})
+
+
+@pytest.mark.asyncio
+async def test_momentum_ignores_repos_no_longer_tracked(db, monkeypatch):
+    """A repo whose last snapshot is older than a week cannot be trending now."""
+    from github_radar import github_source
+
+    async def fake_track(db):
+        return 0
+
+    monkeypatch.setattr(github_source, "track_daily_snapshots", fake_track)
+
+    live_url = "https://github.com/test/trending-live"
+    stale_url = "https://github.com/test/trending-stale"
+    stars = [200 + i * 6 for i in range(14)]
+    live = _snapshots(stars, forks=30)
+    stale = _snapshots(stars, forks=30)
+    for s in live:
+        s["projectId"] = live_url
+    for s in stale:
+        s["projectId"] = stale_url
+        s["capturedAt"] -= timedelta(days=10)
+
+    urls = [live_url, stale_url]
+    db.signals.delete_many({"projectId": {"$in": urls}})
+    db.signals.insert_many(live + stale)
+
+    try:
+        result_urls = [
+            r["url"]
+            for r in await github_source.fetch_trending_candidates_with_momentum(
+                mongo._get_db()
+            )
+        ]
+        assert live_url in result_urls
+        assert stale_url not in result_urls
+    finally:
+        db.signals.delete_many({"projectId": {"$in": urls}})

@@ -7,6 +7,7 @@ this client. They are not custom Ocean integrations.
 
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -18,6 +19,9 @@ BASE = "https://api.getport.io/v1"
 _client_id = os.environ["PORT_CLIENT_ID"]
 _client_secret = os.environ["PORT_CLIENT_SECRET"]
 _cached_token: str | None = None
+# Set after the first auth/outage failure: each agent run is its own process,
+# and retrying a down Port on every call would stall the run (ADR 0005).
+_unavailable: dict | None = None
 MAX_RETRY_AFTER_SECONDS = 30.0
 
 
@@ -26,6 +30,29 @@ def require_success(result: dict, operation: str) -> dict:
         return result
     message = result.get("message") or result.get("error") or "unknown Port error"
     raise RuntimeError(f"Port {operation} failed: {message}")
+
+
+def warn_on_failure(result: dict, operation: str) -> dict:
+    """Log a failed catalog sync without stopping publication.
+
+    Port mirrors the catalog; MongoDB alone decides what the site shows, so a
+    Port outage must not freeze the feed (2026-10-29: Port auth 401 blocked
+    every run for 11 days).
+    """
+    if result.get("ok") is not True:
+        message = result.get("message") or result.get("error") or "unknown Port error"
+        print(f"WARNING: Port {operation} failed: {message}", file=sys.stderr, flush=True)
+    return result
+
+
+def _mark_unavailable(result: dict) -> dict:
+    global _unavailable
+    _unavailable = result
+    return result
+
+
+def _auth_failure(error: RuntimeError) -> dict:
+    return _mark_unavailable({"ok": False, "error": "auth_failed", "message": str(error)})
 
 
 def _token() -> str:
@@ -80,13 +107,19 @@ def _req(
     _attempt: int = 0,
     _auth_retried: bool = False,
 ) -> dict:
+    if _unavailable is not None:
+        return dict(_unavailable)
     data = json.dumps(body).encode() if body else None
+    try:
+        token = _token()
+    except RuntimeError as e:
+        return _auth_failure(e)
     req = urllib.request.Request(
         f"{BASE}{path}",
         data=data,
         method=method,
         headers={
-            "Authorization": f"Bearer {_token()}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
     )
@@ -97,7 +130,10 @@ def _req(
     except urllib.error.HTTPError as e:
         # 401 → token expired; refresh once and retry
         if e.code == 401 and not _auth_retried:
-            _refresh_token()
+            try:
+                _refresh_token()
+            except RuntimeError as auth_error:
+                return _auth_failure(auth_error)
             return _req(
                 method,
                 path,
@@ -122,14 +158,16 @@ def _req(
                 response = {"message": str(response)}
             response.setdefault("ok", False)
             response.setdefault("status", e.code)
-            return response
         except json.JSONDecodeError:
-            return {
+            response = {
                 "ok": False,
                 "error": "http_error",
                 "status": e.code,
                 "message": str(e),
             }
+        if e.code == 429 or e.code >= 500:
+            return _mark_unavailable(response)
+        return response
     except (urllib.error.URLError, TimeoutError) as e:
         if _attempt < 2:
             time.sleep(_retry_delay(None, _attempt))
@@ -140,7 +178,9 @@ def _req(
                 _attempt=_attempt + 1,
                 _auth_retried=_auth_retried,
             )
-        return {"ok": False, "error": "network_error", "message": str(e)}
+        return _mark_unavailable(
+            {"ok": False, "error": "network_error", "message": str(e)}
+        )
 
 
 def _upsert(

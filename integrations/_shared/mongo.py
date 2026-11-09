@@ -333,3 +333,74 @@ async def get_last_published_days(db, project_url: str) -> int:
     if posted.tzinfo is None:
         posted = posted.replace(tzinfo=timezone.utc)
     return max(0, (datetime.now(timezone.utc) - posted).days)
+
+
+# A repo with no snapshot this week has stale numbers, so it cannot be breaking
+# out now; scoring all ~2,000 historical repos one query at a time also ran the
+# agents past their 1200s deadline (2026-11-09).
+ACTIVE_TRACKING_DAYS = 7
+
+
+async def load_active_star_histories(
+    db, min_history_days: int
+) -> tuple[list[dict], dict[str, int]]:
+    """Star histories (oldest first) of repos snapshotted this week, plus post counts.
+
+    Returns ``([{"_id": url, "history": [...]}, ...], {url: post_count})`` for
+    repos with at least ``min_history_days`` pre-publication snapshots.
+    """
+    tracked_since = datetime.now(timezone.utc) - timedelta(days=ACTIVE_TRACKING_DAYS)
+    active = await (
+        await db.signals.aggregate(
+            [
+                {"$match": {"postId": ""}},
+                {
+                    "$group": {
+                        "_id": "$projectId",
+                        "count": {"$sum": 1},
+                        "lastCapturedAt": {"$max": "$capturedAt"},
+                    }
+                },
+                {
+                    "$match": {
+                        "count": {"$gte": min_history_days},
+                        "lastCapturedAt": {"$gte": tracked_since},
+                    }
+                },
+            ]
+        )
+    ).to_list(length=None)
+    project_urls = [doc["_id"] for doc in active]
+
+    histories = await (
+        await db.signals.aggregate(
+            [
+                {"$match": {"postId": "", "projectId": {"$in": project_urls}}},
+                {"$sort": {"capturedAt": 1}},
+                {
+                    "$group": {
+                        "_id": "$projectId",
+                        "history": {
+                            "$push": {
+                                "capturedAt": "$capturedAt",
+                                "github_stars": "$github_stars",
+                                "github_forks": "$github_forks",
+                            }
+                        },
+                    }
+                },
+            ]
+        )
+    ).to_list(length=None)
+    post_counts = {
+        doc["_id"]: doc["count"]
+        for doc in await (
+            await db.posts.aggregate(
+                [
+                    {"$match": {"project.url": {"$in": project_urls}}},
+                    {"$group": {"_id": "$project.url", "count": {"$sum": 1}}},
+                ]
+            )
+        ).to_list(length=None)
+    }
+    return histories, post_counts

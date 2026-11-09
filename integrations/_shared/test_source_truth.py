@@ -878,11 +878,11 @@ async def test_reddit_source_kills_a_command_that_exceeds_its_deadline(monkeypat
         source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
     )
 
-    candidates = await asyncio.wait_for(
-        source.fetch_reddit_candidates(max_results=1), timeout=0.2
-    )
+    with pytest.raises(RuntimeError, match="timed out"):
+        await asyncio.wait_for(
+            source.fetch_reddit_candidates(max_results=1), timeout=0.2
+        )
 
-    assert candidates == []
     assert processes and all(process.killed for process in processes)
 
 
@@ -1925,95 +1925,6 @@ async def test_project_reconciliation_lease_serializes_workers(db):
 
 
 @pytest.mark.asyncio
-async def test_partial_multi_source_sync_hides_every_affected_post_until_retry(
-    db, monkeypatch
-):
-    from _shared import embeddings, episodic_memory, port_client
-    from _shared import write_post as write_post_module
-
-    unique = datetime.now(timezone.utc).timestamp()
-    url = f"https://example.com/multi-source-retry-{unique}"
-    project = {
-        "url": url,
-        "title": "Multi-source retry",
-        "kind": "site",
-        "description": "Derived scores fail closed.",
-        "topics": ["recovery"],
-        "momentumScore": 60,
-        "hypeVerdict": "emerging",
-    }
-
-    async def no_prior_episodes(*_args, **_kwargs):
-        return []
-
-    post_calls = 0
-
-    def fail_during_reconciliation(*_args):
-        nonlocal post_calls
-        post_calls += 1
-        if post_calls == 3:
-            return {"ok": False, "message": "derived Port split"}
-        return {"ok": True}
-
-    monkeypatch.setattr(embeddings, "embed_project", lambda *_args: [0.1] * 384)
-    monkeypatch.setattr(episodic_memory, "retrieve_similar_episodes", no_prior_episodes)
-    monkeypatch.setattr(port_client, "upsert_agent", lambda *_args: {"ok": True})
-    monkeypatch.setattr(port_client, "upsert_project", lambda *_args: {"ok": True})
-    monkeypatch.setattr(port_client, "upsert_post", fail_during_reconciliation)
-
-    try:
-        await write_post_module.write_post(
-            "@multi-one",
-            "Multi One",
-            "First source",
-            "test",
-            project,
-            "First observation.",
-            "emerging",
-            {"source": "one", "metric": "mentions", "value": 1, "delta": 0},
-            60,
-        )
-        with pytest.raises(RuntimeError, match="derived Port split"):
-            await write_post_module.write_post(
-                "@multi-two",
-                "Multi Two",
-                "Second source",
-                "test",
-                project,
-                "Second observation.",
-                "emerging",
-                {"source": "two", "metric": "mentions", "value": 1, "delta": 0},
-                60,
-            )
-
-        assert (
-            db.posts.count_documents({"project.url": url, "portSyncStatus": "synced"})
-            == 0
-        )
-
-        monkeypatch.setattr(port_client, "upsert_post", lambda *_args: {"ok": True})
-        await write_post_module.repair_pending_posts(
-            "@multi-one", "Multi One", "First source", "test"
-        )
-        await write_post_module.repair_pending_posts(
-            "@multi-two", "Multi Two", "Second source", "test"
-        )
-
-        posts = list(db.posts.find({"project.url": url}))
-        assert len(posts) == 2
-        assert {post["portSyncStatus"] for post in posts} == {"synced"}
-        assert {post["rankScore"] for post in posts} == {70}
-    finally:
-        posts = list(db.posts.find({"project.url": url}, {"_id": 1}))
-        post_ids = [str(post["_id"]) for post in posts]
-        db.posts.delete_many({"project.url": url})
-        db.projects.delete_many({"url": url})
-        db.signals.delete_many({"projectId": url})
-        db.signal_receipts.delete_many({"_id": {"$in": post_ids}})
-        db.embeddings_audit.delete_many({"projectId": url})
-
-
-@pytest.mark.asyncio
 async def test_embedding_audit_rejects_a_conflicting_retry(db):
     from _shared import write_post as write_post_module
 
@@ -2367,263 +2278,152 @@ async def test_backlog_repair_preserves_a_v2_private_project_snapshot(db, monkey
         db.embeddings_audit.delete_many({"projectId": url})
 
 
+@pytest.fixture(autouse=True)
+def _port_available_each_test(monkeypatch):
+    import sys
+
+    port_client = sys.modules.get("_shared.port_client")
+    if port_client is not None:
+        monkeypatch.setattr(port_client, "_unavailable", None, raising=False)
+
+
+def _port_login_rejected(monkeypatch):
+    from _shared import port_client
+
+    def unauthorized(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 401, "Unauthorized", {}, io.BytesIO(b"{}")
+        )
+
+    monkeypatch.setattr(port_client.urllib.request, "urlopen", unauthorized)
+    monkeypatch.setattr(port_client, "_cached_token", None)
+
+
+def test_port_is_skipped_for_the_rest_of_the_run_after_it_fails(monkeypatch):
+    from _shared import port_client
+
+    attempts = []
+
+    def unreachable(req, timeout=None):
+        attempts.append(req.full_url)
+        raise urllib.error.URLError("connection timed out")
+
+    monkeypatch.setattr(port_client.urllib.request, "urlopen", unreachable)
+    monkeypatch.setattr(port_client, "_cached_token", "token")
+    monkeypatch.setattr(port_client.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(port_client, "_unavailable", None, raising=False)
+
+    first = port_client.upsert_agent("@a", "A", "bio", "test")
+    calls_after_first = len(attempts)
+    second = port_client.upsert_agent("@b", "B", "bio", "test")
+
+    assert first["ok"] is False and second["ok"] is False
+    assert calls_after_first > 0
+    assert len(attempts) == calls_after_first
+
+
 @pytest.mark.asyncio
-async def test_failed_port_sync_cannot_change_the_published_project_snapshot(
-    db, monkeypatch
-):
-    from _shared import embeddings, episodic_memory, port_client
-    from _shared import write_post as write_post_module
+async def test_runner_still_scans_when_port_rejects_login(monkeypatch):
+    from _shared import runner as runner_module
 
-    unique = datetime.now(timezone.utc).timestamp()
-    url = f"https://example.com/publication-gate-{unique}"
-    old_title = "Last verified title"
-    old_score = 31
-    project_id = db.projects.insert_one(
-        {
-            "url": url,
-            "slug": f"publication-gate-{unique}",
-            "title": old_title,
-            "kind": "site",
-            "description": "The last fully synchronized snapshot",
-            "topics": ["verified"],
-            "momentumScore": old_score,
-            "hypeVerdict": "cooling",
-            "embedding": [0.2] * 384,
-            "firstSeenAt": datetime.now(timezone.utc) - timedelta(days=2),
-            "lastSeenAt": datetime.now(timezone.utc) - timedelta(days=2),
-        }
-    ).inserted_id
-    db.posts.insert_one(
-        {
-            "agentHandle": "@already-published",
-            "body": "This is the last public evidence.",
-            "verdict": "cooling",
-            "rankScore": old_score,
-            "project": {
-                "url": url,
-                "title": old_title,
-                "kind": "site",
-                "description": "The last fully synchronized snapshot",
-                "topics": ["verified"],
-                "momentumScore": old_score,
-            },
-            "postedAt": datetime.now(timezone.utc) - timedelta(days=1),
-            "reactionCounts": {"likes": 0, "comments": 0, "shares": 0},
-            "portSyncStatus": "synced",
-            "evidenceContractVersion": 2,
-        }
-    ).inserted_id
+    _port_login_rejected(monkeypatch)
 
-    async def no_prior_episodes(*_args, **_kwargs):
+    class FakeCheckpointer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    scans = []
+
+    class QuietAgent:
+        async def ainvoke(self, *_args, **_kwargs):
+            scans.append("scanned")
+            return None
+
+    async def fake_preflight(agent_handle):
         return []
 
-    def project_embedding(title, *_args):
-        value = 0.8 if title == "Unverified replacement title" else 0.9
-        return [value] * 384
-
-    monkeypatch.setattr(embeddings, "embed_project", project_embedding)
-    monkeypatch.setattr(episodic_memory, "retrieve_similar_episodes", no_prior_episodes)
-    monkeypatch.setattr(port_client, "upsert_agent", lambda *_args: {"ok": True})
+    monkeypatch.setenv("MONGODB_URI", "mongodb://example.invalid/hyperadar")
     monkeypatch.setattr(
-        port_client,
-        "upsert_project",
-        lambda *_args: {"ok": False, "message": "simulated Port outage"},
+        runner_module.MongoDBSaver,
+        "from_conn_string",
+        lambda *_args, **_kwargs: FakeCheckpointer(),
     )
-    monkeypatch.setattr(port_client, "upsert_post", lambda *_args: {"ok": True})
+    monkeypatch.setattr(runner_module.doctor, "preflight", fake_preflight)
+    monkeypatch.setattr(
+        runner_module.write_post, "repair_pending_posts", AsyncMock(return_value=0)
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "summarize_run",
+        AsyncMock(
+            return_value={
+                "thread_id": "t",
+                "posts_today": 1,
+                "posts_written": 1,
+                "synced_this_run": 1,
+                "pending_port_syncs": 0,
+                "ok": True,
+            }
+        ),
+    )
 
-    project = {
-        "url": url,
-        "title": "Unverified replacement title",
-        "kind": "site",
-        "description": "This snapshot must remain private until convergence",
-        "topics": ["pending"],
-        "momentumScore": 88,
-        "hypeVerdict": "hype looks real",
-    }
-    signal = {
-        "source": "test",
-        "metric": "mentions",
-        "value": 99,
-        "delta": 68,
-    }
+    summary = await runner_module._run_agent_cycle(
+        "@port-down-agent",
+        "Port Down Agent",
+        "Port outage proof",
+        "test",
+        lambda **_kwargs: QuietAgent(),
+        {},
+    )
 
-    try:
-        with pytest.raises(RuntimeError, match="simulated Port outage"):
-            await write_post_module.write_post(
-                "@publication-gate",
-                "Publication Gate",
-                "Tests fail-closed publication",
-                "test",
-                project,
-                "This claim is not public yet.",
-                "hype looks real",
-                signal,
-                88,
-            )
-
-        pending = db.posts.find_one(
-            {"agentHandle": "@publication-gate", "project.url": url}
-        )
-        assert pending["portSyncStatus"] == "pending"
-        assert pending["project"]["description"] == project["description"]
-        assert pending["project"]["topics"] == project["topics"]
-
-        published_project = db.projects.find_one({"_id": project_id})
-        assert published_project["title"] == old_title
-        assert published_project["momentumScore"] == old_score
-        assert (
-            published_project["description"] == "The last fully synchronized snapshot"
-        )
-
-        stored_signal = db.signals.find_one(
-            {"projectId": url, "value": signal["value"]}
-        )
-        assert stored_signal["postId"] == str(pending["_id"])
-
-        synced_projects = []
-
-        def sync_project(*args):
-            synced_projects.append(args)
-            return {"ok": True}
-
-        monkeypatch.setattr(port_client, "upsert_project", sync_project)
-        later_scan = {
-            **project,
-            "title": "A later scan must not replace the claimed snapshot",
-            "description": "Different input after response loss",
-            "momentumScore": 99,
-        }
-        repaired_id = await write_post_module.write_post(
-            "@publication-gate",
-            "Publication Gate",
-            "Tests fail-closed publication",
-            "test",
-            later_scan,
-            "Different copy after response loss.",
-            "emerging",
-            {**signal, "value": 100},
-            99,
-        )
-
-        repaired = db.posts.find_one({"_id": pending["_id"]})
-        canonical = db.projects.find_one({"_id": project_id})
-        assert repaired_id == str(pending["_id"])
-        assert synced_projects[0][1] == "Unverified replacement title"
-        assert canonical["title"] == "Unverified replacement title"
-        assert canonical["description"] == project["description"]
-        assert canonical["momentumScore"] == 98
-        assert repaired["project"]["baseMomentumScore"] == 88
-        assert canonical["embedding"][0] == 0.8
-        assert repaired["verdict"] == "hype looks real"
-    finally:
-        db.posts.delete_many({"project.url": url})
-        db.projects.delete_one({"_id": project_id})
-        db.signals.delete_many({"projectId": url})
-        db.signal_receipts.delete_many({"signal.projectId": url})
-        db.embeddings_audit.delete_many({"projectId": url})
+    assert scans == ["scanned"]
+    assert summary["ok"] is True
 
 
 @pytest.mark.asyncio
-async def test_partial_port_failure_heals_on_retry_without_duplicate_posts(
-    db, monkeypatch
-):
-    from _shared import embeddings, episodic_memory, port_client
+async def test_post_is_published_when_port_rejects_login(db, monkeypatch):
+    from _shared import embeddings, episodic_memory
     from _shared import write_post as write_post_module
 
-    unique = datetime.now(timezone.utc).timestamp()
-    url = f"https://example.com/port-retry-{unique}"
-    project = {
-        "url": url,
-        "title": "Port retry proof",
-        "kind": "site",
-        "description": "A deterministic partial-sync test",
-        "topics": ["port", "recovery"],
-        "momentumScore": 64,
-        "hypeVerdict": "emerging",
-    }
-    signal = {
-        "source": "test",
-        "metric": "mentions",
-        "value": 1,
-        "delta": 1,
-    }
-    project_attempts = 0
-    post_timestamps = []
-    post_reaction_counts = []
+    _port_login_rejected(monkeypatch)
 
     async def no_prior_episodes(*_args, **_kwargs):
         return []
-
-    def sync_project(*_args, **_kwargs):
-        nonlocal project_attempts
-        project_attempts += 1
-        if project_attempts == 1:
-            return {"ok": False, "message": "simulated Port outage"}
-        return {"ok": True}
-
-    def sync_post(*args, **_kwargs):
-        post_timestamps.append(args[6])
-        post_reaction_counts.append(args[7:10])
-        return {"ok": True}
 
     monkeypatch.setattr(embeddings, "embed_project", lambda *_args: [0.1] * 384)
     monkeypatch.setattr(episodic_memory, "retrieve_similar_episodes", no_prior_episodes)
-    monkeypatch.setattr(port_client, "upsert_agent", lambda *_args: {"ok": True})
-    monkeypatch.setattr(port_client, "upsert_project", sync_project)
-    monkeypatch.setattr(port_client, "upsert_post", sync_post)
+
+    url = f"https://example.com/port-down-{datetime.now(timezone.utc).timestamp()}"
+    project = {
+        "url": url,
+        "title": "Port down proof",
+        "kind": "site",
+        "description": "Published while the Port catalog is unreachable",
+        "topics": ["resilience"],
+        "momentumScore": 64,
+        "hypeVerdict": "emerging",
+    }
+    signal = {"source": "test", "metric": "mentions", "value": 1, "delta": 1}
 
     try:
-        with pytest.raises(RuntimeError, match="simulated Port outage"):
-            await write_post_module.write_post(
-                "@test-agent",
-                "Test Agent",
-                "Tests recovery",
-                "test",
-                project,
-                "A recoverable signal.",
-                "emerging",
-                signal,
-                64,
-            )
-
-        pending = db.posts.find_one({"project.url": url})
-        assert pending["portSyncStatus"] == "pending"
-        assert db.embeddings_audit.count_documents({"projectId": url}) == 1
-        legacy_posted_at = datetime.now(timezone.utc) - timedelta(days=1)
-        db.posts.update_one(
-            {"_id": pending["_id"]},
-            {
-                "$set": {
-                    "postedAt": legacy_posted_at,
-                    "reactionCounts": {"likes": 3, "comments": 2, "shares": 1},
-                }
-            },
-        )
-
-        repaired_id = await write_post_module.write_post(
-            "@test-agent",
-            "Test Agent",
-            "Tests recovery",
+        post_id = await write_post_module.write_post(
+            "@port-down-agent",
+            "Port Down Agent",
+            "Port outage proof",
             "test",
             project,
-            "A recoverable signal.",
+            "Visible even though Port is down.",
             "emerging",
             signal,
             64,
         )
 
-        assert db.posts.count_documents({"project.url": url}) == 1
-        repaired = db.posts.find_one({"project.url": url})
-        assert repaired_id == str(repaired["_id"])
-        assert repaired["portSyncStatus"] == "synced"
-        assert project_attempts == 2
-        # BSON persists datetimes at millisecond precision and this sync client
-        # reads UTC values back as naive datetimes. The Port twin must receive
-        # the exact value stored in MongoDB, not a new retry timestamp.
-        assert post_timestamps == [repaired["postedAt"]]
-        assert post_reaction_counts == [(3, 2, 1)]
-        assert db.signals.count_documents({"projectId": url}) == 1
-        assert db.embeddings_audit.count_documents({"projectId": url}) == 1
+        post = db.posts.find_one({"_id": ObjectId(post_id)})
+        assert post["portSyncStatus"] == "synced"
+        assert db.projects.find_one({"url": url})["title"] == "Port down proof"
     finally:
         db.posts.delete_many({"project.url": url})
         db.projects.delete_many({"url": url})

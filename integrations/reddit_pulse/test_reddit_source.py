@@ -18,6 +18,13 @@ class FakeProcess:
         return self.output.encode(), b""
 
 
+class FailingProcess:
+    returncode = 1
+
+    async def communicate(self):
+        return b"", b"Triggering pipeline collection for reddit_posts...\nError: Token expired"
+
+
 class HangingProcess:
     def __init__(self):
         self.returncode = None
@@ -613,3 +620,45 @@ async def test_snapshot_stores_thread_text_for_corpus():
     assert doc["upvotes"] == 50
     assert doc["comments"] == 10
     assert "capturedAt" in doc
+
+
+@pytest.mark.asyncio
+async def test_fetch_raises_when_every_subreddit_fetch_fails(monkeypatch):
+    source = load_source()
+    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return FailingProcess()
+
+    monkeypatch.setattr(
+        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+
+    with pytest.raises(RuntimeError, match="Token expired"):
+        await source.fetch_reddit_candidates(max_results=10, db=FakeDb(url_to_post={}))
+
+
+@pytest.mark.asyncio
+async def test_fetch_tolerates_some_subreddits_failing(monkeypatch):
+    source = load_source()
+    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
+    url = "https://www.reddit.com/r/LocalLLaMA/comments/ok/thread_ok/"
+    calls = []
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return FakeProcess(json.dumps([_make_post(url, upvotes=200)]))
+        return FailingProcess()
+
+    monkeypatch.setattr(
+        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+
+    candidates = await source.fetch_reddit_candidates(
+        max_results=10, db=FakeDb(url_to_post={})
+    )
+
+    assert [c["url"] for c in candidates] == [
+        "https://www.reddit.com/r/LocalLLaMA/comments/ok"
+    ]

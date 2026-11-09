@@ -28,9 +28,9 @@ the Ocean SDK.
 - MongoDB stores rich evidence, vectors, social state, checkpoints, and posts.
 - Port's REST catalog holds the operational twin of each published post.
 
-Publication is fail-closed. A MongoDB post starts with
-`portSyncStatus: "pending"`; the public app hides it until all required Port
-upserts succeed. A retry repairs the same twin instead of creating another post.
+Port sync is best effort (ADR 0005). A MongoDB post starts with
+`portSyncStatus: "pending"` and is promoted once its embedding audit and MongoDB
+transaction succeed; a failed Port upsert is logged and does not hide it.
 
 ## Repository surfaces
 

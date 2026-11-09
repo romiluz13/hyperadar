@@ -1,8 +1,9 @@
 """Shared write path — the twin-model write (MongoDB + Port) for all agents.
 
 Every agent-creator calls write_post() to persist a hype post. A new claim is
-private until its Port twins and embedding audit succeed. MongoDB then promotes
-the project snapshot and post visibility together in one transaction.
+private until its embedding audit succeeds. Port twins are mirrored best effort:
+a Port failure is logged, never blocks publication. MongoDB then promotes the
+project snapshot and post visibility together in one transaction.
 
 Agent identity (handle, name, bio, source_type) is passed in so each agent
 gets its own voice but shares the write infrastructure.
@@ -231,7 +232,7 @@ async def _run_port_call_under_lease(
     if heartbeat_failures:
         raise heartbeat_failures[0]
     await _assert_project_reconcile_lease(project_url, owner)
-    port_client.require_success(result, operation)
+    port_client.warn_on_failure(result, operation)
 
 
 async def _reconcile_multi_source(
@@ -492,7 +493,7 @@ async def _sync_port_twin(
     project: dict,
     embedding: list[float],
 ) -> None:
-    port_client.require_success(
+    port_client.warn_on_failure(
         await asyncio.to_thread(
             port_client.upsert_agent,
             agent_handle,

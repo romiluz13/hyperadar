@@ -105,7 +105,7 @@ async def summarize_run(
 
 
 def _run_ok(posts_written, synced_this_run, pending_port_syncs, agent_was_active):
-    """A run is healthy when Port sync is clean AND the agent actually worked.
+    """A run is healthy when no post is left unpublished AND the agent actually worked.
 
     A quiet day — every candidate gated by the pool-scaled threshold or the
     republish cooldown, 0 posts — is the system working as designed, not a
@@ -166,8 +166,8 @@ async def _run_agent_cycle(
     except Exception as e:
         print(f"[doctor] preflight skipped: {e}", file=sys.stderr, flush=True)
 
-    # 1. Ensure the agent exists in the Port catalog
-    port_client.require_success(
+    # 1. Mirror the agent into the Port catalog (best effort)
+    port_client.warn_on_failure(
         port_client.upsert_agent(agent_handle, agent_name, agent_bio, source_type),
         f"agent sync for {agent_handle}",
     )
@@ -222,7 +222,7 @@ async def _run_agent_cycle(
         agent_handle, thread_id, start_of_day, agent_was_active=agent_was_active
     )
     if summary["ok"]:
-        port_client.require_success(
+        port_client.warn_on_failure(
             port_client.record_agent_success(agent_handle),
             f"successful run record for {agent_handle}",
         )

@@ -19,9 +19,9 @@ the relevant accepted decisions in `docs/adr/`. See `docs/agents/domain.md`.
 
 ## Release boundary
 
-- Treat Port as the governed control plane and GitHub Actions as compute.
+- Treat Port as an optional Workflow entry point and catalog mirror, GitHub Actions as compute.
 - Treat MongoDB as the evidence and social-state authority.
-- Keep a post private until its Port twin and MongoDB publication state converge.
+- MongoDB alone gates publication; Port is a best-effort catalog mirror (ADR 0005).
 - Never upgrade a source observation into a stronger motion or growth claim.
 - Run each Python package from its own frozen `uv` environment.
 - Use a test-only MongoDB database named `test_*` or `*_test`.

@@ -186,7 +186,7 @@ async def _stop_source_process(proc, communication) -> None:
 
 
 async def _fetch_one_subreddit(subreddit_url: str) -> list[dict]:
-    """Fetch posts from a single subreddit. Soft-fail: returns [] on error."""
+    """Fetch posts from a single subreddit. Raises RuntimeError when the fetch fails."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "bdata",
@@ -207,18 +207,15 @@ async def _fetch_one_subreddit(subreddit_url: str) -> list[dict]:
             )
         except TimeoutError:
             await _stop_source_process(proc, communication)
-            logging.warning("bdata pipelines timed out for %s", subreddit_url)
-            return []
+            raise RuntimeError(f"bdata pipelines timed out for {subreddit_url}") from None
         except asyncio.CancelledError:
             await _stop_source_process(proc, communication)
             raise
         if proc.returncode:
-            logging.warning(
-                "bdata pipelines error for %s: %s",
-                subreddit_url,
-                stderr.decode().strip()[:200],
+            raise RuntimeError(
+                f"bdata pipelines error for {subreddit_url}: "
+                f"{stderr.decode().strip()[-200:]}"
             )
-            return []
         payload = json.loads(stdout)
         # bdata pipelines may return a list or {"results": [...]}
         posts = payload if isinstance(payload, list) else payload.get("results", [])
@@ -260,9 +257,10 @@ async def _fetch_one_subreddit(subreddit_url: str) -> list[dict]:
                 }
             )
         return results
+    except RuntimeError:
+        raise
     except Exception as e:
-        logging.warning("reddit_source fetch failed for %s: %s", subreddit_url, e)
-        return []
+        raise RuntimeError(f"reddit_source fetch failed for {subreddit_url}: {e}") from e
 
 
 async def fetch_reddit_candidates(max_results: int = 10, db=None) -> list[dict]:
@@ -287,9 +285,15 @@ async def fetch_reddit_candidates(max_results: int = 10, db=None) -> list[dict]:
     # limit), soft-fail per subreddit (one timeout does not blank the run).
     tasks = [asyncio.ensure_future(_fetch_one_subreddit(s)) for s in SUBREDDITS]
     all_posts: list[dict] = []
+    failures: list[Exception] = []
     try:
         for coro in asyncio.as_completed(tasks):
-            posts = await coro
+            try:
+                posts = await coro
+            except Exception as error:
+                logging.warning("%s", error)
+                failures.append(error)
+                continue
             all_posts.extend(posts)
     except asyncio.CancelledError:
         # The run was cancelled: tear down every in-flight subreddit fetch so
@@ -298,6 +302,14 @@ async def fetch_reddit_candidates(max_results: int = 10, db=None) -> list[dict]:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+    # Every subreddit failing is a dead source (e.g. an expired Bright Data
+    # token), not a quiet day: fail the run so the refresh alert fires.
+    if failures and len(failures) == len(tasks):
+        raise RuntimeError(
+            f"Reddit source down: all {len(tasks)} subreddit fetches failed; "
+            f"last error: {failures[-1]}"
+        )
 
     # Deduplicate by URL
     seen = set()

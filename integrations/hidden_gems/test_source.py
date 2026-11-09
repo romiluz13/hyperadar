@@ -314,3 +314,44 @@ async def test_breakout_engagement_boost_applied_post_gate(db, monkeypatch):
     finally:
         db.signals.delete_many({"projectId": repo_url})
         db.posts.delete_many({"project.url": repo_url})
+
+
+@pytest.mark.asyncio
+async def test_breakout_ignores_repos_no_longer_tracked(db, monkeypatch):
+    """A repo whose last snapshot is older than a week cannot be breaking out now."""
+    from hidden_gems import source
+
+    async def fake_track(db):
+        return 0
+
+    async def fake_engagement(repo_url, client=None):
+        return None
+
+    monkeypatch.setattr(source, "track_daily_snapshots", fake_track)
+    monkeypatch.setattr(source, "fetch_hn_engagement", fake_engagement)
+
+    live_url = "https://github.com/test/live-breakout"
+    stale_url = "https://github.com/test/stale-breakout"
+    stars = [20 + i * 4 for i in range(14)]
+    live = _snapshots(stars, forks=10)
+    stale = _snapshots(stars, forks=10)
+    for s in live:
+        s["projectId"] = live_url
+    for s in stale:
+        s["projectId"] = stale_url
+        s["capturedAt"] -= timedelta(days=10)
+
+    urls = [live_url, stale_url]
+    db.signals.delete_many({"projectId": {"$in": urls}})
+    db.posts.delete_many({"project.url": {"$in": urls}})
+    db.signals.insert_many(live + stale)
+
+    try:
+        result_urls = [
+            r["url"] for r in await source.fetch_breakout_candidates(mongo._get_db())
+        ]
+        assert live_url in result_urls
+        assert stale_url not in result_urls
+    finally:
+        db.signals.delete_many({"projectId": {"$in": urls}})
+        db.posts.delete_many({"project.url": {"$in": urls}})
