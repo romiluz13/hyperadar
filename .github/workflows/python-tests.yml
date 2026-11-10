@@ -1,0 +1,74 @@
+name: Python tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Every run shares the hyperadar_test database, so runs must not overlap.
+concurrency:
+  group: python-tests-hyperadar-test-db
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Agent suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      MONGODB_TEST_DB: hyperadar_test
+      # The agent write-path and YouTube source tests embed and fetch for real.
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+
+    steps:
+      - name: Check out HypeRadar
+        uses: actions/checkout@v4
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Require the test database URI
+        run: |
+          if [ -z "$MONGODB_URI" ]; then
+            echo "::error::MONGODB_URI is not configured"
+            exit 1
+          fi
+
+      - name: Lockfiles are current
+        run: |
+          for manifest in integrations/*/pyproject.toml; do
+            uv lock --check --project "$(dirname "$manifest")"
+          done
+
+      - name: Shared + github-radar
+        run: uv run --frozen --project integrations/github_radar pytest integrations/_shared integrations/github_radar -q
+
+      - name: reddit-pulse
+        run: |
+          uv run --frozen --project integrations/reddit_pulse pytest integrations/reddit_pulse -q
+          uv run --frozen --project integrations/reddit_pulse pytest integrations/_shared/test_source_truth.py -q -k reddit
+
+      - name: youtube-trends
+        run: |
+          uv run --frozen --project integrations/youtube_trends pytest integrations/youtube_trends -q
+          uv run --frozen --project integrations/youtube_trends pytest integrations/_shared/test_source_truth.py -q -k youtube
+
+      - name: hidden-gems
+        run: |
+          uv run --frozen --project integrations/hidden_gems pytest integrations/hidden_gems -q
+          uv run --frozen --project integrations/hidden_gems pytest integrations/_shared/test_source_truth.py -q -k hidden_gem
+
+      - name: weekly-digest
+        run: uv run --frozen --project integrations/weekly_digest pytest integrations/_shared/test_source_truth.py -q -k weekly_digest
+
+      - name: Setup and migration scripts
+        run: uv run --frozen --project integrations/github_radar python -m unittest discover -s scripts -p 'test_*.py'
