@@ -15,7 +15,7 @@ MongoDB Atlas hybrid search.**
 flowchart TD
     subgraph sources["Sources"]
         GH["GitHub API\nOSSInsight trending"]
-        RD["Reddit\nBright Data structured"]
+        RD["Reddit\nMonid free fetch (TinyFish)"]
         YT["YouTube\nyt-dlp channel-scoped"]
         HN["Hacker News\nAlgolia + GitHub"]
         COM["AI Agents Community\nRomBot corpus"]

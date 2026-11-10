@@ -79,17 +79,13 @@ jobs:
             fi
           done
 
-      - name: Install Reddit source CLI
-        if: matrix.agent == 'reddit-pulse'
-        run: npm install --global @brightdata/cli@0.3.2
-
       - name: Validate Reddit source secret
         if: matrix.agent == 'reddit-pulse'
         env:
-          BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
+          MONID_API_KEY: ${{ secrets.MONID_API_KEY }}
         run: |
-          if [ -z "$BRIGHTDATA_API_KEY" ]; then
-            echo "::error::BRIGHTDATA_API_KEY is not configured"
+          if [ -z "$MONID_API_KEY" ]; then
+            echo "::error::MONID_API_KEY is not configured"
             exit 1
           fi
 
@@ -123,7 +119,7 @@ jobs:
           GROVE_API_KEY: ${{ secrets.GROVE_API_KEY }}
           GROVE_BASE_URL: ${{ secrets.GROVE_BASE_URL }}
           GROVE_MODEL: ${{ secrets.GROVE_MODEL }}
-          BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
+          MONID_API_KEY: ${{ secrets.MONID_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.HYPERADAR_GITHUB_TOKEN || github.token }}
           ROMBOT_COMMUNITY_ASK_TOKEN: ${{ secrets.ROMBOT_COMMUNITY_ASK_TOKEN }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}

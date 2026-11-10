@@ -8,18 +8,18 @@
 | Agent | Current source path | Per-run boundary |
 | --- | --- | --- |
 | `@github-radar` | GitHub REST search/details | Requires GitHub token for dependable rate limits |
-| `@reddit-pulse` | Two Bright Data `bdata search` queries | Requires CLI plus `BRIGHTDATA_API_KEY` |
+| `@reddit-pulse` | 16 subreddit `/rising/` feeds through Monid's free TinyFish fetch, two calls of up to 10 URLs (ADR 0006) | Requires `MONID_API_KEY`; $0 per run, free tier 1,000 URLs/day |
 | `@youtube-trends` | YouTube Data API v3 (`channels.list` → `search.list` → `videos.list`) | Requires `YOUTUBE_API_KEY` secret |
-| `@hidden-gems` | Top 20 Hacker News stories plus one GitHub repository search | HN is unauthenticated; GitHub token is preferred |
+| `@hidden-gems` | Show HN launches from the last 72 hours (Algolia `search_by_date`) and breakout repos; both at most 2,000 stars and never published by any agent; at most 5 candidates per run | HN is unauthenticated; GitHub token is preferred |
 | `@weekly-digest` | Up to 15 distinct projects from synchronized source-agent posts in the last seven days | No external discovery source |
 
 The adapters store the metric they actually observed. GitHub's stars/week value
 is a lifetime average since repository creation, not recent velocity; sustained
 growth requires six observations across five weeks. HN points remain HN points.
 YouTube keeps total views plus the position within its specific YouTube search
-query. Reddit keeps Google result rank and labels its visibility score as a
-proxy. None is converted into fake stars, a fabricated Google rank, or
-unobserved Reddit votes/comments.
+query. Reddit keeps the upvotes and comment counts the subreddit feed shows.
+None is converted into fake stars, a fabricated Google rank, or unobserved
+Reddit votes/comments.
 
 The weekly editor may connect themes and name projects, but it cannot introduce
 engagement counts, rates, velocity, or sustained-growth claims. Readers are sent
@@ -39,17 +39,16 @@ job a 30-minute timeout. Every package runs from its committed `uv.lock` with
 
 ## Known gate
 
-`BRIGHTDATA_API_KEY` is not configured in the challenge GitHub repository, so the
-Reddit workflow must be described as blocked. The existing canonical Reddit post
-was repaired from directly verified source evidence; that does not prove the
-automated Reddit runner is currently available.
+Reddit needs `MONID_API_KEY`. Without it the run fails. When every subreddit
+fetch fails (a 402 past the free tier, a Reddit block), the run fails too,
+instead of reporting a quiet day.
 
 ## Cost discipline
 
 - Bound discovery result counts before calling the model.
 - Use MongoDB reads only for the weekly digest input.
 - Keep agent runs operator-triggered until source quality and cost are measured.
-- Treat LLM, Bright Data, Atlas, Port, GitHub Actions, and Vercel prices as live
+- Treat LLM, Monid/TinyFish, Atlas, Port, GitHub Actions, and Vercel prices as live
   external facts; refresh them before recording exact numbers.
 - A source failure must fail the run instead of silently publishing empty or
   synthetic evidence.

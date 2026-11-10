@@ -40,7 +40,7 @@ AGENT_CHECKS = {
     # arXiv source was removed (export.arxiv.org unreliably 406s the Python
     # client), so no arxiv check is required.
     "@hidden-gems": ("grove", "mongodb", "github_token", "hn_algolia"),
-    "@reddit-pulse": ("grove", "mongodb", "brightdata"),
+    "@reddit-pulse": ("grove", "mongodb", "monid"),
     "@youtube-trends": ("grove", "mongodb", "youtube_key"),
     "@community-radar": ("grove", "mongodb", "rombot"),
     "@weekly-digest": ("grove", "mongodb"),
@@ -199,11 +199,11 @@ async def check_youtube_key(client=None) -> dict:
             await client.aclose()
 
 
-async def check_brightdata() -> dict:
-    """Presence-only: the brightdata CLI cannot be exercised cheaply from Python."""
-    if os.environ.get("BRIGHTDATA_API_KEY"):
-        return _ok("brightdata", "configured (presence check; live call needs the CLI)")
-    return _fail("brightdata", "BRIGHTDATA_API_KEY not set")
+async def check_monid() -> dict:
+    """Presence-only: the Reddit fetch itself reports a dead source loudly."""
+    if os.environ.get("MONID_API_KEY"):
+        return _ok("monid", "configured (presence check)")
+    return _fail("monid", "MONID_API_KEY not set")
 
 
 async def check_reddit_corpus() -> dict:
@@ -238,7 +238,7 @@ CHECKS = {
     "hn_algolia": check_hn_algolia,
     "rombot": check_rombot,
     "youtube_key": check_youtube_key,
-    "brightdata": check_brightdata,
+    "monid": check_monid,
     "reddit_corpus": check_reddit_corpus,
 }
 

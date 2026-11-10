@@ -1,7 +1,7 @@
 [project]
 name = "reddit-pulse"
 version = "0.1.0"
-description = "HypeRadar @reddit-pulse agent — scrapes Reddit via Bright Data, scores, posts."
+description = "HypeRadar @reddit-pulse agent — reads Reddit via Monid's free TinyFish fetch, scores, posts."
 requires-python = ">=3.11"
 dependencies = [
   "deepagents",

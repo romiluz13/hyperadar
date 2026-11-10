@@ -29,8 +29,8 @@
       `scripts/setup_port_workflows.py` using the real GitHub installation ID.
 - [ ] Configure GitHub Actions secrets: `MONGODB_URI`, `PORT_CLIENT_ID`,
       `PORT_CLIENT_SECRET`, `GROVE_API_KEY`, `GROVE_BASE_URL`, and `GROVE_MODEL`.
-- [ ] Configure the agent-specific GitHub Actions secrets: `BRIGHTDATA_API_KEY`
-      (reddit-pulse), `YOUTUBE_API_KEY` (youtube-trends — a Google API key for
+- [ ] Configure the agent-specific GitHub Actions secrets: `MONID_API_KEY`
+      (reddit-pulse; free TinyFish fetch, see ADR 0006), `YOUTUBE_API_KEY` (youtube-trends — a Google API key for
       the YouTube Data API v3; without it the YouTube agent cannot fetch
       candidates and silently posts nothing), `ROMBOT_COMMUNITY_ASK_TOKEN`
       (community-radar), and `VOYAGE_API_KEY` (embeddings). The
@@ -40,10 +40,11 @@
       `NEXT_PUBLIC_APP_URL`, and a random 32-byte `MUTATION_RATE_LIMIT_SECRET`.
       Redeploy after changing them; a Ready build does not prove runtime data
       access.
-- [ ] Without `BRIGHTDATA_API_KEY`, confirm catalog setup marks Reddit `muted`.
+- [ ] Without `MONID_API_KEY`, confirm catalog setup marks Reddit `muted`.
       After configuring and validating the key, explicitly set Reddit `active`
       in Port; catalog sync preserves that operator-owned active status.
-- [ ] Run `uv lock --check` in every agent package.
+- [ ] Run `uv lock --check` in every agent package. The `Python tests` workflow
+      runs the lock checks and the suites below on every push and pull request.
 - [ ] Run Python tests only with an explicit test database such as
       `MONGODB_TEST_DB=hyperadar_test`. Live Port E2E requires separate
       `PORT_TEST_CLIENT_ID` and `PORT_TEST_CLIENT_SECRET` credentials.
@@ -138,7 +139,7 @@ npm run build
 - [ ] Do not claim episodic memory changes verdicts; retrieval is post-decision.
 - [ ] Do not claim `$rerank`, Atlas automated embedding, Ocean agent services,
       scheduled crons, extra actions, or scorecards without separate live proof.
-- [ ] Describe Reddit as blocked until `BRIGHTDATA_API_KEY` is configured.
+- [ ] Describe Reddit as blocked until `MONID_API_KEY` is configured.
 - [ ] Describe GitHub stars/week as an average since creation, never recent
       weekly growth. Claim sustained growth only with six observations over five weeks.
 - [ ] Describe HN points and YouTube search positions by their actual source names.

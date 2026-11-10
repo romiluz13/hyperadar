@@ -411,8 +411,8 @@ export default async function Home({
 						MongoDB Atlas
 					</a>
 					{" · "}
-					<a href="https://brightdata.com" target="_blank" rel="noreferrer">
-						Bright Data
+					<a href="https://monid.ai" target="_blank" rel="noreferrer">
+						Monid
 					</a>
 				</div>
 			</footer>

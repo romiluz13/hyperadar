@@ -12,31 +12,6 @@ from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
 
-class FakeProcess:
-    def __init__(self, output: str):
-        self.output = output
-        self.returncode = 0
-
-    async def communicate(self):
-        return self.output.encode(), b""
-
-
-class HangingProcess:
-    def __init__(self):
-        self.returncode = None
-        self.killed = False
-        self._released = asyncio.Event()
-
-    async def communicate(self):
-        await self._released.wait()
-        return b"", b""
-
-    def kill(self):
-        self.killed = True
-        self.returncode = -9
-        self._released.set()
-
-
 def load_source(relative_path: str, module_name: str):
     path = Path(__file__).parents[1] / relative_path
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -710,33 +685,33 @@ async def test_episode_seed_closes_its_sync_and_async_mongo_clients(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_reddit_candidate_returns_structured_upvote_data(monkeypatch):
+    import httpx
+
     source = load_source("reddit_pulse/reddit_source.py", "reddit_truth_source")
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-    # The canonical thread URL is rebuilt from post_id + community_name (not
-    # taken from a url field) and normalized without a trailing slash.
+    monkeypatch.setenv("MONID_API_KEY", "monid_test_key")
+    # The canonical thread URL is rebuilt from the permalink's subreddit and
+    # post id (no slug, no trailing slash), matching every earlier post.
     canonical_url = "https://www.reddit.com/r/LocalLLaMA/comments/abc123"
-    subprocess_calls = []
-
-    async def fake_create_subprocess_exec(*args, **_kwargs):
-        subprocess_calls.append(args)
-        return FakeProcess(
-            json.dumps(
-                [
-                    {
-                        "post_id": "abc123",
-                        "community_name": "LocalLLaMA",
-                        "title": "A complete Reddit title | with a separator",
-                        "description": "Search result description",
-                        "num_upvotes": 342,
-                        "num_comments": 89,
-                    }
-                ]
-            )
-        )
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    created = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f+0000"
     )
+    feed = (
+        '<shreddit-post id="t3_abc123" permalink="/r/LocalLLaMA/comments/abc123/a_title/" '
+        'post-title="A complete Reddit title | with a separator" score="342" '
+        f'comment-count="89" subreddit-name="LocalLLaMA" created-timestamp="{created}">'
+        "</shreddit-post>"
+    )
+
+    def handler(request):
+        urls = json.loads(request.content)["input"]["urls"]
+        return httpx.Response(
+            200,
+            json={
+                "status": "COMPLETED",
+                "providerResponse": {"httpStatus": 200},
+                "output": {"results": [{"url": u, "text": feed} for u in urls], "errors": []},
+            },
+        )
 
     # Mock db so cooldown filtering and delta snapshots work without a live
     # MongoDB connection.
@@ -755,10 +730,11 @@ async def test_reddit_candidate_returns_structured_upvote_data(monkeypatch):
         posts = FakePosts()
         reddit_post_snapshots = FakeSnapshots()
 
-    candidates = await source.fetch_reddit_candidates(max_results=1, db=FakeDb())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        candidates = await source.fetch_reddit_candidates(
+            max_results=1, db=FakeDb(), client=client
+        )
 
-    assert "reddit_posts" in subprocess_calls[0]
-    assert "--format" in subprocess_calls[0]
     assert candidates[0]["url"] == canonical_url
     assert candidates[0]["title"] == "A complete Reddit title | with a separator"
     assert candidates[0]["num_upvotes"] == 342
@@ -860,72 +836,6 @@ def test_community_evidence_copy_describes_real_discourse():
         "12 community members discussed this in the AI Agents Community "
         "corpus. Real developer discourse, not search visibility."
     )
-
-
-@pytest.mark.asyncio
-async def test_reddit_source_kills_a_command_that_exceeds_its_deadline(monkeypatch):
-    source = load_source("reddit_pulse/reddit_source.py", "reddit_timeout_source")
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-    monkeypatch.setattr(source, "SOURCE_COMMAND_TIMEOUT_SECONDS", 0.01, raising=False)
-    processes = []
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        process = HangingProcess()
-        processes.append(process)
-        return process
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    with pytest.raises(RuntimeError, match="timed out"):
-        await asyncio.wait_for(
-            source.fetch_reddit_candidates(max_results=1), timeout=0.2
-        )
-
-    assert processes and all(process.killed for process in processes)
-
-
-@pytest.mark.asyncio
-async def test_reddit_source_kills_its_command_when_the_run_is_cancelled(monkeypatch):
-    source = load_source("reddit_pulse/reddit_source.py", "reddit_cancel_source")
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-    processes = []
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        process = HangingProcess()
-        processes.append(process)
-        return process
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    class FakePosts:
-        async def find_one(self, *_args, **_kwargs):
-            return None
-
-    class FakeSnapshots:
-        async def find_one(self, *_args, **_kwargs):
-            return None
-
-        async def insert_one(self, *_args, **_kwargs):
-            return None
-
-    class FakeDb:
-        posts = FakePosts()
-        reddit_post_snapshots = FakeSnapshots()
-
-    task = asyncio.create_task(
-        source.fetch_reddit_candidates(max_results=1, db=FakeDb())
-    )
-    while not processes:
-        await asyncio.sleep(0)
-    task.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert all(process.killed for process in processes)
 
 
 def test_port_catalog_errors_cannot_be_silenced():

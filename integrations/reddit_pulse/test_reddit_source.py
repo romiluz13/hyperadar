@@ -1,64 +1,14 @@
-"""Tests for Reddit source cooldown and engagement_velocity."""
+"""Tests for the Reddit source: Monid free fetch transport, parsing, cooldown, gate."""
 
-import asyncio
+import html
 import importlib.util
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
-
-
-class FakeProcess:
-    def __init__(self, output: str):
-        self.output = output
-        self.returncode = 0
-
-    async def communicate(self):
-        return self.output.encode(), b""
-
-
-class FailingProcess:
-    returncode = 1
-
-    async def communicate(self):
-        return b"", b"Triggering pipeline collection for reddit_posts...\nError: Token expired"
-
-
-class HangingProcess:
-    def __init__(self):
-        self.returncode = None
-        self.killed = False
-        self._released = asyncio.Event()
-
-    async def communicate(self):
-        await self._released.wait()
-        return b"", b""
-
-    def kill(self):
-        self.killed = True
-        self.returncode = -9
-        self._released.set()
-
-
-def test_normalize_reddit_url_strips_query_params():
-    source = load_source()
-    assert (
-        source._normalize_reddit_url(
-            "https://www.reddit.com/r/LocalLLaMA/comments/abc/?utm_source=share"
-        )
-        == "https://www.reddit.com/r/LocalLLaMA/comments/abc"
-    )
-    assert (
-        source._normalize_reddit_url(
-            "https://www.reddit.com/r/LocalLLaMA/comments/abc/"
-        )
-        == "https://www.reddit.com/r/LocalLLaMA/comments/abc"
-    )
-    assert (
-        source._normalize_reddit_url("https://www.reddit.com/r/LocalLLaMA/comments/abc")
-        == "https://www.reddit.com/r/LocalLLaMA/comments/abc"
-    )
 
 
 def load_source():
@@ -71,98 +21,479 @@ def load_source():
     return module
 
 
-def _make_post(
-    url: str,
+@pytest.fixture(autouse=True)
+def _monid_key(monkeypatch):
+    monkeypatch.setenv("MONID_API_KEY", "monid_test_key")
+
+
+def shreddit_post(
+    post_id: str,
     title: str = "Test post",
-    upvotes: int = 100,
+    score: int = 100,
     comments: int = 10,
-    community_name: str = "LocalLLaMA",
-    created_utc: float | None = None,
-    post_id: str | None = None,
-) -> dict:
-    if post_id is None and "/comments/" in url:
-        post_id = f"t3_{url.split('/comments/', 1)[1].split('/', 1)[0]}"
-    post = {
-        "url": url,
-        "title": title,
-        "description": "desc",
-        "num_upvotes": upvotes,
-        "num_comments": comments,
-        "community_name": community_name,
+    subreddit: str = "LocalLLaMA",
+    created: datetime | None = None,
+    content_href: str | None = None,
+    body: str | None = None,
+) -> str:
+    """One feed entry the way Reddit's rising feed renders it (2026-11-10 probe)."""
+    attrs = {
+        "author": "someone",
+        "author-id": "t2_author",
+        "comment-count": str(comments),
+        "id": f"t3_{post_id}",
+        "permalink": f"/r/{subreddit}/comments/{post_id}/some_slug/",
+        "post-title": title,
+        "score": str(score),
+        "subreddit-name": subreddit,
     }
-    if post_id is not None:
-        post["post_id"] = post_id
-    if created_utc is not None:
-        post["created_utc"] = created_utc
-    return post
+    if created is not None:
+        attrs["created-timestamp"] = created.strftime("%Y-%m-%dT%H:%M:%S.%f+0000")
+    if content_href is not None:
+        attrs["content-href"] = content_href
+    rendered = " ".join(f'{k}="{html.escape(v)}"' for k, v in attrs.items())
+    # The real markup repeats post identity on nested helper elements; the
+    # parser must count each post once.
+    text_body = (
+        f'<shreddit-post-text-body post-id="t3_{post_id}" slot="text-body"><a slot="text-body">'
+        f'<div class="overflow-hidden"><div about="t3_{post_id}" property="schema:articleBody">'
+        f"<p>{html.escape(body)}</p><div><p>(nested)</p></div></div></div></a>"
+        "</shreddit-post-text-body>"
+        if body is not None
+        else ""
+    )
+    return (
+        f"<shreddit-post {rendered}><shreddit-post-overflow-menu "
+        f'post-id="t3_{post_id}" permalink="{attrs["permalink"]}" score="{score}">'
+        f"</shreddit-post-overflow-menu>{text_body}</shreddit-post>"
+    )
+
+
+def monid_client(page_for, calls: list | None = None, run_status=None):
+    """A Monid API double: POST /v1/run answers the free TinyFish fetch synchronously.
+
+    ``page_for(subreddit)`` returns feed markup, or a dict like
+    ``{"error": "target_http_error", "status": 403}`` for a per-URL failure.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if calls is not None:
+            calls.append(request)
+        if run_status is not None:
+            return run_status(request)
+        body = json.loads(request.content)
+        results, errors = [], []
+        for url in body["input"]["urls"]:
+            name = parse_qs(urlparse(url).query)["name"][0]
+            page = page_for(name)
+            if isinstance(page, dict):
+                errors.append({"url": url, **page})
+            else:
+                results.append({"url": url, "text": page})
+        return httpx.Response(
+            200,
+            json={
+                "runId": "run-1",
+                "status": "COMPLETED",
+                "providerResponse": {"httpStatus": 200},
+                "output": {"results": results, "errors": errors},
+            },
+        )
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def fresh(hours: float = 1) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(hours=hours)
+
+
+def test_normalize_reddit_url_strips_query_params():
+    source = load_source()
+    assert (
+        source._normalize_reddit_url(
+            "https://www.reddit.com/r/LocalLLaMA/comments/abc/?utm_source=share"
+        )
+        == "https://www.reddit.com/r/LocalLLaMA/comments/abc"
+    )
+    assert (
+        source._normalize_reddit_url("https://www.reddit.com/r/LocalLLaMA/comments/abc/")
+        == "https://www.reddit.com/r/LocalLLaMA/comments/abc"
+    )
+
+
+def test_feed_parser_reads_each_post_once_with_engagement():
+    source = load_source()
+    created = datetime(2026, 11, 9, 22, 22, 35, tzinfo=timezone.utc)
+    markup = shreddit_post(
+        "1xs5pkl", title='Is it "biased" & open?', score=254, comments=167,
+        created=created, content_href="https://github.com/acme/tool",
+    ) + shreddit_post("1xs3y17", score=238, comments=82, created=created)
+
+    posts = source.parse_rising_feed(markup)
+
+    assert [p["url"] for p in posts] == [
+        "https://www.reddit.com/r/LocalLLaMA/comments/1xs5pkl",
+        "https://www.reddit.com/r/LocalLLaMA/comments/1xs3y17",
+    ]
+    first = posts[0]
+    assert first["title"] == 'Is it "biased" & open?'
+    assert first["num_upvotes"] == 254
+    assert first["num_comments"] == 167
+    assert first["subreddit"] == "LocalLLaMA"
+    assert first["evidence_url"] == first["url"]
+    # Link posts carry their target into the corroboration corpus text.
+    assert "https://github.com/acme/tool" in first["description"]
+
+
+def test_feed_parser_skips_posts_without_identity():
+    source = load_source()
+    markup = (
+        '<shreddit-post id="t3_x" post-title="No permalink" score="50"></shreddit-post>'
+        '<shreddit-post id="t3_y" permalink="/r/a/comments/y/s/" score="50"></shreddit-post>'
+        + shreddit_post("good", created=fresh())
+    )
+    assert [p["url"] for p in source.parse_rising_feed(markup)] == [
+        "https://www.reddit.com/r/LocalLLaMA/comments/good"
+    ]
+
+
+def test_feed_parser_keeps_the_post_body_for_the_corpus():
+    source = load_source()
+    markup = shreddit_post(
+        "b1", title="New tool", body="Built on acme/agentkit, try it", created=fresh()
+    )
+
+    [post] = source.parse_rising_feed(markup)
+
+    assert post["description"].startswith("New tool")
+    assert "Built on acme/agentkit, try it" in post["description"]
+    assert "(nested)" in post["description"]
+
+
+def test_feed_parser_keeps_every_post_when_a_body_is_left_open():
+    """A truncated body must not swallow the posts after it."""
+    source = load_source()
+    unclosed = (
+        '<shreddit-post id="t3_a" post-title="First" permalink="/r/LocalLLaMA/comments/a/s/" '
+        'score="50"><div about="t3_a" property="schema:articleBody"><p>cut off'
+    )
+    markup = unclosed + shreddit_post("b", title="Second", body="own body", created=fresh())
+
+    posts = {p["title"]: p for p in source.parse_rising_feed(markup)}
+
+    assert set(posts) == {"First", "Second"}
+    assert "Second" not in posts["First"]["description"]
+    assert "own body" in posts["Second"]["description"]
+
+
+def test_feed_parser_rejects_a_feed_whose_posts_lost_their_attributes():
+    """Reddit renaming score/title/permalink must read as a broken source, not a quiet day."""
+    source = load_source()
+    markup = '<shreddit-post id="t3_a" title="Renamed" href="/r/a/comments/a/s/"></shreddit-post>'
+    with pytest.raises(ValueError, match="no posts in the feed markup"):
+        source.parse_rising_feed(markup)
+
+
+def test_feed_parser_keeps_a_quiet_feed_below_the_noise_floor():
+    source = load_source()
+    assert source.parse_rising_feed(shreddit_post("q", score=3, created=fresh())) == []
+
+
+def test_parse_created_tolerates_a_short_timestamp():
+    source = load_source()
+    assert source._parse_created("2026") == "2026"
 
 
 @pytest.mark.asyncio
-async def test_fetch_builds_permalink_from_real_bdata_post_shape(monkeypatch):
+async def test_fetch_asks_monid_free_fetch_for_every_rising_feed():
     source = load_source()
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(
-            json.dumps(
-                [
-                    {
-                        "post_id": "t3_1v5rwld",
-                        "url": "https://www.reddit.com/r/ClaudeAI/rising/",
-                        "title": "Test post",
-                        "description": "desc",
-                        "num_upvotes": 100,
-                        "num_comments": 10,
-                        "community_name": "ClaudeAI",
-                    }
-                ]
-            )
-        )
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    calls = []
+    client = monid_client(
+        lambda name: shreddit_post(f"p{name}", subreddit=name, created=fresh()), calls
     )
 
-    candidates = await source._fetch_one_subreddit(
-        "https://www.reddit.com/r/ClaudeAI/rising/"
+    await source.fetch_reddit_candidates(max_results=50, db=FakeDb(), client=client)
+
+    assert len(calls) == 2  # 16 subreddits, at most 10 URLs per free call
+    requested = []
+    for request in calls:
+        assert str(request.url) == "https://api.monid.ai/v1/run"
+        assert request.headers["authorization"] == "Bearer monid_test_key"
+        body = json.loads(request.content)
+        assert body["provider"] == "tinyfish"
+        assert body["endpoint"] == "/free/fetch"
+        assert body["input"]["ttl"] == 0
+        assert body["input"]["format"] == "html"
+        assert body["input"]["include_selectors"] == ["shreddit-post"]
+        assert len(body["input"]["urls"]) <= 10
+        requested.extend(body["input"]["urls"])
+    assert sorted(requested) == sorted(
+        f"https://www.reddit.com/svc/shreddit/community-more-posts/rising/?name={s}"
+        for s in source.SUBREDDITS
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_polls_an_async_run_until_it_completes():
+    source = load_source()
+    monkey_page = shreddit_post("async1", score=300, comments=40, created=fresh())
+    polls = []
+
+    def run_status(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, json={"runId": "r-async", "status": "RUNNING"})
+        polls.append(str(request.url))
+        if len(polls) < 2:
+            return httpx.Response(200, json={"runId": "r-async", "status": "RUNNING"})
+        return httpx.Response(
+            200,
+            json={
+                "runId": "r-async",
+                "status": "COMPLETED",
+                "providerResponse": {"httpStatus": 200},
+                "output": {"results": [{"url": "u", "text": monkey_page}], "errors": []},
+            },
+        )
+
+    source.MONID_POLL_INTERVAL_SECONDS = 0
+    client = monid_client(None, run_status=run_status)
+    candidates = await source.fetch_reddit_candidates(
+        max_results=10, db=FakeDb(), client=client
+    )
+
+    assert polls[0] == "https://api.monid.ai/v1/runs/r-async"
+    assert [c["url"] for c in candidates] == [
+        "https://www.reddit.com/r/LocalLLaMA/comments/async1"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_gives_up_on_a_run_that_never_finishes():
+    source = load_source()
+    source.MONID_POLL_INTERVAL_SECONDS = 0
+    source.MONID_RUN_DEADLINE_SECONDS = 0.05
+
+    def run_status(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, json={"runId": "r-slow", "status": "RUNNING"})
+        return httpx.Response(200, json={"runId": "r-slow", "status": "RUNNING"})
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        await source.fetch_reddit_candidates(
+            max_results=10, db=FakeDb(), client=monid_client(None, run_status=run_status)
+        )
+
+
+@pytest.mark.asyncio
+async def test_fetch_requires_the_monid_key(monkeypatch):
+    source = load_source()
+    monkeypatch.delenv("MONID_API_KEY")
+    with pytest.raises(RuntimeError, match="MONID_API_KEY"):
+        await source.fetch_reddit_candidates(max_results=10, db=FakeDb())
+
+
+@pytest.mark.asyncio
+async def test_fetch_raises_when_every_subreddit_fetch_fails():
+    source = load_source()
+    client = monid_client(lambda _name: {"error": "target_http_error", "status": 403})
+    with pytest.raises(RuntimeError, match="Reddit source down.*target_http_error"):
+        await source.fetch_reddit_candidates(max_results=10, db=FakeDb(), client=client)
+
+
+@pytest.mark.asyncio
+async def test_fetch_raises_when_monid_refuses_the_call():
+    source = load_source()
+
+    def run_status(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(402, json={"code": 402, "message": "Insufficient balance"})
+
+    with pytest.raises(RuntimeError, match="Reddit source down.*402"):
+        await source.fetch_reddit_candidates(
+            max_results=10, db=FakeDb(), client=monid_client(None, run_status=run_status)
+        )
+
+
+@pytest.mark.asyncio
+async def test_fetch_raises_when_no_feed_parses_any_post():
+    """Reddit changing its markup must fail loudly, not look like a quiet day."""
+    source = load_source()
+    client = monid_client(lambda _name: "<div>new markup</div>")
+    with pytest.raises(RuntimeError, match="Reddit source down"):
+        await source.fetch_reddit_candidates(max_results=10, db=FakeDb(), client=client)
+
+
+@pytest.mark.asyncio
+async def test_fetch_raises_when_every_feed_lost_its_attributes():
+    source = load_source()
+    client = monid_client(
+        lambda name: f'<shreddit-post id="t3_{name}" title="Renamed"></shreddit-post>'
+    )
+    with pytest.raises(RuntimeError, match="Reddit source down"):
+        await source.fetch_reddit_candidates(db=FakeDb(), client=client)
+
+
+@pytest.mark.asyncio
+async def test_fetch_raises_when_monid_returns_no_result_for_any_url():
+    source = load_source()
+
+    def empty(request):
+        return httpx.Response(
+            200,
+            json={"runId": "r", "status": "COMPLETED", "output": {"results": [], "errors": []}},
+        )
+
+    client = monid_client(None, run_status=empty)
+    with pytest.raises(RuntimeError, match="Reddit source down"):
+        await source.fetch_reddit_candidates(db=FakeDb(), client=client)
+
+
+@pytest.mark.asyncio
+async def test_fetch_counts_a_malformed_monid_reply_as_a_failed_fetch():
+    source = load_source()
+
+    def malformed(request):
+        # 202 without a run id must count as a failed fetch, not crash the run.
+        return httpx.Response(202, json={"status": "READY"})
+
+    client = monid_client(None, run_status=malformed)
+    with pytest.raises(RuntimeError, match="Reddit source down"):
+        await source.fetch_reddit_candidates(db=FakeDb(), client=client)
+
+
+@pytest.mark.asyncio
+async def test_fetch_accepts_a_completed_run_with_a_null_provider_status():
+    source = load_source()
+
+    def null_status(request):
+        body = json.loads(request.content)
+        results = [
+            {"url": u, "text": shreddit_post(f"n{i}", created=fresh())}
+            for i, u in enumerate(body["input"]["urls"])
+        ]
+        return httpx.Response(
+            200,
+            json={
+                "runId": "r",
+                "status": "COMPLETED",
+                "providerResponse": {"httpStatus": None},
+                "output": {"results": results, "errors": []},
+            },
+        )
+
+    client = monid_client(None, run_status=null_status)
+    posts = await source.fetch_reddit_candidates(max_results=50, db=FakeDb(), client=client)
+    assert posts
+
+
+@pytest.mark.asyncio
+async def test_fetch_tolerates_some_subreddits_failing():
+    source = load_source()
+
+    def page_for(name: str):
+        if name == "LocalLLaMA":
+            return shreddit_post("ok", score=200, comments=20, created=fresh())
+        return {"error": "timeout"}
+
+    candidates = await source.fetch_reddit_candidates(
+        max_results=10, db=FakeDb(url_to_post={}), client=monid_client(page_for)
+    )
+
+    assert [c["url"] for c in candidates] == [
+        "https://www.reddit.com/r/LocalLLaMA/comments/ok"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cooldown_skips_recently_posted_threads():
+    source = load_source()
+    page = shreddit_post("old", title="Old thread", score=200, created=fresh()) + shreddit_post(
+        "new", title="Recent thread", score=500, created=fresh()
+    )
+    recent_permalink = "https://www.reddit.com/r/LocalLLaMA/comments/new"
+    db = FakeDb(
+        url_to_post={
+            recent_permalink: {"postedAt": datetime.now(timezone.utc) - timedelta(days=2)}
+        }
+    )
+
+    candidates = await source.fetch_reddit_candidates(
+        max_results=10, db=db, client=monid_client(lambda _n: page)
+    )
+
+    urls = [c["url"] for c in candidates]
+    assert "https://www.reddit.com/r/LocalLLaMA/comments/old" in urls
+    assert recent_permalink not in urls
+
+
+@pytest.mark.asyncio
+async def test_cooldown_keeps_threads_posted_7_or_more_days_ago():
+    source = load_source()
+    page = shreddit_post("abc", score=150, subreddit="MachineLearning", created=fresh())
+    permalink = "https://www.reddit.com/r/MachineLearning/comments/abc"
+    db = FakeDb(
+        url_to_post={permalink: {"postedAt": datetime.now(timezone.utc) - timedelta(days=7)}}
+    )
+
+    candidates = await source.fetch_reddit_candidates(
+        max_results=10, db=db, client=monid_client(lambda _n: page)
+    )
+
+    assert [c["url"] for c in candidates] == [permalink]
+
+
+@pytest.mark.asyncio
+async def test_engagement_velocity_is_computed_and_sorted():
+    source = load_source()
+    page = shreddit_post("a", score=100, comments=50, created=fresh(1)) + shreddit_post(
+        "b", score=500, comments=50, created=fresh(2)
+    )
+
+    candidates = await source.fetch_reddit_candidates(
+        max_results=10, db=FakeDb(), client=monid_client(lambda _n: page)
+    )
+
+    assert len(candidates) == 2
+    assert "engagement_velocity" in candidates[0]
+    assert candidates[0]["heat_score"] >= candidates[1]["heat_score"]
+
+
+@pytest.mark.asyncio
+async def test_engagement_velocity_falls_back_to_1_hour():
+    source = load_source()
+    page = shreddit_post("fb", score=42, created=None)
+
+    candidates = await source.fetch_reddit_candidates(
+        max_results=10, db=FakeDb(), client=monid_client(lambda _n: page)
     )
 
     assert len(candidates) == 1
-    assert candidates[0]["url"] == (
-        "https://www.reddit.com/r/ClaudeAI/comments/1v5rwld"
-    )
-    assert candidates[0]["evidence_url"] == candidates[0]["url"]
-    assert "/rising" not in candidates[0]["url"]
+    assert candidates[0]["engagement_velocity"] == 42.0
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "post_id, community_name",
-    [(None, "ClaudeAI"), ("t3_1v5rwld", "")],
-)
-async def test_fetch_skips_posts_without_canonical_identity(
-    monkeypatch, post_id, community_name
-):
+async def test_gate_rejects_below_noise_floor():
+    """A 15-upvote post passes the fetch's 10-upvote filter but fails the gate."""
     source = load_source()
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(
-            json.dumps(
-                [
-                    _make_post(
-                        "https://www.reddit.com/r/ClaudeAI/rising/",
-                        community_name=community_name,
-                        post_id=post_id,
-                    )
-                ]
-            )
-        )
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    page = shreddit_post("hot", score=5000, comments=500, created=fresh()) + shreddit_post(
+        "noisy", score=15, comments=0, created=fresh()
     )
 
-    candidates = await source._fetch_one_subreddit(
-        "https://www.reddit.com/r/ClaudeAI/rising/"
+    candidates = await source.fetch_reddit_candidates(
+        max_results=10, db=FakeDb(), client=monid_client(lambda _n: page)
+    )
+
+    urls = [c["url"] for c in candidates]
+    assert "https://www.reddit.com/r/LocalLLaMA/comments/hot" in urls
+    assert "https://www.reddit.com/r/LocalLLaMA/comments/noisy" not in urls
+
+
+@pytest.mark.asyncio
+async def test_gate_rejects_below_heat_threshold():
+    source = load_source()
+    page = shreddit_post("lw", title="Lukewarm", score=20, comments=1, created=fresh())
+
+    candidates = await source.fetch_reddit_candidates(
+        max_results=10, db=FakeDb(), client=monid_client(lambda _n: page)
     )
 
     assert candidates == []
@@ -211,155 +542,6 @@ class FakeDb:
     def __init__(self, url_to_post: dict | None = None):
         self.posts = FakePosts(url_to_post)
         self.reddit_post_snapshots = FakeSnapshots()
-
-
-@pytest.mark.asyncio
-async def test_cooldown_skips_recently_posted_threads(monkeypatch):
-    source = load_source()
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-
-    old_url = "https://www.reddit.com/r/LocalLLaMA/comments/old/thread_old/"
-    recent_url = "https://www.reddit.com/r/LocalLLaMA/comments/new/thread_new/"
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(
-            json.dumps(
-                [
-                    _make_post(old_url, upvotes=200, title="Old thread"),
-                    _make_post(recent_url, upvotes=500, title="Recent thread"),
-                ]
-            )
-        )
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    # Recent post was published 2 days ago → should be filtered out.
-    recent_posted_at = datetime.now(timezone.utc) - timedelta(days=2)
-    recent_permalink = "https://www.reddit.com/r/LocalLLaMA/comments/new"
-    db = FakeDb(
-        url_to_post={
-            recent_permalink: {"postedAt": recent_posted_at},
-        }
-    )
-
-    candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
-
-    urls = [c["url"] for c in candidates]
-    assert "https://www.reddit.com/r/LocalLLaMA/comments/old" in urls
-    assert recent_permalink not in urls
-
-
-@pytest.mark.asyncio
-async def test_cooldown_keeps_threads_posted_7_or_more_days_ago(monkeypatch):
-    source = load_source()
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-
-    url = "https://www.reddit.com/r/MachineLearning/comments/abc/kept_thread/"
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(
-            json.dumps([_make_post(url, upvotes=150, community_name="MachineLearning")])
-        )
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    # Posted exactly 7 days ago → should be kept (>= COOLDOWN_DAYS).
-    posted_at = datetime.now(timezone.utc) - timedelta(days=7)
-    permalink = "https://www.reddit.com/r/MachineLearning/comments/abc"
-    db = FakeDb(url_to_post={permalink: {"postedAt": posted_at}})
-
-    candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
-    assert len(candidates) == 1
-    assert candidates[0]["url"] == permalink
-
-
-@pytest.mark.asyncio
-async def test_cooldown_keeps_never_posted_threads(monkeypatch):
-    source = load_source()
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-
-    url = "https://www.reddit.com/r/singularity/comments/xyz/never_posted/"
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(
-            json.dumps([_make_post(url, upvotes=120, community_name="singularity")])
-        )
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    db = FakeDb()  # no posts at all
-
-    candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
-    assert len(candidates) == 1
-    assert candidates[0]["url"] == ("https://www.reddit.com/r/singularity/comments/xyz")
-
-
-@pytest.mark.asyncio
-async def test_engagement_velocity_is_computed_and_sorted(monkeypatch):
-    source = load_source()
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-
-    # Both posts pass the gate (enough upvotes/comments, fresh enough for heat >= 40).
-    now = datetime.now(timezone.utc)
-    post_a = _make_post(
-        "https://www.reddit.com/r/LocalLLaMA/comments/a/thread_a/",
-        upvotes=100,
-        comments=50,
-        created_utc=(now - timedelta(hours=1)).timestamp(),
-        post_id="t3_a",
-    )
-    post_b = _make_post(
-        "https://www.reddit.com/r/LocalLLaMA/comments/b/thread_b/",
-        upvotes=500,
-        comments=50,
-        created_utc=(now - timedelta(hours=2)).timestamp(),
-        post_id="t3_b",
-    )
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(json.dumps([post_a, post_b]))
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    db = FakeDb()
-    candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
-
-    assert len(candidates) == 2
-    # engagement_velocity is still computed (backward-compat field).
-    assert "engagement_velocity" in candidates[0]
-    # Candidates are sorted by heat_score (highest first).
-    assert "heat_score" in candidates[0]
-    assert candidates[0]["heat_score"] >= candidates[1]["heat_score"]
-
-
-@pytest.mark.asyncio
-async def test_engagement_velocity_falls_back_to_1_hour(monkeypatch):
-    source = load_source()
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-
-    url = "https://www.reddit.com/r/OpenAI/comments/fb/fallback/"
-    # No created_utc field → age defaults to 1 hour → velocity = upvotes / 1
-    post = _make_post(url, upvotes=42, created_utc=None, post_id="t3_fb")
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(json.dumps([post]))
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    db = FakeDb()
-    candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
-    assert len(candidates) == 1
-    assert candidates[0]["engagement_velocity"] == 42.0
 
 
 @pytest.mark.asyncio
@@ -515,86 +697,6 @@ async def test_last_posted_days_uses_most_recent_post_not_oldest(db):
 
 
 @pytest.mark.asyncio
-async def test_gate_rejects_below_noise_floor(monkeypatch):
-    """The publish gate rejects candidates below the noise floor (>=20 upvotes, >=1 comment).
-
-    A post with 15 upvotes passes the fetch's 10-upvote filter but fails the
-    gate's noise floor — the gate, not the fetch, is the quality filter.
-    """
-    source = load_source()
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-
-    hot_url = "https://www.reddit.com/r/LocalLLaMA/comments/hot/thread_hot/"
-    noisy_url = "https://www.reddit.com/r/LocalLLaMA/comments/noisy/thread_noisy/"
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(
-            json.dumps(
-                [
-                    _make_post(
-                        hot_url,
-                        upvotes=5000,
-                        comments=500,
-                        title="Hot",
-                    ),
-                    _make_post(
-                        noisy_url,
-                        upvotes=15,
-                        comments=0,
-                        title="Noisy",
-                    ),
-                ]
-            )
-        )
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    db = FakeDb()  # no prior posts → both pass cooldown
-    candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
-    urls = [c["url"] for c in candidates]
-    assert "https://www.reddit.com/r/LocalLLaMA/comments/hot" in urls
-    assert "https://www.reddit.com/r/LocalLLaMA/comments/noisy" not in urls
-
-
-@pytest.mark.asyncio
-async def test_gate_rejects_below_heat_threshold(monkeypatch):
-    """The publish gate rejects candidates below the heat threshold (40)."""
-    source = load_source()
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-
-    # 20 upvotes, 1 comment, age=1h → just above noise floor but low heat.
-    lukewarm_url = "https://www.reddit.com/r/LocalLLaMA/comments/lw/thread_lw/"
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FakeProcess(
-            json.dumps(
-                [
-                    _make_post(
-                        lukewarm_url,
-                        upvotes=20,
-                        comments=1,
-                        title="Lukewarm",
-                        post_id="t3_lw",
-                    )
-                ]
-            )
-        )
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    db = FakeDb()
-    candidates = await source.fetch_reddit_candidates(max_results=10, db=db)
-    urls = [c["url"] for c in candidates]
-    # 20 upvotes/1h → velocity=8, recency≈18, depth=min(10,int(1/20*50))=2, novelty=10
-    # total ≈ 38 < 40 → gate rejects (below threshold).
-    assert source._normalize_reddit_url(lukewarm_url) not in urls
-
-
-@pytest.mark.asyncio
 async def test_snapshot_stores_thread_text_for_corpus():
     """Snapshots double as the @github-radar corroboration corpus.
 
@@ -621,44 +723,3 @@ async def test_snapshot_stores_thread_text_for_corpus():
     assert doc["comments"] == 10
     assert "capturedAt" in doc
 
-
-@pytest.mark.asyncio
-async def test_fetch_raises_when_every_subreddit_fetch_fails(monkeypatch):
-    source = load_source()
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        return FailingProcess()
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    with pytest.raises(RuntimeError, match="Token expired"):
-        await source.fetch_reddit_candidates(max_results=10, db=FakeDb(url_to_post={}))
-
-
-@pytest.mark.asyncio
-async def test_fetch_tolerates_some_subreddits_failing(monkeypatch):
-    source = load_source()
-    monkeypatch.setattr(source.shutil, "which", lambda _: "/usr/local/bin/bdata")
-    url = "https://www.reddit.com/r/LocalLLaMA/comments/ok/thread_ok/"
-    calls = []
-
-    async def fake_create_subprocess_exec(*_args, **_kwargs):
-        calls.append(1)
-        if len(calls) == 1:
-            return FakeProcess(json.dumps([_make_post(url, upvotes=200)]))
-        return FailingProcess()
-
-    monkeypatch.setattr(
-        source.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-
-    candidates = await source.fetch_reddit_candidates(
-        max_results=10, db=FakeDb(url_to_post={})
-    )
-
-    assert [c["url"] for c in candidates] == [
-        "https://www.reddit.com/r/LocalLLaMA/comments/ok"
-    ]

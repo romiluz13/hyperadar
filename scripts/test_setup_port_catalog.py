@@ -50,7 +50,7 @@ class PortCatalogSetupTests(unittest.TestCase):
         self.assertEqual(reddit["properties"]["status"], "muted")
 
     def test_agent_seed_contains_every_creator_without_invented_health_metrics(self):
-        entities = build_agent_entities(brightdata_api_key="real-secret")
+        entities = build_agent_entities(reddit_source_key="real-secret")
 
         self.assertEqual(
             [entity["identifier"] for entity in entities],
@@ -74,8 +74,8 @@ class PortCatalogSetupTests(unittest.TestCase):
             )
         )
 
-    def test_reddit_seed_is_muted_without_a_real_bright_data_key(self):
-        entities = build_agent_entities(brightdata_api_key="")
+    def test_reddit_seed_is_muted_without_a_real_reddit_source_key(self):
+        entities = build_agent_entities(reddit_source_key="")
         reddit = next(
             entity for entity in entities if entity["identifier"] == "reddit-pulse"
         )
@@ -83,7 +83,7 @@ class PortCatalogSetupTests(unittest.TestCase):
         self.assertEqual(reddit["properties"]["status"], "muted")
 
         placeholder_entities = build_agent_entities(
-            brightdata_api_key="your_bright_data_api_key"
+            reddit_source_key="your_monid_api_key"
         )
         placeholder_reddit = next(
             entity

@@ -46,7 +46,7 @@ def test_required_checks_per_agent():
     assert "arxiv" not in doctor.required_checks("@hidden-gems")
     assert "youtube_key" in doctor.required_checks("@youtube-trends")
     assert "rombot" in doctor.required_checks("@community-radar")
-    assert "brightdata" in doctor.required_checks("@reddit-pulse")
+    assert "monid" in doctor.required_checks("@reddit-pulse")
 
 
 def test_required_checks_unknown_handle_gets_core_set():
@@ -194,11 +194,11 @@ async def test_check_hn_algolia_ok():
 
 
 @pytest.mark.asyncio
-async def test_check_brightdata_presence(monkeypatch):
-    monkeypatch.setenv("BRIGHTDATA_API_KEY", "x")
-    assert (await doctor.check_brightdata())["status"] == "ok"
-    monkeypatch.delenv("BRIGHTDATA_API_KEY", raising=False)
-    assert (await doctor.check_brightdata())["status"] == "fail"
+async def test_check_monid_presence(monkeypatch):
+    monkeypatch.setenv("MONID_API_KEY", "x")
+    assert (await doctor.check_monid())["status"] == "ok"
+    monkeypatch.delenv("MONID_API_KEY", raising=False)
+    assert (await doctor.check_monid())["status"] == "fail"
 
 
 @pytest.mark.asyncio

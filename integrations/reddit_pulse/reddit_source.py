@@ -1,47 +1,51 @@
-"""Reddit source — Bright Data structured Reddit Scraper API via bdata pipelines.
+"""Reddit source — each subreddit's rising feed, fetched for free through Monid.
 
-Replaces SERP guessing (bdata search) with bdata pipelines reddit_posts, which
-returns structured JSON: num_upvotes, num_comments, title, url, community_name.
-This gives real engagement metrics, not a Google visibility proxy.
+Monid's TinyFish ``/free/fetch`` endpoint ($0 per call, 1,000 URLs/day) loads
+Reddit's rising-feed markup, whose ``<shreddit-post>`` elements carry the score,
+comment count and creation time. Reddit's JSON listings answer 403 to it, and
+the earlier Bright Data pipeline was paid; see ADR 0006.
 
-Requires: bdata CLI in PATH (installed via npm, part of Bright Data).
+Requires: ``MONID_API_KEY`` (a Monid API key; the free endpoint bills $0).
 """
 
 import asyncio
-import contextlib
-import json
 import logging
 import os
-import shutil
-import signal
+import re
 from datetime import datetime, timezone
+from html.parser import HTMLParser
+
+import httpx
 
 from _shared.heat import compute_heat_score, should_publish_heat
 from _shared.mongo import _get_db
 
 # Target subreddits for AI developer discourse.
 SUBREDDITS = [
-    "https://www.reddit.com/r/LocalLLaMA/rising/",
-    "https://www.reddit.com/r/LLMDevs/rising/",
-    "https://www.reddit.com/r/AI_Agents/rising/",
-    "https://www.reddit.com/r/ClaudeAI/rising/",
-    "https://www.reddit.com/r/ChatGPTCoding/rising/",
-    "https://www.reddit.com/r/artificial/rising/",
-    "https://www.reddit.com/r/ExperiencedDevs/rising/",
-    "https://www.reddit.com/r/softwarearchitecture/rising/",
-    "https://www.reddit.com/r/devops/rising/",
-    "https://www.reddit.com/r/mongodb/rising/",
-    "https://www.reddit.com/r/LangChain/rising/",
-    "https://www.reddit.com/r/Rag/rising/",
-    "https://www.reddit.com/r/SaaS/rising/",
-    "https://www.reddit.com/r/startups/rising/",
-    "https://www.reddit.com/r/singularity/rising/",
-    "https://www.reddit.com/r/MachineLearning/rising/",
+    "LocalLLaMA",
+    "LLMDevs",
+    "AI_Agents",
+    "ClaudeAI",
+    "ChatGPTCoding",
+    "artificial",
+    "ExperiencedDevs",
+    "softwarearchitecture",
+    "devops",
+    "mongodb",
+    "LangChain",
+    "Rag",
+    "SaaS",
+    "startups",
+    "singularity",
+    "MachineLearning",
 ]
-SOURCE_COMMAND_TIMEOUT_SECONDS = 180
-SOURCE_COMMAND_CLEANUP_TIMEOUT_SECONDS = 5
+MONID_API_URL = "https://api.monid.ai"
+MONID_FETCH_BATCH = 10  # the free fetch takes 1-10 URLs per call
+MONID_HTTP_TIMEOUT_SECONDS = 120
+MONID_RUN_DEADLINE_SECONDS = 180
+MONID_POLL_INTERVAL_SECONDS = 3
 COOLDOWN_DAYS = 7
-REDDIT_FETCH_CONCURRENCY = 5
+_PERMALINK = re.compile(r"^/r/([^/]+)/comments/([^/]+)")
 
 
 def _visibility_from_upvotes(upvotes: int, comments: int) -> float:
@@ -70,25 +74,11 @@ def _normalize_reddit_url(url: str) -> str:
     return url
 
 
-def _reddit_permalink(post: dict) -> str:
-    """Build the canonical thread URL from Bright Data's post identity fields."""
-    post_id = str(post.get("post_id") or "").strip()
-    subreddit = str(post.get("community_name") or "").strip().strip("/")
-    if post_id.startswith("t3_"):
-        post_id = post_id[3:]
-    if not post_id or not subreddit:
-        return ""
-    return _normalize_reddit_url(
-        f"https://www.reddit.com/r/{subreddit}/comments/{post_id}/"
-    )
-
-
 def _post_age_hours(post: dict) -> float:
     """Hours since the Reddit post was created. Falls back to 1 if unknown.
 
-    If Bright Data doesn't return created_utc/created_at, engagement_velocity
-    defaults to upvotes/1 = upvotes. This is a known limitation — the ranking
-    becomes sort-by-upvotes, which is still better than no sorting.
+    A post without a creation time scores velocity as upvotes/1 = upvotes, so
+    the ranking degrades to sort-by-upvotes rather than failing.
     """
     for key in ("created_utc", "created_at"):
         raw = post.get(key)
@@ -161,154 +151,228 @@ async def _last_reddit_snapshot(db, url: str) -> dict | None:
     )
 
 
-async def _stop_source_process(proc, communication) -> None:
-    if proc.returncode is None:
-        pid = getattr(proc, "pid", None)
-        if isinstance(pid, int):
-            try:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(pid, signal.SIGKILL)
-            except PermissionError:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        else:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-    try:
-        await asyncio.wait_for(
-            asyncio.shield(communication),
-            timeout=SOURCE_COMMAND_CLEANUP_TIMEOUT_SECONDS,
-        )
-    except TimeoutError:
-        logging.error("bdata process cleanup exceeded its deadline")
-    except Exception as error:
-        logging.error("bdata process cleanup failed: %s", error)
+def _parse_created(raw: str | None) -> str | None:
+    """Reddit renders ``2026-11-09T22:22:35.915000+0000``; keep it ISO-parseable."""
+    if not raw:
+        return None
+    return raw[:-5] + raw[-5:-2] + ":" + raw[-2:] if len(raw) > 5 and raw[-5] in "+-" else raw
 
 
-async def _fetch_one_subreddit(subreddit_url: str) -> list[dict]:
-    """Fetch posts from a single subreddit. Raises RuntimeError when the fetch fails."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "bdata",
-            "pipelines",
-            "reddit_posts",
-            subreddit_url,
-            "--format",
-            "json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-        communication = asyncio.create_task(proc.communicate())
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                asyncio.shield(communication),
-                timeout=SOURCE_COMMAND_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            await _stop_source_process(proc, communication)
-            raise RuntimeError(f"bdata pipelines timed out for {subreddit_url}") from None
-        except asyncio.CancelledError:
-            await _stop_source_process(proc, communication)
-            raise
-        if proc.returncode:
-            raise RuntimeError(
-                f"bdata pipelines error for {subreddit_url}: "
-                f"{stderr.decode().strip()[-200:]}"
-            )
-        payload = json.loads(stdout)
-        # bdata pipelines may return a list or {"results": [...]}
-        posts = payload if isinstance(payload, list) else payload.get("results", [])
+class _FeedParser(HTMLParser):
+    """Collect each ``<shreddit-post>``'s attributes and its text body, by post id."""
 
-        results = []
-        for post in posts:
-            url = _reddit_permalink(post)
-            title = str(post.get("title") or "").strip()
-            if not url:
-                logging.warning(
-                    "reddit_source skipped post with missing canonical identity: post_id=%r community_name=%r",
-                    post.get("post_id"),
-                    post.get("community_name"),
-                )
-                continue
-            if not title:
-                continue
-            subreddit = str(post.get("community_name") or "").strip()
-            upvotes = int(post.get("num_upvotes") or 0)
-            comments = int(post.get("num_comments") or 0)
-            if upvotes < 10:  # filter noise
-                continue
-            age_hours = _post_age_hours(post)
-            results.append(
-                {
-                    "url": url,
-                    "title": title[:200],
-                    "kind": "thread",
-                    "description": str(post.get("description") or title)[:500],
-                    "topics": ["reddit", "ai", subreddit],
-                    "subreddit": subreddit,
-                    "num_upvotes": upvotes,
-                    "num_comments": comments,
-                    "age_hours": age_hours,
-                    "serp_rank": 1,  # back-compat: no longer SERP, keep field
-                    "visibility_score": _visibility_from_upvotes(upvotes, comments),
-                    "engagement_velocity": round(upvotes / max(age_hours, 1), 2),
-                    "evidence_url": url,
-                }
-            )
-        return results
-    except RuntimeError:
-        raise
-    except Exception as e:
-        raise RuntimeError(f"reddit_source fetch failed for {subreddit_url}: {e}") from e
+    def __init__(self) -> None:
+        super().__init__()
+        self.posts: dict[str, dict] = {}
+        self.bodies: dict[str, list[str]] = {}
+        self._body_id: str | None = None
+        self._div_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {key: value or "" for key, value in attrs}
+        if tag == "shreddit-post":
+            self._body_id = None  # a body never outlives its post, even when left open
+            post_id = values.get("id", "")
+            if post_id and post_id not in self.posts:
+                self.posts[post_id] = values
+        elif self._body_id is not None:
+            self._div_depth += tag == "div"
+        elif values.get("property") == "schema:articleBody" and tag == "div":
+            post_id = values.get("about", "")
+            # The cleaned markup repeats fragments; the first body per post wins.
+            if post_id and post_id not in self.bodies:
+                self.bodies[post_id] = []
+                self._body_id, self._div_depth = post_id, 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "shreddit-post":
+            self._body_id = None
+        elif self._body_id is not None and tag == "div":
+            self._div_depth -= 1
+            if self._div_depth == 0:
+                self._body_id = None
+
+    def handle_data(self, data: str) -> None:
+        if self._body_id is not None and data.strip():
+            self.bodies[self._body_id].append(data.strip())
 
 
-async def fetch_reddit_candidates(max_results: int = 10, db=None) -> list[dict]:
-    """Discover trending Reddit AI posts via bdata pipelines reddit_posts.
+def parse_rising_feed(markup: str) -> list[dict]:
+    """Candidate dicts from Reddit's rising-feed markup, one per post.
 
-    Pulls rising posts from curated AI subreddits with structured upvote/comment
-    data. Raises RuntimeError if bdata is not in PATH.
-
-    Skips Reddit threads that were posted (published as HypeRadar posts) in the
-    last ``COOLDOWN_DAYS`` days. When *db* is not provided, connects via
-    ``_get_db()``.
+    The feed carries engagement as attributes of each ``<shreddit-post>``
+    (``score``, ``comment-count``, ``created-timestamp``); posts with no
+    permalink or title cannot be cited and are dropped. Raises ValueError when
+    no post in the markup can be read at all (an empty page or renamed
+    attributes): that is a broken source, not a quiet subreddit.
     """
-    if not shutil.which("bdata"):
-        raise RuntimeError(
-            "bdata CLI not found in PATH — install with: npm install -g @brightdata/cli"
+    parser = _FeedParser()
+    parser.feed(markup)
+    results = []
+    readable = 0
+    for post_id, values in parser.posts.items():
+        title = values.get("post-title", "").strip()
+        permalink = values.get("permalink", "").strip()
+        if not title or not permalink:
+            continue
+        identity = _PERMALINK.match(permalink)
+        if not identity:
+            continue
+        # Same canonical form as every earlier post and snapshot (no slug), so
+        # cooldown and upvote-delta lookups keep matching history.
+        url = f"https://www.reddit.com/r/{identity[1]}/comments/{identity[2]}"
+        subreddit = values.get("subreddit-name", "").strip() or identity[1]
+        try:
+            upvotes = int(values["score"])
+            comments = int(values.get("comment-count") or 0)
+        except (KeyError, ValueError):
+            continue
+        readable += 1
+        if upvotes < 10:  # filter noise
+            continue
+        link = values.get("content-href", "").strip()
+        parts = [title, " ".join(parser.bodies.get(post_id, []))]
+        if link and "reddit.com" not in link:
+            parts.append(link)
+        description = " ".join(part for part in parts if part)
+        age_hours = _post_age_hours(
+            {"created_at": _parse_created(values.get("created-timestamp"))}
         )
+        results.append(
+            {
+                "url": url,
+                "title": title[:200],
+                "kind": "thread",
+                "description": description[:500],
+                "topics": ["reddit", "ai", subreddit],
+                "subreddit": subreddit,
+                "num_upvotes": upvotes,
+                "num_comments": comments,
+                "age_hours": age_hours,
+                "serp_rank": 1,  # back-compat: no longer SERP, keep field
+                "visibility_score": _visibility_from_upvotes(upvotes, comments),
+                "engagement_velocity": round(upvotes / max(age_hours, 1), 2),
+                "evidence_url": url,
+            }
+        )
+    if not readable:
+        raise ValueError("no posts in the feed markup")
+    return results
+
+
+def _rising_feed_url(subreddit: str) -> str:
+    return f"https://www.reddit.com/svc/shreddit/community-more-posts/rising/?name={subreddit}"
+
+
+async def _monid_free_fetch(client: httpx.AsyncClient, urls: list[str]) -> dict:
+    """Run TinyFish's free fetch through Monid; return its ``{results, errors}``.
+
+    Sync providers answer the POST; async ones answer 202 with a run id to
+    poll (monid.ai/docs/api/run). Any refusal (402 balance, BLOCKED,
+    provider error) raises, so the caller counts every URL as failed.
+    """
+    headers = {"Authorization": f"Bearer {os.environ['MONID_API_KEY']}"}
+    response = await client.post(
+        f"{MONID_API_URL}/v1/run",
+        headers=headers,
+        json={
+            "provider": "tinyfish",
+            "endpoint": "/free/fetch",
+            "input": {
+                "urls": urls,
+                "format": "html",
+                "ttl": 0,
+                "include_selectors": ["shreddit-post"],
+            },
+        },
+    )
+    if response.status_code not in (200, 202):
+        raise RuntimeError(f"Monid run refused: HTTP {response.status_code} {response.text[:200]}")
+    run = response.json()
+    if run.get("status") != "COMPLETED" and not run.get("runId"):
+        raise RuntimeError(f"Monid run {run.get('status')} without a run id")
+    deadline = asyncio.get_running_loop().time() + MONID_RUN_DEADLINE_SECONDS
+    while run.get("status") in ("READY", "RUNNING", "STOPPING"):
+        if asyncio.get_running_loop().time() > deadline:
+            raise RuntimeError(f"Monid run {run.get('runId')} timed out")
+        await asyncio.sleep(MONID_POLL_INTERVAL_SECONDS)
+        poll = await client.get(f"{MONID_API_URL}/v1/runs/{run['runId']}", headers=headers)
+        if poll.status_code != 200:
+            raise RuntimeError(f"Monid run poll failed: HTTP {poll.status_code}")
+        run = poll.json()
+    provider_status = (run.get("providerResponse") or {}).get("httpStatus") or 200
+    if run.get("status") != "COMPLETED" or provider_status >= 400:
+        raise RuntimeError(
+            f"Monid run {run.get('runId')} ended {run.get('status')} "
+            f"(provider HTTP {provider_status}): {run.get('reason') or ''}".strip()
+        )
+    output = run.get("output") or {}
+    return {"results": output.get("results") or [], "errors": output.get("errors") or []}
+
+
+async def _fetch_all_subreddits(
+    client: httpx.AsyncClient,
+) -> tuple[list[dict], list[str], set[str]]:
+    """Parsed posts, one failure message per failed subreddit, and the subreddits read."""
+    urls = {_rising_feed_url(name): name for name in SUBREDDITS}
+    pending = list(urls)
+    posts: list[dict] = []
+    failures: list[str] = []
+    read: set[str] = set()
+    for i in range(0, len(pending), MONID_FETCH_BATCH):
+        batch = pending[i : i + MONID_FETCH_BATCH]
+        try:
+            output = await _monid_free_fetch(client, batch)
+        except (httpx.HTTPError, RuntimeError, ValueError) as error:
+            failures.extend(f"r/{urls[u]}: {error}" for u in batch)
+            continue
+        for error in output["errors"]:
+            name = urls.get(error.get("url"), error.get("url"))
+            failures.append(f"r/{name}: {error.get('error')} {error.get('status') or ''}".strip())
+        for result in output["results"]:
+            name = urls.get(result.get("url"), result.get("url"))
+            try:
+                posts.extend(parse_rising_feed(result.get("text") or ""))
+            except ValueError as error:
+                failures.append(f"r/{name}: {error}")
+                continue
+            read.add(name)
+    return posts, failures, read
+
+
+async def fetch_reddit_candidates(
+    max_results: int = 10, db=None, client: httpx.AsyncClient | None = None
+) -> list[dict]:
+    """Discover trending Reddit AI posts from each subreddit's rising feed.
+
+    Fetches through Monid's free TinyFish fetch ($0, 1,000 URLs/day), two
+    calls of at most 10 feeds. Skips Reddit threads that were posted
+    (published as HypeRadar posts) in the last ``COOLDOWN_DAYS`` days. When
+    *db* is not provided, connects via ``_get_db()``.
+    """
+    if not os.environ.get("MONID_API_KEY", "").strip():
+        raise RuntimeError("MONID_API_KEY not set — required for the Reddit source")
 
     if db is None:
         db = _get_db()
 
-    # Bounded-async fetch: all subreddits concurrently (up to the concurrency
-    # limit), soft-fail per subreddit (one timeout does not blank the run).
-    tasks = [asyncio.ensure_future(_fetch_one_subreddit(s)) for s in SUBREDDITS]
-    all_posts: list[dict] = []
-    failures: list[Exception] = []
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(timeout=MONID_HTTP_TIMEOUT_SECONDS)
     try:
-        for coro in asyncio.as_completed(tasks):
-            try:
-                posts = await coro
-            except Exception as error:
-                logging.warning("%s", error)
-                failures.append(error)
-                continue
-            all_posts.extend(posts)
-    except asyncio.CancelledError:
-        # The run was cancelled: tear down every in-flight subreddit fetch so
-        # no bdata subprocess outlives the cancelled run.
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
+        all_posts, failures, read = await _fetch_all_subreddits(client)
+    finally:
+        if owns_client:
+            await client.aclose()
+    for failure in failures:
+        logging.warning("reddit_source fetch failed: %s", failure)
 
-    # Every subreddit failing is a dead source (e.g. an expired Bright Data
-    # token), not a quiet day: fail the run so the refresh alert fires.
-    if failures and len(failures) == len(tasks):
+    # Every subreddit failing is a dead source (an exhausted allowance, a
+    # changed markup), not a quiet day: fail the run so the refresh alert fires.
+    if not read:
         raise RuntimeError(
-            f"Reddit source down: all {len(tasks)} subreddit fetches failed; "
-            f"last error: {failures[-1]}"
+            f"Reddit source down: all {len(SUBREDDITS)} subreddit fetches failed; "
+            f"last error: {failures[-1] if failures else 'Monid returned no page'}"
         )
 
     # Deduplicate by URL

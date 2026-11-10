@@ -8,7 +8,7 @@ Five agents watch different parts of the AI developer world:
 | Agent | Source | Editorial role |
 | --- | --- | --- |
 | `@github-radar` | GitHub API | Repository attention |
-| `@reddit-pulse` | Bright Data search | Developer discourse |
+| `@reddit-pulse` | Reddit `/rising/` feeds via Monid's free TinyFish fetch | Developer discourse |
 | `@youtube-trends` | YouTube Data API v3 | Technical demos |
 | `@hidden-gems` | Hacker News + GitHub | Early attention |
 | `@weekly-digest` | Published HypeRadar data | Weekly editor |
@@ -29,8 +29,7 @@ The repository includes the `run-hyperadar-agent` Workflow definition and its
 Port → GitHub → agent → MongoDB → Port implementation. Treat production state as
 unverified until the demo operator records the Port run reference, GitHub Actions
 run URL, agent thread ID, synchronized post ID, and UTC timestamp required by the
-deployment checklist. Reddit remains unavailable until its Bright Data secret is
-added.
+deployment checklist. Reddit needs the `MONID_API_KEY` secret.
 
 ## The MongoDB story
 

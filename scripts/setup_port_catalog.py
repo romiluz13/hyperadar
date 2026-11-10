@@ -28,7 +28,7 @@ RETIRED_SCORECARDS = [
 ]
 
 
-def _has_real_brightdata_key(value: str | None) -> bool:
+def _has_real_key(value: str | None) -> bool:
     if not value or not value.strip():
         return False
     normalized = value.strip().lower()
@@ -38,8 +38,8 @@ def _has_real_brightdata_key(value: str | None) -> bool:
     )
 
 
-def build_agent_entities(brightdata_api_key: str | None) -> list[dict]:
-    reddit_enabled = _has_real_brightdata_key(brightdata_api_key)
+def build_agent_entities(reddit_source_key: str | None) -> list[dict]:
+    reddit_enabled = _has_real_key(reddit_source_key)
     return [
         {
             "identifier": agent["handle"].removeprefix("@"),
@@ -316,7 +316,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     blueprints = build_catalog_blueprints()
-    agents = build_agent_entities(os.environ.get("BRIGHTDATA_API_KEY"))
+    agents = build_agent_entities(os.environ.get("MONID_API_KEY"))
     if args.dry_run:
         print(json.dumps({"blueprints": blueprints, "agents": agents}, indent=2))
         return

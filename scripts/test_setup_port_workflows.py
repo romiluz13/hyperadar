@@ -215,8 +215,9 @@ class RunAgentWorkflowTests(unittest.TestCase):
         self.assertIn("JOB_RESULT: ${{ needs.run-agent.result }}", contents)
         self.assertIn("python scripts/report_port_workflow_run.py", contents)
         self.assertNotIn("JOB_STATUS: ${{ job.status }}", contents)
-        self.assertIn("BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}", contents)
-        self.assertIn("@brightdata/cli@0.3.2", contents)
+        self.assertIn("MONID_API_KEY: ${{ secrets.MONID_API_KEY }}", contents)
+        self.assertNotIn("@brightdata/cli", contents)
+        self.assertNotIn("BRIGHTDATA_API_KEY", contents)
         self.assertNotIn("yt-dlp==2026.07.04", contents)
         self.assertIn(
             "YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}", contents

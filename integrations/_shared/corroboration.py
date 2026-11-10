@@ -10,7 +10,7 @@ consensus exists, so it keeps the momentum gate only.
 
 The Reddit leg corroborates against the corpus that @reddit-pulse already
 collects every run (the ``reddit_post_snapshots`` time-series, 16 curated AI
-subreddits, gathered through Bright Data). Reddit's public search API is the
+subreddits, gathered through Monid's free TinyFish fetch). Reddit's public search API is the
 fallback only: it blocks unauthenticated clients with 403 — including
 residential IPs — so a blocked fallback logs one warning and returns None
 (unknown), which simply does not count as corroboration. Neither leg ever
