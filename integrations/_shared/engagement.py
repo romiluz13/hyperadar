@@ -172,3 +172,27 @@ async def fetch_hn_engagement(
     finally:
         if owns_client:
             await client.aclose()
+
+
+async def fetch_hn_story(
+    story_id: str, client: httpx.AsyncClient | None = None
+) -> dict | None:
+    """Points and comment count of one HN story, or None when HN cannot say."""
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(timeout=15)
+    try:
+        r = await client.get(
+            _HN_ALGOLIA_SEARCH_URL,
+            params={"tags": f"story_{story_id}", "hitsPerPage": 1},
+        )
+        r.raise_for_status()
+        hits = r.json().get("hits", [])
+    except (httpx.HTTPError, ValueError):
+        return None
+    finally:
+        if owns_client:
+            await client.aclose()
+    if not hits:
+        return None
+    return {"points": hits[0].get("points") or 0, "comments": hits[0].get("num_comments") or 0}

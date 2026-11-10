@@ -20,12 +20,14 @@ from _shared.evidence_copy import (
     hidden_gem_momentum_copy,
     hn_engagement_copy,
 )
-from _shared.momentum import _REPUBLISH_COOLDOWN_DAYS
-from _shared.mongo import _get_db, get_last_published_days
+from _shared.mongo import NEVER_POSTED_DAYS, _get_db, get_last_published_days
 from _shared.write_post import write_post
 from source import (
+    SHOW_HN_POOL,
     fetch_breakout_candidates,
     fetch_hn_candidates,
+    keep_hidden_show_hn,
+    select_hidden_gems,
 )
 
 AGENT_HANDLE = "@hidden-gems"
@@ -58,8 +60,8 @@ async def fetch_hidden_gem_candidates() -> str:
     """Fetch today's hidden gems: breakout candidates that passed the momentum gate and HN Show HN posts."""
     db = _get_db()
     breakout = await fetch_breakout_candidates(db)
-    hn = await fetch_hn_candidates(max_results=10)
-    candidates = breakout + hn
+    hn = await keep_hidden_show_hn(db, await fetch_hn_candidates(max_results=SHOW_HN_POOL))
+    candidates = select_hidden_gems(breakout, hn)
     if not candidates:
         return "No hidden gems found today."
     _CANDIDATE_CACHE.clear()
@@ -100,14 +102,13 @@ async def write_hidden_gem(gem_url: str, verdict: str) -> str:
             f"ERROR: unknown gem_url {gem_url}. Call fetch_hidden_gem_candidates first."
         )
 
-    # Cross-agent cooldown: HN discoveries and breakout repos alike are never
-    # reposted (by any agent) inside the republish window.
+    # A hidden gem is never recycled: any earlier post by any agent blocks it.
     db = _get_db()
     last_pub = await get_last_published_days(db, gem_url)
-    if last_pub < _REPUBLISH_COOLDOWN_DAYS:
+    if last_pub < NEVER_POSTED_DAYS:
         return (
-            f"SKIP: {gem_url} was posted {last_pub} day(s) ago by an agent — "
-            f"republish cooldown is {_REPUBLISH_COOLDOWN_DAYS} days."
+            f"SKIP: {gem_url} was already posted {last_pub} day(s) ago by an agent; "
+            "hidden gems are never reposted."
         )
 
     if c["discovery_source"] == "hacker_news":

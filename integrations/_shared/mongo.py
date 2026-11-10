@@ -313,6 +313,10 @@ async def get_prior_post_count(project_id: str) -> int:
     return await _get_db().posts.count_documents({"project.url": project_id})
 
 
+# get_last_published_days' answer for a project URL no agent has posted.
+NEVER_POSTED_DAYS = 999
+
+
 async def get_last_published_days(db, project_url: str) -> int:
     """Days since the most recent post for this project URL, across ALL agents.
 
@@ -320,7 +324,7 @@ async def get_last_published_days(db, project_url: str) -> int:
     usually the oldest) — which silently defeated every cooldown, because a
     months-old publication made recently-posted repos look fresh again.
     Sort by ``postedAt`` descending so the newest publication decides.
-    Returns 999 if the project was never posted.
+    Returns ``NEVER_POSTED_DAYS`` if the project was never posted.
     """
     post = await db.posts.find_one(
         {"project.url": project_url},
@@ -328,7 +332,7 @@ async def get_last_published_days(db, project_url: str) -> int:
         sort=[("postedAt", -1)],
     )
     if not post or not post.get("postedAt"):
-        return 999
+        return NEVER_POSTED_DAYS
     posted = post["postedAt"]
     if posted.tzinfo is None:
         posted = posted.replace(tzinfo=timezone.utc)

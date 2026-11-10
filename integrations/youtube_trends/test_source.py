@@ -194,11 +194,14 @@ async def test_error_log_excludes_api_key(caplog):
         patch("source.CHANNELS", ["https://www.youtube.com/@testchannel/videos"]),
         patch("source._youtube_api_get", new=fake_api_get),
         caplog.at_level(logging.WARNING),
+        pytest.raises(RuntimeError, match="YouTube source down") as excinfo,
     ):
-        result = await fetch_youtube_candidates(max_results=5)
+        await fetch_youtube_candidates(max_results=5)
 
-    assert result == []  # soft-fail
-    assert key not in caplog.text  # the key must not leak into logs
+    # The only channel failed, so the source is down; neither the log nor the
+    # raised message may carry the key.
+    assert key not in caplog.text
+    assert key not in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -243,3 +246,51 @@ async def test_missing_api_key_raises_not_soft_fails(monkeypatch):
     with patch("source.CHANNELS", ["https://www.youtube.com/@testchannel/videos"]):
         with pytest.raises(RuntimeError, match="YOUTUBE_API_KEY"):
             await fetch_youtube_candidates(max_results=5)
+
+
+def _failing_channel_api(failing_handle: str):
+    canned = _canned_api_responses()
+
+    async def fake_api_get(path, params):
+        if "channels" in path and params.get("forHandle") == failing_handle:
+            req = httpx.Request("GET", "https://www.googleapis.com/youtube/v3/channels")
+            raise httpx.HTTPStatusError(
+                "Server Error", request=req, response=httpx.Response(500, request=req)
+            )
+        if "channels" in path:
+            return canned["channels"]
+        if "search" in path:
+            return canned["search"]
+        if "videos" in path:
+            return canned["videos"]
+        return {}
+
+    return fake_api_get
+
+
+@pytest.mark.asyncio
+async def test_every_channel_failing_raises_instead_of_a_quiet_day():
+    """A dead source (quota, outage) must fail the run, not publish nothing."""
+    with (
+        patch(
+            "source.CHANNELS",
+            ["https://www.youtube.com/@down/videos", "https://www.youtube.com/@down/videos"],
+        ),
+        patch("source._youtube_api_get", new=_failing_channel_api("@down")),
+        pytest.raises(RuntimeError, match="YouTube source down: all 2 channel fetches failed"),
+    ):
+        await fetch_youtube_candidates(max_results=5)
+
+
+@pytest.mark.asyncio
+async def test_some_channels_failing_still_returns_the_rest():
+    with (
+        patch(
+            "source.CHANNELS",
+            ["https://www.youtube.com/@down/videos", "https://www.youtube.com/@testchannel/videos"],
+        ),
+        patch("source._youtube_api_get", new=_failing_channel_api("@down")),
+    ):
+        result = await fetch_youtube_candidates(max_results=5)
+
+    assert [c["url"] for c in result] == ["https://www.youtube.com/watch?v=vid1"]

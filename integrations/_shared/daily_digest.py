@@ -1,7 +1,9 @@
-"""Daily digest — picks the top 5 most hyped items from the last 24h.
+"""Daily digest — the 2-5 most hyped items from the last 24h, ranked by evidence.
 
-Queries MongoDB for external agent posts, calls Grove LLM to rank and
-blurb the top 5 (max 2 per source), stores the digest in the digests
+Queries MongoDB for external agent posts, scores each on uncapped raw evidence
+(star growth per week, relative growth, Hacker News attention, Reddit votes,
+views), skips anything featured in the last 30 daily digests, and asks Grove
+only to write a blurb for each chosen item. Stores the digest in the digests
 collection.
 """
 
@@ -9,6 +11,7 @@ import asyncio
 import html
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -19,6 +22,7 @@ import httpx
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _shared.agent_catalog import AGENT_CATALOG  # noqa: E402
+from _shared.engagement import fetch_hn_engagement, fetch_hn_story  # noqa: E402
 from _shared.grove import grove_api_key  # noqa: E402
 from _shared.momentum import _raw_velocity  # noqa: E402
 
@@ -31,7 +35,19 @@ DAILY_DIGEST_AGENT_HANDLES = [
 ]
 
 DAILY_DIGEST_MAX_ITEMS = 5
-DAILY_DIGEST_MAX_PER_AGENT = 2
+# A thin day still sends two items (RomBot never trims below two).
+DAILY_DIGEST_MIN_ITEMS = 2
+DAILY_DIGEST_MAX_PER_AGENT = 3
+DAILY_DIGEST_MAX_VIDEOS = 1
+# Calibrated on 2026-11-09 posts: real breakouts score 100+, a 1K-view video 36.
+DAILY_DIGEST_MIN_SCORE = 50
+DAILY_DIGEST_MEMORY_DAYS = 30
+# A repo this small when the week began was being born, not breaking out:
+# "247 new this week" on a 255-star repo is trivially true (Flide, 2026-11-09),
+# while 1.1K -> 11K (auto-ontology) is the story.
+_NEW_REPO_START_STARS = 100
+_EVIDENCE_CONCURRENCY = 8
+_HN_ITEM_ID = re.compile(r"news\.ycombinator\.com/item\?id=(\d+)")
 DAILY_DIGEST_WHAT_MAX_CHARS = 140
 STAR_SNAPSHOTS_READ = 8
 
@@ -215,7 +231,7 @@ def _daily_post_filter(since: datetime) -> dict:
 
 
 def _build_grove_prompt(posts: list[dict]) -> str:
-    """Build the prompt sent to Grove for ranking + blurbing."""
+    """Build the prompt sent to Grove for blurbing the chosen items."""
     items = []
     for i, post in enumerate(posts):
         project = post.get("project", {})
@@ -250,9 +266,9 @@ def _build_grove_prompt(posts: list[dict]) -> str:
 
     return (
         "You are the HypeRadar editor. "
-        "Pick the top 5 most interesting/hyped items from the following posts. "
-        f"Max 2 from the same source (agentHandle). "
-        "For each, write a one-line English blurb explaining why it's hyped. "
+        "The following posts are already chosen and ordered; do not drop or "
+        "reorder any. For every post, write a one-line English blurb "
+        "explaining why it's hyped, based only on its title and body. "
         "Return as a JSON array of objects with keys: id, blurb. "
         f"{what_request}"
         f"Posts: {json.dumps(items)}"
@@ -260,7 +276,7 @@ def _build_grove_prompt(posts: list[dict]) -> str:
 
 
 async def _call_grove(posts: list[dict]) -> list[dict]:
-    """Call Grove LLM to pick + blurb the top 5 items. Returns list of {id, blurb}."""
+    """Call Grove LLM to blurb the chosen items. Returns list of {id, blurb}."""
     prompt = _build_grove_prompt(posts)
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(
@@ -293,6 +309,163 @@ async def _call_grove(posts: list[dict]) -> list[dict]:
     return result
 
 
+def _post_metrics(post: dict) -> dict:
+    """The post's own evidence as ``{metric: value}``; Reddit posts keep comments in delta."""
+    signal = post.get("signal") or {}
+    metric, value = signal.get("metric"), signal.get("value")
+    metrics: dict = {}
+    if isinstance(metric, str) and isinstance(value, (int, float)):
+        metrics[metric] = value
+    if metric == "upvotes" and isinstance(signal.get("delta"), (int, float)):
+        metrics["comments"] = signal["delta"]
+    return metrics
+
+
+def _born_this_window(stars: int, weekly_gain: int) -> bool:
+    """A repo that started the window under ``_NEW_REPO_START_STARS`` is being born, not breaking out."""
+    return stars - weekly_gain < _NEW_REPO_START_STARS
+
+
+def _evidence_key(post: dict) -> tuple[str, str | None]:
+    """Evidence depends on the URL and, for an HN item, on its own story."""
+    signal = post.get("signal") or {}
+    story_id = _HN_ITEM_ID.search(signal.get("evidenceUrl") or "")
+    own_story = story_id[1] if signal.get("metric") == "hn_points" and story_id else None
+    return post.get("project", {}).get("url", ""), own_story
+
+
+def _digest_score(
+    metrics: dict,
+    weekly_gain: int | None,
+    window_days: int | None,
+    hn_points: int | None,
+    hn_comments: int | None,
+) -> float:
+    """Uncapped evidence score: log-scaled, so 10,000 stars a week beats 60.
+
+    Star gain is normalized to 7 days because sparse snapshots stretch the
+    window (18-54 days on real data). Relative growth rewards a breakout over
+    a mega-repo's steady drip, unless the repo started the window under
+    ``_NEW_REPO_START_STARS``: a repo being born has no base to break out of.
+    """
+    score = 0.0
+    if weekly_gain is not None and window_days:
+        weekly = weekly_gain * 7 / max(window_days, 7)
+        stars = metrics.get("github_stars")
+        score += 25 * math.log10(1 + weekly)
+        if stars and not _born_this_window(stars, weekly_gain):
+            score += 15 * min(1.0, weekly / max(stars - weekly, 1))
+    if "upvotes" in metrics:
+        score += 20 * math.log10(1 + metrics["upvotes"])
+        score += 10 * math.log10(1 + metrics.get("comments", 0))
+    if "hn_points" in metrics:
+        score += 20 * math.log10(1 + metrics["hn_points"])
+        score += 10 * math.log10(1 + (hn_comments or 0))
+    elif hn_points:
+        score += 10 * math.log10(1 + hn_points)
+    if "views" in metrics:
+        score += 12 * math.log10(1 + metrics["views"])
+    return score
+
+
+async def _recently_featured_urls(db, now: datetime) -> set[str]:
+    """URLs in the last 30 days of daily digests, today's own run excluded."""
+    try:
+        docs = await db.digests.find(
+            {
+                "digestType": "daily",
+                "createdAt": {"$gte": now - timedelta(days=DAILY_DIGEST_MEMORY_DAYS)},
+                "date": {"$ne": now.strftime("%Y-%m-%d")},
+            },
+            {"items.url": 1},
+        ).to_list(None)
+    except Exception as e:
+        logger.warning("Digest memory skipped: %s", e)
+        return set()
+    return {
+        item.get("url")
+        for doc in docs
+        for item in doc.get("items") or []
+        if item.get("url")
+    }
+
+
+async def _evidence(db, post: dict) -> dict:
+    """Weekly star gain plus any recent HN story, for scoring and the message."""
+    project = post.get("project", {})
+    url = project.get("url", "")
+    weekly_gain, window_days = await _weekly_star_gain(db, url)
+    _, own_story = _evidence_key(post)
+    hn = None
+    if own_story:
+        # An HN item's own story, not the strongest story that mentions the URL.
+        hn = await fetch_hn_story(own_story)
+    elif project.get("kind") == "repo" and _github_owner_repo(url):
+        hn = await fetch_hn_engagement(url)
+    return {
+        "weeklyGain": weekly_gain,
+        "weeklyGainWindowDays": window_days,
+        "hnPoints": hn["points"] if hn else None,
+        "hnComments": hn["comments"] if hn else None,
+    }
+
+
+def _choose(candidates: list[dict]) -> list[dict]:
+    """Strongest first: up to 5 above the floor, never fewer than 2, capped per source."""
+    chosen: list[dict] = []
+    per_agent: dict[str, int] = {}
+    videos = 0
+    for candidate in sorted(candidates, key=lambda c: c["score"], reverse=True):
+        if len(chosen) >= DAILY_DIGEST_MAX_ITEMS:
+            break
+        if candidate["score"] < DAILY_DIGEST_MIN_SCORE and len(chosen) >= DAILY_DIGEST_MIN_ITEMS:
+            break
+        agent = candidate["post"].get("agentHandle", "")
+        is_video = candidate["post"].get("project", {}).get("kind") == "video"
+        if per_agent.get(agent, 0) >= DAILY_DIGEST_MAX_PER_AGENT:
+            continue
+        if is_video and videos >= DAILY_DIGEST_MAX_VIDEOS:
+            continue
+        per_agent[agent] = per_agent.get(agent, 0) + 1
+        videos += is_video
+        chosen.append(candidate)
+    return chosen
+
+
+def _digest_item(rank: int, candidate: dict, pick: dict) -> dict:
+    post, evidence, metrics = candidate["post"], candidate["evidence"], candidate["metrics"]
+    project = post.get("project", {})
+    signal = post.get("signal", {})
+    weekly_gain = evidence["weeklyGain"]
+    window_days = evidence["weeklyGainWindowDays"]
+    stars = metrics.get("github_stars")
+    if weekly_gain is not None and stars and _born_this_window(stars, weekly_gain):
+        weekly_gain, window_days = None, None
+    return {
+        "rank": rank,
+        "agentHandle": post.get("agentHandle", ""),
+        "title": html.unescape(project.get("title", "")),
+        "url": project.get("url", ""),
+        "kind": project.get("kind", "repo"),
+        "blurb": pick.get("blurb") or post.get("body", "")[:100],
+        "what": _item_what(project, pick.get("what")),
+        "verdict": post.get("verdict") or None,
+        "weeklyGain": weekly_gain,
+        "weeklyGainWindowDays": window_days,
+        "hnPoints": evidence["hnPoints"],
+        "hnComments": evidence["hnComments"],
+        "digestScore": round(candidate["score"], 1),
+        "score": post.get("rankScore", 0),
+        "signalSource": signal.get("source"),
+        "signalMetric": signal.get("metric"),
+        "signalValue": signal.get("value"),
+        "signalDelta": signal.get("delta"),
+        "stars": None,
+        "velocity": None,
+        "contributorCount": None,
+    }
+
+
 async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | None:
     """Generate and store the daily digest. Returns the stored digest doc or None."""
     if now is None:
@@ -311,89 +484,53 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
     if not posts:
         return None
 
-    picks = await _call_grove(posts)
+    featured = await _recently_featured_urls(db, now)
+    posts = [p for p in posts if p.get("project", {}).get("url", "") not in featured]
+    # One lookup per distinct evidence, run side by side so a slow HN answer
+    # cannot add up across 50 posts and push the digest job past its timeout.
+    firsts = {_evidence_key(p): p for p in reversed(posts)}
+    limit = asyncio.Semaphore(_EVIDENCE_CONCURRENCY)
 
-    # Enforce diversity: max 2 per agentHandle
-    agent_counts: dict[str, int] = {}
-    items = []
-    used_indices: set[int] = set()
-    for pick in picks:
-        post_idx = pick.get("id")
-        if not isinstance(post_idx, int) or post_idx < 0 or post_idx >= len(posts):
-            continue
-        used_indices.add(post_idx)
-        post = posts[post_idx]
-        agent = post.get("agentHandle", "")
-        if agent_counts.get(agent, 0) >= DAILY_DIGEST_MAX_PER_AGENT:
-            continue
-        agent_counts[agent] = agent_counts.get(agent, 0) + 1
-        project = post.get("project", {})
-        signal = post.get("signal", {})
-        weekly_gain, window_days = await _weekly_star_gain(db, project.get("url", ""))
-        items.append(
-            {
-                "rank": len(items) + 1,
-                "agentHandle": agent,
-                "title": html.unescape(project.get("title", "")),
-                "url": project.get("url", ""),
-                "kind": project.get("kind", "repo"),
-                "blurb": pick.get("blurb", ""),
-                "what": _item_what(project, pick.get("what")),
-                "verdict": post.get("verdict") or None,
-                "weeklyGain": weekly_gain,
-                "weeklyGainWindowDays": window_days,
-                "score": post.get("rankScore", 0),
-                "signalSource": signal.get("source"),
-                "signalMetric": signal.get("metric"),
-                "signalValue": signal.get("value"),
-                "signalDelta": signal.get("delta"),
-                "stars": None,
-                "velocity": None,
-                "contributorCount": None,
-            }
+    async def bounded(post: dict) -> dict:
+        async with limit:
+            return await _evidence(db, post)
+
+    found = await asyncio.gather(*(bounded(p) for p in firsts.values()))
+    evidence_by_key = dict(zip(firsts, found))
+    best_by_url: dict[str, dict] = {}
+    for post in posts:
+        url = post.get("project", {}).get("url", "")
+        metrics = _post_metrics(post)
+        evidence = evidence_by_key[_evidence_key(post)]
+        score = _digest_score(
+            metrics,
+            evidence["weeklyGain"],
+            evidence["weeklyGainWindowDays"],
+            evidence["hnPoints"],
+            evidence["hnComments"],
         )
-        if len(items) >= DAILY_DIGEST_MAX_ITEMS:
-            break
+        candidate = {"post": post, "metrics": metrics, "evidence": evidence, "score": score}
+        if url not in best_by_url or score > best_by_url[url]["score"]:
+            best_by_url[url] = candidate
 
-    # Backfill from remaining posts if we have fewer than max items
-    if len(items) < DAILY_DIGEST_MAX_ITEMS:
-        for i, post in enumerate(posts):
-            if len(items) >= DAILY_DIGEST_MAX_ITEMS:
-                break
-            if i in used_indices:
-                continue
-            agent = post.get("agentHandle", "")
-            if agent_counts.get(agent, 0) >= DAILY_DIGEST_MAX_PER_AGENT:
-                continue
-            used_indices.add(i)
-            agent_counts[agent] = agent_counts.get(agent, 0) + 1
-            project = post.get("project", {})
-            signal = post.get("signal", {})
-            weekly_gain, window_days = await _weekly_star_gain(
-                db, project.get("url", "")
-            )
-            items.append(
-                {
-                    "rank": len(items) + 1,
-                    "agentHandle": agent,
-                    "title": html.unescape(project.get("title", "")),
-                    "url": project.get("url", ""),
-                    "kind": project.get("kind", "repo"),
-                    "blurb": post.get("body", "")[:100],
-                    "what": _item_what(project, None),
-                    "verdict": post.get("verdict") or None,
-                    "weeklyGain": weekly_gain,
-                    "weeklyGainWindowDays": window_days,
-                    "score": post.get("rankScore", 0),
-                    "signalSource": signal.get("source"),
-                    "signalMetric": signal.get("metric"),
-                    "signalValue": signal.get("value"),
-                    "signalDelta": signal.get("delta"),
-                    "stars": None,
-                    "velocity": None,
-                    "contributorCount": None,
-                }
-            )
+    chosen = _choose(list(best_by_url.values()))
+
+    # Grove writes; it no longer chooses. A Grove outage costs the blurbs
+    # (the post body stands in), never the digest.
+    try:
+        picks = await _call_grove([c["post"] for c in chosen])
+    except Exception as e:
+        logger.warning("Grove blurbs skipped: %s", e)
+        picks = []
+    by_id = {
+        pick["id"]: pick
+        for pick in picks
+        if isinstance(pick, dict) and isinstance(pick.get("id"), int)
+    }
+    items = [
+        _digest_item(rank, candidate, by_id.get(rank - 1, {}))
+        for rank, candidate in enumerate(chosen, start=1)
+    ]
 
     await _enrich_missing_repo_whats(items)
 

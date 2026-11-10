@@ -9,6 +9,8 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _shared import daily_digest  # noqa: E402
@@ -21,6 +23,17 @@ from _shared.daily_digest import (  # noqa: E402
 
 
 # ---- Shared helpers -----------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_live_hn(monkeypatch):
+    """Digest HN lookups stay offline unless a test supplies a story."""
+
+    async def no_story(url, client=None):
+        return None
+
+    monkeypatch.setattr(daily_digest, "fetch_hn_engagement", no_story)
+    monkeypatch.setattr(daily_digest, "fetch_hn_story", no_story)
 
 
 def _make_post(
@@ -99,12 +112,14 @@ class TestDailyPostFilter:
 class TestGrovePrompt:
     """The Grove LLM prompt construction."""
 
-    def test_prompt_instructs_top_5_and_diversity(self):
+    def test_prompt_asks_for_a_blurb_per_chosen_item_without_choosing(self):
+        """Evidence chooses and orders; Grove only writes."""
         posts = [_make_post(0, rank_score=80, momentum_score=85)]
         prompt = _build_grove_prompt(posts)
-        assert "top 5" in prompt.lower() or "top five" in prompt.lower()
-        assert "2 from the same" in prompt.lower() or "max 2" in prompt.lower()
-        assert "JSON" in prompt or "json" in prompt
+        assert "already chosen and ordered" in prompt
+        assert "for every post" in prompt.lower()
+        assert "top 5" not in prompt.lower()
+        assert "JSON" in prompt
 
     def test_prompt_includes_post_data(self):
         posts = [
@@ -253,6 +268,14 @@ class _FakePosts:
 class _FakeDigests:
     def __init__(self):
         self.upserted = None
+        self.history: list[dict] = []
+        self.last_find_query = None
+
+    def find(self, query, projection=None):
+        self.last_find_query = query
+        return _FakeCursor(
+            [doc for doc in self.history if doc.get("date") != query["date"]["$ne"]]
+        )
 
     async def update_one(self, query, update, upsert=False):
         self.upserted = (query, update, upsert)
@@ -413,7 +436,7 @@ class TestGenerateDailyDigest:
         assert result is None
 
     async def test_max_5_items_and_diversity(self, monkeypatch):
-        """The digest has at most 5 items and respects max 2 per agent."""
+        """The digest has at most 5 items and at most 3 per agent."""
         now = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
 
         # 6 posts, 3 from one agent
@@ -445,50 +468,10 @@ class TestGenerateDailyDigest:
                 agent_counts.get(item["agentHandle"], 0) + 1
             )
         for count in agent_counts.values():
-            assert count <= 2, f"More than 2 items from same agent: {agent_counts}"
+            assert count <= 3, f"More than 3 items from same agent: {agent_counts}"
 
-    async def test_backfill_when_grove_picks_fewer_than_max(self, monkeypatch):
-        """When Grove picks fewer than 5 (or diversity drops items), backfill."""
-        now = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
-
-        # 6 posts across 3 agents so backfill can fill up to 5
-        sample_posts = [
-            _make_post(0, agent="@github-radar", rank_score=90),
-            _make_post(1, agent="@github-radar", rank_score=88),
-            _make_post(2, agent="@youtube-trends", rank_score=86),
-            _make_post(3, agent="@reddit-pulse", rank_score=84),
-            _make_post(4, agent="@hidden-gems", rank_score=82),
-            _make_post(5, agent="@hidden-gems", rank_score=80),
-        ]
-
-        db = _FakeDatabase(sample_posts)
-
-        async def fake_call_grove(posts):
-            # Grove only picks 2 — backfill should fill the rest
-            return [
-                {"id": 0, "blurb": "b0"},
-                {"id": 2, "blurb": "b2"},
-            ]
-
-        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
-        result = await daily_digest.generate_daily_digest(db=db, now=now)
-
-        assert result is not None
-        assert len(result["items"]) == 5, (
-            f"Expected 5 items after backfill, got {len(result['items'])}"
-        )
-        # Diversity still respected
-        agent_counts: dict[str, int] = {}
-        for item in result["items"]:
-            agent_counts[item["agentHandle"]] = (
-                agent_counts.get(item["agentHandle"], 0) + 1
-            )
-        for count in agent_counts.values():
-            assert count <= 2, f"Backfill violated diversity: {agent_counts}"
-
-    async def test_backfill_exposes_raw_signal_without_changing_score(
-        self, monkeypatch
-    ):
+    async def test_grove_picks_no_longer_decide_what_goes_out(self, monkeypatch):
+        """Grove naming two ids neither shrinks nor reorders the digest."""
         now = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
         sample_posts = [
             _make_post(0, agent="@github-radar", rank_score=90),
@@ -496,33 +479,36 @@ class TestGenerateDailyDigest:
                 1,
                 agent="@reddit-pulse",
                 rank_score=72,
-                signal={
-                    "source": "reddit",
-                    "metric": "upvotes",
-                    "value": 2109,
-                    "delta": 724,
-                },
+                signal={"source": "reddit", "metric": "upvotes", "value": 2109, "delta": 724},
+            ),
+            _make_post(
+                2,
+                agent="@reddit-pulse",
+                rank_score=70,
+                signal={"source": "reddit", "metric": "upvotes", "value": 900, "delta": 80},
             ),
         ]
         db = _FakeDatabase(sample_posts)
 
         async def fake_call_grove(posts):
-            return [{"id": 0, "blurb": "Grove pick"}]
+            return [{"id": 1, "blurb": "Grove blurb for the second item"}]
 
         monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
 
         result = await daily_digest.generate_daily_digest(db=db, now=now)
 
-        assert result is not None
-        backfill = result["items"][1]
-        assert backfill["score"] == 73
-        assert backfill["signalSource"] == "reddit"
-        assert backfill["signalMetric"] == "upvotes"
-        assert backfill["signalValue"] == 2109
-        assert backfill["signalDelta"] == 724
+        # Both Reddit threads clear the floor; the evidence-free repo does not.
+        first, second = result["items"]
+        assert first["signalValue"] == 2109
+        assert first["score"] == 73  # rankScore stays the agent's own score
+        assert first["signalSource"] == "reddit"
+        assert first["signalMetric"] == "upvotes"
+        assert first["signalDelta"] == 724
+        assert first["blurb"] == "blurb"  # no Grove blurb for id 0: body stands in
+        assert second["blurb"] == "Grove blurb for the second item"
 
     async def test_backfill_uses_body_as_blurb(self, monkeypatch):
-        """Backfilled items use the post body as the blurb (truncated)."""
+        """Items without a Grove blurb use the post body, truncated to 100."""
         now = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
 
         sample_posts = [
@@ -540,50 +526,28 @@ class TestGenerateDailyDigest:
 
         assert result is not None
         assert len(result["items"]) == 2
-        # First item from Grove
         assert result["items"][0]["blurb"] == "grove blurb"
-        # Second item is backfilled — blurb comes from body, truncated to 100
-        backfill_item = result["items"][1]
-        assert len(backfill_item["blurb"]) <= 100
-        assert backfill_item["blurb"] == "B" * 100
+        assert result["items"][1]["blurb"] == "B" * 100
 
-    async def test_invalid_json_from_grove_still_backfills(self, monkeypatch):
-        """When Grove returns invalid JSON, backfill fills from posts by rankScore."""
+    async def test_invalid_json_from_grove_still_sends_the_digest(self, monkeypatch):
+        """When Grove returns nothing usable, the chosen items go out with body blurbs."""
         now = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
-
         sample_posts = [
             _make_post(i, agent=agent)
             for i, agent in enumerate(
-                [
-                    "@github-radar",
-                    "@github-radar",
-                    "@youtube-trends",
-                    "@reddit-pulse",
-                    "@hidden-gems",
-                    "@hidden-gems",
-                ]
+                ["@github-radar", "@github-radar", "@youtube-trends", "@reddit-pulse"]
             )
         ]
-
         db = _FakeDatabase(sample_posts)
 
         async def fake_call_grove(posts):
-            return []  # Grove returned nothing valid
+            return []
 
         monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
         result = await daily_digest.generate_daily_digest(db=db, now=now)
 
-        assert result is not None
-        assert len(result["items"]) == 5, (
-            f"Expected 5 backfill items, got {len(result['items'])}"
-        )
-        agent_counts: dict[str, int] = {}
-        for item in result["items"]:
-            agent_counts[item["agentHandle"]] = (
-                agent_counts.get(item["agentHandle"], 0) + 1
-            )
-        for count in agent_counts.values():
-            assert count <= 2
+        assert len(result["items"]) == daily_digest.DAILY_DIGEST_MIN_ITEMS
+        assert all(item["blurb"] == "blurb" for item in result["items"])
 
 
 class TestDigestItemWhat:
@@ -596,6 +560,8 @@ class TestDigestItemWhat:
             return grove_picks
 
         monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+        # These posts carry no evidence; keep every one so `what` is what's tested.
+        monkeypatch.setattr(daily_digest, "DAILY_DIGEST_MIN_ITEMS", len(posts))
         result = await daily_digest.generate_daily_digest(
             db=_FakeDatabase(posts), now=self.NOW
         )
@@ -725,19 +691,17 @@ class TestDigestItemWhat:
         byline = "By Some Channel \u00b7 230,000 views"
         posts = [
             _make_post(0, agent="@youtube-trends", kind="video", description=byline),
-            _make_post(1, agent="@youtube-trends", kind="video", description=byline),
-            _make_post(2, description="A real repo description."),
+            _make_post(1, description="A real repo description."),
         ]
         picks = [
             {"id": 0, "blurb": "b0", "what": "Invented for a video"},
-            {"id": 2, "blurb": "b2"},
+            {"id": 1, "blurb": "b1"},
         ]
         items = await self._digest(monkeypatch, posts, picks)
-        assert [item["kind"] for item in items] == ["video", "repo", "video"]
+        assert [item["kind"] for item in items] == ["video", "repo"]
         assert [item["what"] for item in items] == [
             None,
             "A real repo description.",
-            None,
         ]
 
     def test_item_what_skips_grove_for_a_github_repo_without_description(self):
@@ -827,9 +791,9 @@ class TestDigestItemWhat:
     async def test_the_about_backstop_dedupes_repeated_repos(self, monkeypatch):
         """Two items pointing at the same repo cost one API call."""
         url = "https://github.com/JetBrains/thinkrail"
-        posts = [
-            _make_post(0, url=url, description=""),
-            _make_post(1, agent="@youtube-trends", url=url, description=""),
+        items = [
+            {"kind": "repo", "url": url, "what": None},
+            {"kind": "repo", "url": url, "what": None},
         ]
         calls = []
 
@@ -840,7 +804,8 @@ class TestDigestItemWhat:
         monkeypatch.setattr(
             daily_digest, "_fetch_github_about_description", fake_fetch
         )
-        items = await self._digest(monkeypatch, posts, [{"id": 0, "blurb": "b"}])
+        monkeypatch.setattr(daily_digest, "_ABOUT_PER_REPO_SLEEP_SECONDS", 0)
+        await daily_digest._enrich_missing_repo_whats(items)
         assert calls == [("JetBrains", "thinkrail")]
         assert [item["what"] for item in items] == ["An IDE that adapts to you"] * 2
 
@@ -1190,3 +1155,320 @@ class TestDailyDigestAgentHandles:
 
     def test_all_four_external_agents_present(self):
         assert len(DAILY_DIGEST_AGENT_HANDLES) == 4
+
+
+# ---- Evidence-ranked selection (audit 2026-11-09, items 2, 5, 6) --------------
+
+
+def _repo_post(i: int, stars: int, agent: str = "@github-radar") -> dict:
+    url = f"https://github.com/acme/repo-{i}"
+    return _make_post(
+        i,
+        agent=agent,
+        url=url,
+        description=f"Tool number {i}",
+        signal={"source": "github", "metric": "github_stars", "value": stars},
+    )
+
+
+def _gain_snapshots(url: str, start: int, end: int, days: int = 7) -> list[dict]:
+    first = datetime(2026, 7, 16, 0, 23, tzinfo=timezone.utc)
+    step = (end - start) / days
+    return [
+        _snapshot(round(start + n * step), first + n * DAY, url) for n in range(days + 1)
+    ]
+
+
+class TestEvidenceRankedDigest:
+    NOW = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
+
+    @staticmethod
+    def _grove(monkeypatch, seen=None):
+        async def fake_call_grove(posts):
+            if seen is not None:
+                seen.extend(posts)
+            return [{"id": i, "blurb": f"blurb {i}"} for i in range(len(posts))]
+
+        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+
+    async def test_strongest_evidence_leads_whatever_the_rank_score(self, monkeypatch):
+        """A capped rankScore of 100 for everyone cannot decide the order."""
+        posts = [
+            _repo_post(0, 600),  # +500 in a week
+            _repo_post(1, 20000),  # +9,000 in a week
+            _repo_post(2, 4000),  # +3,000 in a week
+        ]
+        for post in posts:
+            post["rankScore"] = 100
+        signals = (
+            _gain_snapshots(posts[0]["project"]["url"], 100, 600)
+            + _gain_snapshots(posts[1]["project"]["url"], 11000, 20000)
+            + _gain_snapshots(posts[2]["project"]["url"], 1000, 4000)
+        )
+        seen = []
+        self._grove(monkeypatch, seen)
+
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts, signals=signals), now=self.NOW
+        )
+
+        assert [item["title"] for item in result["items"]] == [
+            "repo-1",
+            "repo-2",
+            "repo-0",
+        ]
+        assert result["items"][0]["digestScore"] > result["items"][1]["digestScore"]
+        # Grove writes for the chosen items only, in the chosen order.
+        assert [p["project"]["title"] for p in seen] == ["repo-1", "repo-2", "repo-0"]
+        assert result["items"][0]["blurb"] == "blurb 0"
+
+    async def test_hn_attention_is_carried_and_counted(self, monkeypatch):
+        posts = [_repo_post(0, 1200), _repo_post(1, 1200)]
+        signals = _gain_snapshots(
+            posts[0]["project"]["url"], 900, 1200
+        ) + _gain_snapshots(posts[1]["project"]["url"], 900, 1200)
+
+        async def fake_hn(url, client=None):
+            if url.endswith("repo-1"):
+                return {"points": 292, "comments": 139, "story_url": "https://news.ycombinator.com/item?id=9"}
+            return None
+
+        monkeypatch.setattr(daily_digest, "fetch_hn_engagement", fake_hn)
+        self._grove(monkeypatch)
+
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts, signals=signals), now=self.NOW
+        )
+
+        first, second = result["items"]
+        assert first["title"] == "repo-1"
+        assert (first["hnPoints"], first["hnComments"]) == (292, 139)
+        assert (second["hnPoints"], second["hnComments"]) == (None, None)
+
+    async def test_an_hn_item_is_scored_on_its_own_story_comments(self, monkeypatch):
+        """A Show HN post scores points and comments of the story it came from."""
+        show_hn = _make_post(
+            0,
+            agent="@hidden-gems",
+            kind="thread",
+            url="https://example.com/launch",
+            signal={
+                "metric": "hn_points",
+                "value": 100,
+                "evidenceUrl": "https://news.ycombinator.com/item?id=777",
+            },
+        )
+        looked_up = []
+
+        async def fake_story(story_id, client=None):
+            looked_up.append(story_id)
+            return {"points": 100, "comments": 80}
+
+        async def no_repo_story(url, client=None):
+            assert url != "https://example.com/launch", "an HN item uses its own story"
+            return None
+
+        monkeypatch.setattr(daily_digest, "fetch_hn_story", fake_story)
+        monkeypatch.setattr(daily_digest, "fetch_hn_engagement", no_repo_story)
+        self._grove(monkeypatch)
+
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase([show_hn, _repo_post(1, 30000)]), now=self.NOW
+        )
+
+        item = next(i for i in result["items"] if i["title"] == "repo-0")
+        assert looked_up == ["777"]
+        assert item["hnComments"] == 80
+        assert item["digestScore"] == 59.2  # 20*log10(101) + 10*log10(81)
+
+    async def test_the_same_url_from_two_agents_keeps_each_posts_own_hn_evidence(self, monkeypatch):
+        url = "https://github.com/acme/tool"
+        stars_post = _make_post(
+            0, url=url, rank_score=99, signal={"metric": "github_stars", "value": 900}
+        )  # ranked first, so its evidence is looked up first
+        show_hn_post = _make_post(
+            1,
+            agent="@hidden-gems",
+            url=url,
+            signal={
+                "metric": "hn_points",
+                "value": 400,
+                "evidenceUrl": "https://news.ycombinator.com/item?id=555",
+            },
+        )
+
+        async def fake_story(story_id, client=None):
+            return {"points": 400, "comments": 300}
+
+        async def fake_repo_story(repo_url, client=None):
+            return {"points": 5, "comments": 1}
+
+        monkeypatch.setattr(daily_digest, "fetch_hn_story", fake_story)
+        monkeypatch.setattr(daily_digest, "fetch_hn_engagement", fake_repo_story)
+        self._grove(monkeypatch)
+
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase([stars_post, show_hn_post, _repo_post(2, 30000)]), now=self.NOW
+        )
+
+        item = next(i for i in result["items"] if i["url"] == url)
+        assert item["agentHandle"] == "@hidden-gems"
+        assert (item["hnPoints"], item["hnComments"]) == (400, 300)
+
+    async def test_weak_items_stay_out_but_a_thin_day_keeps_two(self, monkeypatch):
+        strong = [_repo_post(i, 30000) for i in range(2)]
+        weak = _make_post(
+            5,
+            agent="@youtube-trends",
+            kind="video",
+            signal={"source": "youtube", "metric": "views", "value": 900},
+        )
+        signals = [
+            doc
+            for post in strong
+            for doc in _gain_snapshots(post["project"]["url"], 20000, 30000)
+        ]
+        self._grove(monkeypatch)
+
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(strong + [weak], signals=signals), now=self.NOW
+        )
+        assert [item["title"] for item in result["items"]] == ["repo-0", "repo-1"]
+
+        # Nothing clears the floor: the two best still go out, never zero.
+        thin = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase([weak, _make_post(6, agent="@hidden-gems")]), now=self.NOW
+        )
+        assert len(thin["items"]) == 2
+
+    async def test_at_most_one_video_and_three_per_agent(self, monkeypatch):
+        repos = [_repo_post(i, 50000) for i in range(5)]
+        signals = [
+            doc
+            for post in repos
+            for doc in _gain_snapshots(post["project"]["url"], 40000, 50000)
+        ]
+        videos = [
+            _make_post(
+                10 + i,
+                agent="@youtube-trends",
+                kind="video",
+                signal={"source": "youtube", "metric": "views", "value": 5_000_000},
+            )
+            for i in range(2)
+        ]
+        self._grove(monkeypatch)
+
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(repos + videos, signals=signals), now=self.NOW
+        )
+
+        handles = [item["agentHandle"] for item in result["items"]]
+        assert handles.count("@github-radar") == 3
+        assert handles.count("@youtube-trends") == 1
+        assert len(result["items"]) == 4
+
+    async def test_items_featured_in_the_last_30_daily_digests_are_not_repeated(
+        self, monkeypatch
+    ):
+        posts = [_repo_post(i, 30000) for i in range(3)]
+        signals = [
+            doc
+            for post in posts
+            for doc in _gain_snapshots(post["project"]["url"], 20000, 30000)
+        ]
+        db = _FakeDatabase(posts, signals=signals)
+        db.digests.history = [
+            {"date": "2026-07-01", "items": [{"url": posts[0]["project"]["url"]}]},
+            # Today's own earlier run must not hide today's picks on a re-run.
+            {"date": "2026-07-23", "items": [{"url": posts[1]["project"]["url"]}]},
+        ]
+        self._grove(monkeypatch)
+
+        result = await daily_digest.generate_daily_digest(db=db, now=self.NOW)
+
+        urls = [item["url"] for item in result["items"]]
+        assert posts[0]["project"]["url"] not in urls
+        assert posts[1]["project"]["url"] in urls
+        query = db.digests.last_find_query
+        assert query["digestType"] == "daily"
+        assert query["createdAt"] == {"$gte": self.NOW - timedelta(days=30)}
+
+    async def test_growth_is_hidden_for_a_repo_that_is_all_new_stars(self, monkeypatch):
+        """247 new stars on a 255-star repo is a birth, not a breakout."""
+        posts = [_repo_post(0, 255)]
+        signals = _gain_snapshots(posts[0]["project"]["url"], 8, 255)
+        self._grove(monkeypatch)
+
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts, signals=signals), now=self.NOW
+        )
+
+        item = result["items"][0]
+        assert (item["weeklyGain"], item["weeklyGainWindowDays"]) == (None, None)
+
+    async def test_growth_is_kept_for_a_real_breakout_from_an_existing_base(
+        self, monkeypatch
+    ):
+        """1.1K -> 11K stars in a week is the headline, not a birth."""
+        posts = [_repo_post(0, 10954)]
+        signals = _gain_snapshots(posts[0]["project"]["url"], 1096, 10954)
+        self._grove(monkeypatch)
+
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts, signals=signals), now=self.NOW
+        )
+
+        item = result["items"][0]
+        assert (item["weeklyGain"], item["weeklyGainWindowDays"]) == (9858, 7)
+
+    async def test_a_grove_failure_costs_the_blurbs_not_the_digest(self, monkeypatch):
+        posts = [_repo_post(0, 30000)]
+        signals = _gain_snapshots(posts[0]["project"]["url"], 20000, 30000)
+
+        async def broken_grove(_posts):
+            raise RuntimeError("grove down")
+
+        monkeypatch.setattr(daily_digest, "_call_grove", broken_grove)
+
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts, signals=signals), now=self.NOW
+        )
+
+        assert result["items"][0]["blurb"] == "blurb"
+
+
+class TestDigestScore:
+    """The uncapped evidence score, per source, on worked examples."""
+
+    def test_repo_score_rewards_absolute_and_relative_growth_and_hn(self):
+        score = daily_digest._digest_score
+        auto_ontology = score({"github_stars": 10954}, 9858, 7, 292, 139)
+        mega_repo = score({"github_stars": 319522}, 32883, 28, None, None)
+        small_new = score({"github_stars": 255}, 247, 7, None, None)
+        assert round(auto_ontology, 1) == 139.5
+        assert auto_ontology > mega_repo > small_new
+
+    def test_a_repo_born_this_week_gets_no_relative_growth_bonus(self):
+        """255 stars, 247 of them this week: being born, not breaking out."""
+        newborn = daily_digest._digest_score({"github_stars": 255}, 247, 7, None, None)
+        assert round(newborn, 1) == 59.9  # 25*log10(248), no relative bonus
+
+    def test_unknown_stars_earn_no_relative_growth_bonus(self):
+        unknown = daily_digest._digest_score({}, 247, 7, None, None)
+        assert round(unknown, 1) == 59.9
+
+    def test_sparse_snapshot_windows_are_normalized_to_a_week(self):
+        score = daily_digest._digest_score
+        assert score({"github_stars": 5000}, 2000, 14, None, None) == score(
+            {"github_stars": 5000}, 1000, 7, None, None
+        )
+
+    def test_reddit_hn_and_video_scores(self):
+        score = daily_digest._digest_score
+        reddit = score({"upvotes": 1413, "comments": 400}, None, None, None, None)
+        hn = score({"hn_points": 150}, None, None, None, None)
+        video = score({"views": 212704}, None, None, None, None)
+        assert round(reddit, 1) == 89.0
+        assert round(hn, 1) == 43.6
+        assert round(video, 1) == 63.9

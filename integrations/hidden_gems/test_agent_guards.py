@@ -2,7 +2,7 @@
 
 ``write_hidden_gem`` is the last choke point before a post is claimed: even if
 a repo or HN story re-entered the candidate cache, it must be refused inside
-the republish window — regardless of which agent posted it.
+any earlier post — regardless of which agent posted it, or how long ago.
 """
 
 import sys
@@ -50,7 +50,7 @@ async def test_write_hidden_gem_guard_blocks_recently_posted_url(monkeypatch):
             {"gem_url": gem_url, "verdict": "emerging"}
         )
         assert result.startswith("SKIP")
-        assert "cooldown" in result.lower()
+        assert "already" in result.lower()
     finally:
         agent._CANDIDATE_CACHE.pop(gem_url, None)
 
@@ -92,9 +92,8 @@ async def test_write_hidden_gem_guard_blocks_hn_story_posted_by_other_agent(
 
 
 @pytest.mark.asyncio
-async def test_write_hidden_gem_guard_allows_old_post(monkeypatch):
-    """A post older than the cooldown window does not block the write: the
-    guard passes through to the normal publish path."""
+async def test_write_hidden_gem_guard_blocks_any_earlier_post(monkeypatch):
+    """A hidden gem is never recycled: a 30-day-old post by any agent still blocks it."""
 
     mock_db = MagicMock()
 
@@ -104,15 +103,53 @@ async def test_write_hidden_gem_guard_allows_old_post(monkeypatch):
     mock_db.posts.find_one = mock_find_one
     monkeypatch.setattr(agent, "_get_db", lambda: mock_db)
 
+    gem_url = "https://github.com/test/guard-recycled-gem"
+    agent._CANDIDATE_CACHE[gem_url] = {
+        "url": gem_url,
+        "title": "guard-recycled-gem",
+        "kind": "repo",
+        "description": "",
+        "topics": ["ai", "hidden-gem"],
+        "discovery_source": "breakout",
+        "evidence_url": gem_url,
+        "github_stars": 100,
+        "github_forks": 10,
+        "momentumScore": 70,
+        "velocity": 8,
+        "acceleration": 2,
+    }
+
+    try:
+        result = await agent.write_hidden_gem.ainvoke(
+            {"gem_url": gem_url, "verdict": "emerging"}
+        )
+        assert result.startswith("SKIP")
+        assert "already" in result.lower()
+    finally:
+        agent._CANDIDATE_CACHE.pop(gem_url, None)
+
+
+@pytest.mark.asyncio
+async def test_write_hidden_gem_guard_allows_a_never_posted_gem(monkeypatch):
+    """A gem no agent has posted passes through to the normal publish path."""
+
+    mock_db = MagicMock()
+
+    async def mock_find_one(query, *args, **kwargs):
+        return None
+
+    mock_db.posts.find_one = mock_find_one
+    monkeypatch.setattr(agent, "_get_db", lambda: mock_db)
+
     async def mock_write_post(*args, **kwargs):
         return "post-123"
 
     monkeypatch.setattr(agent, "write_post", mock_write_post)
 
-    gem_url = "https://github.com/test/guard-old-gem"
+    gem_url = "https://github.com/test/guard-new-gem"
     agent._CANDIDATE_CACHE[gem_url] = {
         "url": gem_url,
-        "title": "guard-old-gem",
+        "title": "guard-new-gem",
         "kind": "repo",
         "description": "",
         "topics": ["ai", "hidden-gem"],
@@ -130,8 +167,7 @@ async def test_write_hidden_gem_guard_allows_old_post(monkeypatch):
             {"gem_url": gem_url, "verdict": "emerging"}
         )
         assert result.startswith("Posted"), (
-            "A 30-day-old post is outside the cooldown window; the guard must "
-            f"pass through to publish (got: {result!r})"
+            f"A never-posted gem must pass through to publish (got: {result!r})"
         )
     finally:
         agent._CANDIDATE_CACHE.pop(gem_url, None)

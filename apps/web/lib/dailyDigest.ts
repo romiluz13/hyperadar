@@ -24,6 +24,11 @@ export type DailyDigestItem = {
 	verdict?: string | null;
 	weeklyGain?: number | null;
 	weeklyGainWindowDays?: number | null;
+	/** Recent Hacker News story about the repo, when one exists (null: none found). */
+	hnPoints?: number | null;
+	hnComments?: number | null;
+	/** Uncapped evidence score that ordered the digest. */
+	digestScore?: number;
 };
 
 export type SourceHealth = {

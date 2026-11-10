@@ -355,3 +355,173 @@ async def test_breakout_ignores_repos_no_longer_tracked(db, monkeypatch):
     finally:
         db.signals.delete_many({"projectId": {"$in": urls}})
         db.posts.delete_many({"project.url": {"$in": urls}})
+
+
+def _seed_breakout(db, repo_url, base_stars, forks=None):
+    """An accelerating 14-day history starting at ``base_stars``, growth to scale."""
+    scale = max(1, base_stars // 20)
+    stars = [base_stars + scale * (i * 4 + i * i) for i in range(14)]
+    snaps = _snapshots(stars, forks=forks if forks is not None else max(10, stars[-1] // 10))
+    for s in snaps:
+        s["projectId"] = repo_url
+    db.signals.delete_many({"projectId": repo_url})
+    db.posts.delete_many({"project.url": repo_url})
+    db.signals.insert_many(snaps)
+
+
+async def _breakout_urls(source, monkeypatch):
+    async def fake_track(db):
+        return 0
+
+    async def fake_engagement(repo_url, client=None):
+        return None
+
+    monkeypatch.setattr(source, "track_daily_snapshots", fake_track)
+    monkeypatch.setattr(source, "fetch_hn_engagement", fake_engagement)
+    return [r["url"] for r in await source.fetch_breakout_candidates(mongo._get_db())]
+
+
+@pytest.mark.asyncio
+async def test_breakout_skips_repos_above_the_hidden_star_ceiling(db, monkeypatch):
+    """A gem is hidden: a repo already past 2,000 stars is not one."""
+    from hidden_gems import source
+
+    small = "https://github.com/test/small-gem"
+    famous = "https://github.com/test/famous-repo"
+    # One repo per pool: the pool-scaled threshold must not decide this test.
+    try:
+        _seed_breakout(db, small, 20)
+        assert small in await _breakout_urls(source, monkeypatch)
+        db.signals.delete_many({"projectId": small})
+
+        _seed_breakout(db, famous, 5000)
+        assert famous not in await _breakout_urls(source, monkeypatch)
+    finally:
+        db.signals.delete_many({"projectId": {"$in": [small, famous]}})
+
+
+@pytest.mark.asyncio
+async def test_breakout_never_recycles_a_repo_any_agent_already_posted(db, monkeypatch):
+    """Outside the 14-day cooldown a repo is still old news for @hidden-gems."""
+    from hidden_gems import source
+
+    repo_url = "https://github.com/test/already-posted-gem"
+    _seed_breakout(db, repo_url, 20)
+    db.posts.insert_one(
+        {
+            "agentHandle": "@github-radar",
+            "body": "posted long ago",
+            "postedAt": datetime.now(timezone.utc) - timedelta(days=45),
+            "project": {"url": repo_url, "title": "Old news"},
+            "portSyncStatus": "synced",
+        }
+    )
+    try:
+        assert repo_url not in await _breakout_urls(source, monkeypatch)
+    finally:
+        db.signals.delete_many({"projectId": repo_url})
+        db.posts.delete_many({"project.url": repo_url})
+
+
+def test_select_hidden_gems_caps_a_run_at_five_strongest():
+    from hidden_gems.source import select_hidden_gems
+
+    breakout = [
+        {"url": f"https://github.com/t/r{i}", "momentumScore": score}
+        for i, score in enumerate([60, 95, 70, 88, 91, 77])
+    ]
+    hn = [{"url": f"https://news.ycombinator.com/item?id={i}"} for i in range(4)]
+
+    picked = select_hidden_gems(breakout, hn)
+
+    assert [c["url"] for c in picked] == [
+        "https://github.com/t/r1",
+        "https://github.com/t/r4",
+        "https://github.com/t/r3",
+        "https://news.ycombinator.com/item?id=0",
+        "https://news.ycombinator.com/item?id=1",
+    ]
+    # With no breakouts, Show HN fills the run up to the same cap.
+    assert len(select_hidden_gems([], hn)) == 4
+    assert len(select_hidden_gems(breakout, [])) == 5
+
+
+@pytest.mark.asyncio
+async def test_show_hn_keeps_only_unposted_repos_under_the_star_ceiling():
+    """Show HN obeys the same gem rules: never posted by any agent, at most 2,000 stars."""
+    import httpx
+
+    from hidden_gems.source import keep_hidden_show_hn
+
+    posted = {"https://github.com/acme/old"}
+
+    class _Posts:
+        async def find_one(self, query, *args, **kwargs):
+            if query["project.url"] in posted:
+                return {"postedAt": datetime.now(timezone.utc) - timedelta(days=60)}
+            return None
+
+    class _Db:
+        posts = _Posts()
+
+    stars = {"acme/small": 150, "acme/famous": 30000}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        slug = request.url.path.removeprefix("/repos/")
+        if slug not in stars:
+            return httpx.Response(404)
+        return httpx.Response(200, json={"stargazers_count": stars[slug]})
+
+    candidates = [
+        {"url": "https://github.com/acme/small"},
+        {"url": "https://github.com/acme/famous"},
+        {"url": "https://github.com/acme/old"},
+        {"url": "https://example.com/launch"},
+        {"url": "https://github.com/acme/unknown"},
+        {"url": "https://example.com/second-launch"},
+    ]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        kept = await keep_hidden_show_hn(_Db(), candidates, limit=2, client=client)
+
+    # acme/unknown: GitHub could not say, so the 2,000-star rule cannot be shown to hold.
+    # The limit stops the scan once two gems are kept.
+    assert [c["url"] for c in kept] == [
+        "https://github.com/acme/small",
+        "https://example.com/launch",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_show_hn_asks_only_for_launches_from_the_last_72_hours():
+    """The all-time Show HN index returned 2012 classics; launches are news only when fresh."""
+    import httpx
+
+    from hidden_gems.source import fetch_hn_candidates
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "hits": [
+                    {"objectID": "1", "title": "Show HN: Small", "url": "https://x.dev", "points": 40, "num_comments": 3},
+                    {"objectID": "2", "title": "Show HN: Big", "url": "https://github.com/a/b", "points": 300, "num_comments": 90},
+                ]
+            },
+        )
+
+    before = int(datetime.now(timezone.utc).timestamp()) - 72 * 3600
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        candidates = await fetch_hn_candidates(max_results=5, client=client)
+
+    (request,) = seen
+    assert request.url.path == "/api/v1/search_by_date"
+    assert request.url.params["tags"] == "show_hn"
+    filters = request.url.params["numericFilters"].split(",")
+    assert "points>30" in filters
+    since = int(next(f for f in filters if f.startswith("created_at_i>")).split(">")[1])
+    assert before - 5 <= since <= before + 5
+    # Strongest launch first.
+    assert [c["title"] for c in candidates] == ["Show HN: Big", "Show HN: Small"]

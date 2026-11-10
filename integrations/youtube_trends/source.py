@@ -61,6 +61,10 @@ YOUTUBE_API_TIMEOUT_SECONDS = 30
 _AUTH_ERROR_MSG = "YouTube API auth failed — check YOUTUBE_API_KEY (401/403)"
 
 
+class _ChannelFetchError(RuntimeError):
+    """One channel could not be read; an auth failure stays a plain RuntimeError."""
+
+
 def _is_auth_error(error: Exception) -> bool:
     """A 401/403 from the YouTube API means the key is bad/expired — a global
     failure, not a per-channel one, so the caller should raise rather than
@@ -110,8 +114,9 @@ async def _fetch_one_channel_via_api(channel_url: str, max_results: int) -> list
 
     Returns a list of dicts (one per recent video) with video_id, title,
     publishedAt, channel, channel_url, channel_subscribers — the view/like
-    counts are fetched in a batched videos.list call by the caller. Soft-fail:
-    returns [] if the channel can't be resolved or the search is empty.
+    counts are fetched in a batched videos.list call by the caller. Returns []
+    when the channel can't be resolved or has no recent uploads; raises
+    RuntimeError (key-free message) when the API call fails.
     """
     handle = _handle_from_channel_url(channel_url)
     if not handle:
@@ -162,12 +167,11 @@ async def _fetch_one_channel_via_api(channel_url: str, max_results: int) -> list
     except Exception as e:
         if _is_auth_error(e):
             raise RuntimeError(_AUTH_ERROR_MSG) from None
-        logging.warning(
-            "youtube_source fetch failed for %s: %s",
-            channel_url,
-            _safe_error_detail(e),
-        )
-        return []
+        # The caller decides: one dead channel is noise, all of them is an
+        # outage. The message keeps only the safe detail (never the key).
+        raise _ChannelFetchError(
+            f"youtube_source fetch failed for {channel_url}: {_safe_error_detail(e)}"
+        ) from None
 
 
 async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
@@ -193,8 +197,20 @@ async def fetch_youtube_candidates(max_results: int = 8) -> list[dict]:
 
     tasks = [asyncio.ensure_future(_bounded(url)) for url in CHANNELS]
     raw: list[dict] = []
+    failures: list[str] = []
     for coro in asyncio.as_completed(tasks):
-        raw.extend(await coro)
+        try:
+            raw.extend(await coro)
+        except _ChannelFetchError as error:
+            logging.warning("%s", error)
+            failures.append(str(error))
+    # Every channel failing is a dead source (quota, outage), not a quiet day:
+    # fail the run so the refresh alert fires.
+    if failures and len(failures) == len(tasks):
+        raise RuntimeError(
+            f"YouTube source down: all {len(tasks)} channel fetches failed; "
+            f"last error: {failures[-1]}"
+        )
     if not raw:
         return []
 

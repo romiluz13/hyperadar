@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from _shared.engagement import engagement_boost, fetch_hn_engagement
+from _shared.engagement import engagement_boost, fetch_hn_engagement, repo_slug
 from _shared.momentum import (
     _acceleration,
     _engagement_depth,
@@ -25,7 +25,11 @@ from _shared.momentum import (
     publish_score_threshold,
     should_publish_hidden_gem,
 )
-from _shared.mongo import get_last_published_days, load_active_star_histories
+from _shared.mongo import (
+    NEVER_POSTED_DAYS,
+    get_last_published_days,
+    load_active_star_histories,
+)
 from hidden_gems.tracker import track_daily_snapshots
 
 _github_token = os.environ.get("GITHUB_TOKEN", "")
@@ -36,6 +40,15 @@ _headers = (
 )
 
 _MIN_HISTORY_DAYS = 7
+# A gem is hidden: past this many stars the crowd has already found it
+# (audit 2026-11-09: median gem had 4,018 stars, some over 100k).
+HIDDEN_GEM_MAX_STARS = 2000
+HIDDEN_GEMS_MAX_PER_RUN = 5
+_SHOW_HN_SHARE = 2
+SHOW_HN_WINDOW_HOURS = 72
+SHOW_HN_MIN_POINTS = 30
+# Show HN launches fetched before the gem rules filter them down to the run's slots.
+SHOW_HN_POOL = 15
 
 
 def normalize_hn_story(story: dict, story_id: int) -> dict:
@@ -55,25 +68,38 @@ def normalize_hn_story(story: dict, story_id: int) -> dict:
     }
 
 
-async def fetch_hn_candidates(max_results: int = 5) -> list[dict]:
-    """Fetch Show HN posts with traction via the Algolia HN API.
+async def fetch_hn_candidates(
+    max_results: int = 5, client: httpx.AsyncClient | None = None
+) -> list[dict]:
+    """Fetch Show HN launches from the last 72 hours with traction, strongest first.
 
-    Algolia returns full JSON objects with searchable tags (show_hn) and
-    numeric filters (points), unlike the Firebase API which only returns IDs.
-    Show HN posts surface GitHub repos 24-48h before they trend.
+    Algolia's ``search_by_date`` with a ``created_at_i`` floor returns only
+    fresh launches; the relevance-ranked ``search`` index returned all-time
+    classics from 2012 (audit 2026-11-09). Show HN posts surface GitHub repos
+    24-48h before they trend.
     """
+    since = int(
+        (datetime.now(timezone.utc) - timedelta(hours=SHOW_HN_WINDOW_HOURS)).timestamp()
+    )
     candidates: list[dict] = []
-    async with httpx.AsyncClient(timeout=30) as client:
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(timeout=30)
+    try:
         r = await client.get(
-            "https://hn.algolia.com/api/v1/search",
+            "https://hn.algolia.com/api/v1/search_by_date",
             params={
                 "tags": "show_hn",
-                "numericFilters": "points>50",
-                "hitsPerPage": 20,
+                "numericFilters": f"created_at_i>{since},points>{SHOW_HN_MIN_POINTS}",
+                "hitsPerPage": 50,
             },
         )
         r.raise_for_status()
         hits = r.json().get("hits", [])
+    finally:
+        if owns_client:
+            await client.aclose()
+    hits.sort(key=lambda hit: hit.get("points") or 0, reverse=True)
     for hit in hits:
         if len(candidates) >= max_results:
             break
@@ -163,7 +189,8 @@ async def fetch_breakout_candidates(db) -> list[dict]:
     3. Score every repo in the pool, then scale the publish threshold to the
        pool's 80th percentile (``publish_score_threshold``).
     4. Apply the publishing gate (with cross-agent cooldown) against that
-       threshold and return only repos that pass, with score and velocity.
+       threshold, keep only hidden repos (at most ``HIDDEN_GEM_MAX_STARS``,
+       never published before by any agent) and return them strongest first.
     """
     await track_daily_snapshots(db)
 
@@ -207,6 +234,8 @@ async def fetch_breakout_candidates(db) -> list[dict]:
     results: list[dict] = []
     for row in scored:
         project_url = row["project_url"]
+        if row["stars"] > HIDDEN_GEM_MAX_STARS or post_counts.get(project_url, 0):
+            continue
         last_pub_days = await get_last_published_days(db, project_url)
         if not should_publish_hidden_gem(
             row["score"],
@@ -252,6 +281,61 @@ async def fetch_breakout_candidates(db) -> list[dict]:
             candidate["hn_top_comment"] = engagement["top_comment"]
         results.append(candidate)
     return results
+
+
+async def keep_hidden_show_hn(
+    db,
+    candidates: list[dict],
+    limit: int = HIDDEN_GEMS_MAX_PER_RUN,
+    client: httpx.AsyncClient | None = None,
+) -> list[dict]:
+    """Up to ``limit`` Show HN launches that obey the gem rules: never posted, ≤2,000 stars.
+
+    A GitHub repo whose stars cannot be read (rate limit, outage) is dropped:
+    the star ceiling must hold, not be assumed.
+    """
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(timeout=30)
+    kept = []
+    try:
+        for candidate in candidates:
+            if len(kept) >= limit:
+                break
+            url = candidate["url"]
+            if await get_last_published_days(db, url) < NEVER_POSTED_DAYS:
+                continue
+            slug = repo_slug(url)
+            if slug:
+                try:
+                    r = await client.get(f"https://api.github.com/repos/{slug}", headers=_headers)
+                    stars = r.json().get("stargazers_count") if r.status_code == 200 else None
+                except (httpx.HTTPError, ValueError):
+                    stars = None
+                if stars is None:
+                    logging.warning("Show HN %s skipped: GitHub star count unavailable", url)
+                    continue
+                if stars > HIDDEN_GEM_MAX_STARS:
+                    continue
+            kept.append(candidate)
+    finally:
+        if owns_client:
+            await client.aclose()
+    return kept
+
+
+def select_hidden_gems(
+    breakout: list[dict], hn: list[dict], limit: int = HIDDEN_GEMS_MAX_PER_RUN
+) -> list[dict]:
+    """At most ``limit`` gems a run: the strongest breakouts plus fresh Show HN launches.
+
+    Show HN takes up to two slots; either side fills the other's unused slots.
+    Breakouts are ranked here by momentum; Show HN arrives strongest first.
+    """
+    breakout = sorted(breakout, key=lambda c: c.get("momentumScore", 0), reverse=True)
+    hn_slots = min(_SHOW_HN_SHARE, len(hn))
+    picked = breakout[: limit - hn_slots]
+    return picked + hn[: limit - len(picked)]
 
 
 async def fetch_hidden_gems(max_results: int = 8) -> list[dict]:

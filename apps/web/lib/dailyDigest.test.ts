@@ -97,7 +97,7 @@ test("getLatestDailyDigest returns the latest daily digest when one exists", asy
 	);
 });
 
-test("the what, verdict and weekly gain fields reach the payload unchanged, and older digests without them still load", async () => {
+test("the what, verdict, weekly gain and HN fields reach the payload unchanged, and older digests without them still load", async () => {
 	const base = {
 		rank: 1,
 		agentHandle: "@github-radar",
@@ -124,6 +124,9 @@ test("the what, verdict and weekly gain fields reach the payload unchanged, and 
 				verdict: "emerging",
 				weeklyGain: 240,
 				weeklyGainWindowDays: 7,
+				hnPoints: 292,
+				hnComments: 139,
+				digestScore: 139.5,
 			},
 			{
 				...base,
@@ -146,6 +149,9 @@ test("the what, verdict and weekly gain fields reach the payload unchanged, and 
 	assert.equal(result.items[0].verdict, "emerging");
 	assert.equal(result.items[0].weeklyGain, 240);
 	assert.equal(result.items[0].weeklyGainWindowDays, 7);
+	assert.equal(result.items[0].hnPoints, 292);
+	assert.equal(result.items[0].hnComments, 139);
+	assert.equal(result.items[0].digestScore, 139.5);
 	assert.equal(result.items[1].what, null);
 	assert.equal(result.items[1].verdict, null);
 	assert.equal(result.items[1].weeklyGain, null);

@@ -245,3 +245,26 @@ async def test_story_title_match_is_case_insensitive():
     )
     assert result is not None
     assert result["points"] == 40
+
+
+# ─── fetch_hn_story ───
+
+
+@pytest.mark.asyncio
+async def test_fetch_hn_story_reads_points_and_comments_of_that_story():
+    client = _FakeClient(
+        [_Response(payload={"hits": [{"objectID": "777", "points": 100, "num_comments": 80}]})]
+    )
+
+    story = await engagement.fetch_hn_story("777", client)
+
+    assert story == {"points": 100, "comments": 80}
+    url, kwargs = client.calls[0]
+    assert url == "https://hn.algolia.com/api/v1/search"
+    assert kwargs["params"]["tags"] == "story_777"
+
+
+@pytest.mark.asyncio
+async def test_fetch_hn_story_degrades_to_none():
+    assert await engagement.fetch_hn_story("777", _FakeClient([_Response(500)])) is None
+    assert await engagement.fetch_hn_story("777", _FakeClient([_Response(payload={"hits": []})])) is None
