@@ -9,7 +9,7 @@ move — is exactly the single-source hype the gate exists to filter.
 consensus exists, so it keeps the momentum gate only.
 
 The Reddit leg corroborates against the corpus that @reddit-pulse already
-collects every run (the ``reddit_post_snapshots`` time-series, 16 curated AI
+collects every run (the ``reddit_post_snapshots`` time-series, curated AI
 subreddits, gathered through Monid's free TinyFish fetch). Reddit's public search API is the
 fallback only: it blocks unauthenticated clients with 403 — including
 residential IPs — so a blocked fallback logs one warning and returns None
@@ -181,6 +181,7 @@ async def corroborated_candidates(
     """
     corpus = await load_reddit_corpus(db) if db is not None else None
     kept: list[dict] = []
+    hn_confirmed = reddit_confirmed = 0
     for c in candidates:
         repo_url = c.get("url") or ""
         sources = ["github"]
@@ -188,9 +189,16 @@ async def corroborated_candidates(
         if engagement is not None:
             sources.append("hacker_news")
             c["_hn_engagement"] = engagement
+            hn_confirmed += 1
         if await reddit_fetch(repo_url, corpus=corpus):
             sources.append("reddit")
+            reddit_confirmed += 1
         if len(sources) >= 2:
             c["corroborated_by"] = sources
             kept.append(c)
+    print(
+        f"corroboration kept {len(kept)} of {len(candidates)} candidates "
+        f"(hn={hn_confirmed} reddit={reddit_confirmed})",
+        flush=True,
+    )
     return kept

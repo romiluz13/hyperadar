@@ -18,6 +18,7 @@ def load_source():
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.FETCH_RETRY_DELAY_SECONDS = 0
     return module
 
 
@@ -199,6 +200,36 @@ def test_feed_parser_keeps_a_quiet_feed_below_the_noise_floor():
     assert source.parse_rising_feed(shreddit_post("q", score=3, created=fresh())) == []
 
 
+def test_launch_subreddits_are_read_alongside_the_originals():
+    """r/OpenSourceAI, r/mcp and r/ollama carried the month's repo launches."""
+    source = load_source()
+    assert {"OpenSourceAI", "mcp", "ollama", "LocalLLaMA"} <= set(source.SUBREDDITS)
+    assert len(source.SUBREDDITS) == len(set(source.SUBREDDITS))
+
+
+def test_feed_parser_keeps_small_launch_posts_in_launch_subreddits_only():
+    """A 3-upvote launch in r/mcp can corroborate a repo; the same post in a
+    large general subreddit is still noise."""
+    source = load_source()
+    for name in ("mcp", "OpenSourceAI", "ollama"):
+        kept = source.parse_rising_feed(
+            shreddit_post("l", score=3, subreddit=name, created=fresh())
+        )
+        assert [p["num_upvotes"] for p in kept] == [3]
+    assert (
+        source.parse_rising_feed(
+            shreddit_post("n", score=9, subreddit="LocalLLaMA", created=fresh())
+        )
+        == []
+    )
+    assert (
+        source.parse_rising_feed(
+            shreddit_post("z", score=0, subreddit="mcp", created=fresh())
+        )
+        == []
+    )
+
+
 def test_parse_created_tolerates_a_short_timestamp():
     source = load_source()
     assert source._parse_created("2026") == "2026"
@@ -214,7 +245,7 @@ async def test_fetch_asks_monid_free_fetch_for_every_rising_feed():
 
     await source.fetch_reddit_candidates(max_results=50, db=FakeDb(), client=client)
 
-    assert len(calls) == 2  # 16 subreddits, at most 10 URLs per free call
+    assert len(calls) == 2  # 19 subreddits, at most 10 URLs per free call
     requested = []
     for request in calls:
         assert str(request.url) == "https://api.monid.ai/v1/run"
@@ -401,6 +432,117 @@ async def test_fetch_tolerates_some_subreddits_failing():
     assert [c["url"] for c in candidates] == [
         "https://www.reddit.com/r/LocalLLaMA/comments/ok"
     ]
+
+
+@pytest.mark.asyncio
+async def test_small_launch_post_is_snapshotted_for_corroboration_but_not_published():
+    source = load_source()
+    db = FakeDb()
+    page = shreddit_post(
+        "tiny",
+        title="I built github.com/owner/tool",
+        score=4,
+        comments=2,
+        subreddit="mcp",
+        created=fresh(),
+    )
+
+    candidates = await source.fetch_reddit_candidates(
+        max_results=10, db=db, client=monid_client(lambda _n: page)
+    )
+
+    assert candidates == []  # the publish gate still wants 20 upvotes
+    (doc,) = {d["url"]: d for d in db.reddit_post_snapshots._docs}.values()
+    assert doc["url"] == "https://www.reddit.com/r/mcp/comments/tiny"
+    assert "github.com/owner/tool" in doc["title"]
+
+
+@pytest.mark.asyncio
+async def test_small_launch_posts_do_not_lower_the_bar_for_their_neighbours():
+    """Snapshot-only posts (1-9 upvotes) must stay out of the subreddit baseline,
+    or an ordinary 22-upvote r/mcp post looks like a 3x breakout against them."""
+    source = load_source()
+    candidate = shreddit_post(
+        "ok", title="A tool", score=22, comments=4, subreddit="mcp", created=fresh(10)
+    )
+    peers = "".join(
+        shreddit_post(f"tiny{i}", score=2, subreddit="mcp", created=fresh(10))
+        for i in range(4)
+    )
+
+    alone = await source.fetch_reddit_candidates(
+        max_results=10, db=FakeDb(), client=monid_client(lambda _n: candidate)
+    )
+    with_peers = await source.fetch_reddit_candidates(
+        max_results=10, db=FakeDb(), client=monid_client(lambda _n: candidate + peers)
+    )
+
+    assert [c["url"] for c in with_peers] == [c["url"] for c in alone]
+
+
+@pytest.mark.asyncio
+async def test_fetch_retries_only_the_failed_subreddits_within_the_run():
+    """Reddit 403s a different set of feeds each day (7-11 of 16 on 2026-11-12..18),
+    so the failed URLs get another pass; failures are not counted by the free tier."""
+    source = load_source()
+    calls = []
+    attempts = {"LocalLLaMA": 0}
+
+    def page_for(name: str):
+        if name == "LocalLLaMA":
+            attempts["LocalLLaMA"] += 1
+            if attempts["LocalLLaMA"] == 1:
+                return {"error": "target_http_error", "status": 403}
+            return shreddit_post("back", score=300, comments=30, created=fresh())
+        return shreddit_post(f"p{name}", score=5, subreddit=name, created=fresh())
+
+    candidates = await source.fetch_reddit_candidates(
+        max_results=10,
+        db=FakeDb(),
+        client=monid_client(page_for, calls),
+    )
+
+    assert "https://www.reddit.com/r/LocalLLaMA/comments/back" in [
+        c["url"] for c in candidates
+    ]
+    retry_urls = json.loads(calls[-1].content)["input"]["urls"]
+    assert retry_urls == [source._rising_feed_url("LocalLLaMA")]
+
+
+@pytest.mark.asyncio
+async def test_fetch_stops_retrying_after_two_extra_passes():
+    source = load_source()
+    calls = []
+
+    def page_for(name: str):
+        if name == "LocalLLaMA":
+            return {"error": "target_http_error", "status": 403}
+        return shreddit_post(f"p{name}", score=5, subreddit=name, created=fresh())
+
+    await source.fetch_reddit_candidates(
+        max_results=10, db=FakeDb(), client=monid_client(page_for, calls)
+    )
+
+    assert len(calls) == 2 + source.FETCH_RETRIES  # two batches, then one call per retry pass
+    for retry in calls[2:]:
+        assert json.loads(retry.content)["input"]["urls"] == [
+            source._rising_feed_url("LocalLLaMA")
+        ]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_monid_call_is_not_retried():
+    """A 402 or 429 means the allowance or balance is gone: retrying is waste."""
+    source = load_source()
+    calls = []
+    client = monid_client(
+        lambda _n: "", calls, run_status=lambda _r: httpx.Response(402, text="no credits")
+    )
+
+    with pytest.raises(RuntimeError, match="Reddit source down"):
+        await source.fetch_reddit_candidates(max_results=10, db=FakeDb(), client=client)
+
+    assert len(calls) == 2
 
 
 @pytest.mark.asyncio

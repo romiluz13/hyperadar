@@ -1438,6 +1438,71 @@ class TestEvidenceRankedDigest:
         assert result["items"][0]["blurb"] == "blurb"
 
 
+class TestRepoSlots:
+    """The digest must carry repos, not only the loudest Reddit threads.
+
+    On 2026-11-18 eleven Reddit threads, four repos and one video competed:
+    the threads (37-94 points) outscored every repo but one, so the feed read
+    as Reddit with a single repo.
+    """
+
+    @staticmethod
+    def _candidate(score, kind, agent):
+        return {
+            "score": score,
+            "post": {"agentHandle": agent, "project": {"kind": kind}},
+        }
+
+    def _mixed_day(self):
+        return [
+            self._candidate(95, "thread", "@reddit-pulse"),
+            self._candidate(90, "thread", "@reddit-pulse"),
+            self._candidate(85, "thread", "@reddit-pulse"),
+            self._candidate(80, "video", "@youtube-trends"),
+            self._candidate(78, "thread", "@hidden-gems"),
+            self._candidate(60, "repo", "@hidden-gems"),
+            self._candidate(55, "repo", "@hidden-gems"),
+        ]
+
+    def test_two_qualifying_repos_make_the_digest_even_when_outscored(self):
+        chosen = daily_digest._choose(self._mixed_day())
+        assert [c["score"] for c in chosen if c["post"]["project"]["kind"] == "repo"] == [
+            60,
+            55,
+        ]
+        assert len(chosen) == daily_digest.DAILY_DIGEST_MAX_ITEMS
+
+    def test_the_digest_stays_ordered_by_evidence(self):
+        chosen = daily_digest._choose(self._mixed_day())
+        scores = [c["score"] for c in chosen]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_a_repo_under_the_floor_is_not_reserved(self):
+        candidates = [c for c in self._mixed_day() if c["score"] >= 78] + [
+            self._candidate(40, "repo", "@hidden-gems")
+        ]
+        chosen = daily_digest._choose(candidates)
+        assert all(c["post"]["project"]["kind"] != "repo" for c in chosen)
+
+    def test_one_qualifying_repo_takes_one_slot(self):
+        candidates = [c for c in self._mixed_day() if c["score"] != 55]
+        chosen = daily_digest._choose(candidates)
+        repos = [c for c in chosen if c["post"]["project"]["kind"] == "repo"]
+        assert [c["score"] for c in repos] == [60]
+
+    def test_repos_already_chosen_on_merit_are_not_counted_twice(self):
+        candidates = [
+            self._candidate(95, "repo", "@github-radar"),
+            self._candidate(92, "repo", "@hidden-gems"),
+            self._candidate(90, "thread", "@reddit-pulse"),
+            self._candidate(85, "thread", "@reddit-pulse"),
+            self._candidate(80, "thread", "@reddit-pulse"),
+            self._candidate(75, "thread", "@reddit-pulse"),
+        ]
+        chosen = daily_digest._choose(candidates)
+        assert [c["score"] for c in chosen] == [95, 92, 90, 85, 80]
+
+
 class TestDigestScore:
     """The uncapped evidence score, per source, on worked examples."""
 

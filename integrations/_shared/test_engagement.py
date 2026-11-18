@@ -247,6 +247,61 @@ async def test_story_title_match_is_case_insensitive():
     assert result["points"] == 40
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "story_url",
+    [
+        "https://github.com/owner/repo/releases/tag/v1.0.0",
+        "https://github.com/owner/repo/tree/main/docs",
+        "https://github.com/owner/repo/blob/main/README.md",
+        "https://github.com/Owner/Repo/issues/3",
+        "https://www.github.com/owner/repo/pull/9?diff=split",
+        "https://github.com/owner/repo.git",
+    ],
+)
+async def test_story_linking_inside_the_repo_corroborates_it(story_url):
+    """An HN story that links to a release, tree, blob or issue of the repo is
+    about that repo; 'Ggml v1.0.0' (420 points) linked its releases page."""
+    hit = {
+        "objectID": "777",
+        "url": story_url,
+        "title": "Ggml v1.0.0",
+        "points": 420,
+        "num_comments": 60,
+    }
+    client = _FakeClient([_Response(payload={"hits": [hit]}), _Response(payload={})])
+    result = await engagement.fetch_hn_engagement(
+        "https://github.com/owner/repo", client
+    )
+    assert result is not None
+    assert result["points"] == 420
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "story_url",
+    [
+        "https://github.com/owner/repo-utils/releases/tag/v1",
+        "https://github.com/owner/other/tree/main",
+        "https://gitlab.com/owner/repo/tree/main",
+        "https://example.com/post?ref=github.com/owner/repo",
+    ],
+)
+async def test_story_about_another_repo_or_host_does_not_corroborate(story_url):
+    hit = {
+        "objectID": "888",
+        "url": story_url,
+        "title": "Something else entirely",
+        "points": 300,
+        "num_comments": 50,
+    }
+    client = _FakeClient([_Response(payload={"hits": [hit]}), _Response(payload={})])
+    result = await engagement.fetch_hn_engagement(
+        "https://github.com/owner/repo", client
+    )
+    assert result is None
+
+
 # ─── fetch_hn_story ───
 
 

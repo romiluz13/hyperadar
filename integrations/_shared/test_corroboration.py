@@ -114,6 +114,29 @@ async def test_reddit_unknown_does_not_corroborate():
 
 
 @pytest.mark.asyncio
+async def test_reports_how_many_candidates_each_leg_confirmed(capsys):
+    """An empty @github-radar run must say which leg failed: 3 in, 1 kept."""
+    stories = {"https://github.com/a/hn": _HN_STORY}
+
+    async def hn_fetch(url):
+        return stories.get(url)
+
+    async def reddit_fetch(url, corpus=None):
+        return url == "https://github.com/a/reddit"
+
+    candidates = [
+        _candidate("https://github.com/a/hn"),
+        _candidate("https://github.com/a/reddit"),
+        _candidate("https://github.com/a/none"),
+    ]
+    kept = await corroboration.corroborated_candidates(
+        candidates, hn_fetch=hn_fetch, reddit_fetch=reddit_fetch
+    )
+    assert len(kept) == 2
+    assert "corroboration kept 2 of 3 candidates (hn=1 reddit=1)" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
 async def test_both_external_sources_listed():
     async def hn_fetch(url):
         return _HN_STORY

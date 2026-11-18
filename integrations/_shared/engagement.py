@@ -14,9 +14,11 @@ audience. Two consumers:
 
 import re
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import httpx
 
+_GITHUB_HOSTS = {"github.com", "www.github.com"}
 _HN_ALGOLIA_SEARCH_URL = "https://hn.algolia.com/api/v1/search"
 _HN_ALGOLIA_ITEM_URL = "https://hn.algolia.com/api/v1/items"
 # Match window: a story older than this is stale corroboration, not current hype.
@@ -95,9 +97,25 @@ def slug_mentioned(slug: str, text: str) -> bool:
     )
 
 
-def _story_matches(hit: dict, repo_url: str, slug: str) -> bool:
-    story_url = (hit.get("url") or "").rstrip("/")
-    if story_url and story_url == (repo_url or "").rstrip("/"):
+def _github_story_slug(story_url: str) -> str | None:
+    """``owner/repo`` a story URL points into, for any path under the repo.
+
+    A launch is often linked as a release, tree or blob page (a 420-point
+    "Ggml v1.0.0" story linked ``/releases/tag/v1.0.0``), so the story URL must
+    not have to equal the repo URL. Only github.com hosts count.
+    """
+    parsed = urlparse(story_url or "")
+    if (parsed.hostname or "").lower() not in _GITHUB_HOSTS:
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return f"{parts[0]}/{parts[1].removesuffix('.git')}"
+
+
+def _story_matches(hit: dict, slug: str) -> bool:
+    story_slug = _github_story_slug(hit.get("url") or "")
+    if story_slug and story_slug.lower() == slug.lower():
         return True
     return slug_mentioned(slug, hit.get("title") or "")
 
@@ -145,7 +163,7 @@ async def fetch_hn_engagement(
 
         best = None
         for hit in hits:
-            if not _story_matches(hit, repo_url, slug):
+            if not _story_matches(hit, slug):
                 continue
             if best is None or (hit.get("points") or 0) > (best.get("points") or 0):
                 best = hit

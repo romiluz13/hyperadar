@@ -23,7 +23,11 @@ from _shared.momentum import (
     publish_score_threshold,
     should_publish_hidden_gem,
 )
-from _shared.mongo import get_last_published_days, load_active_star_histories
+from _shared.mongo import (
+    NEVER_POSTED_DAYS,
+    get_last_published_days,
+    load_active_star_histories,
+)
 from github_radar.tracker import track_daily_snapshots
 
 _token = os.environ.get("GITHUB_TOKEN", "")
@@ -457,19 +461,24 @@ async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
     # line as their description (fail-soft to "") instead of a hard-coded
     # empty string, so downstream consumers have a `what`.
     results: list[dict] = []
+    on_cooldown = 0
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         for row in scored:
             project_url = row["project_url"]
             last_pub_days = await get_last_published_days(db, project_url)
-            if not should_publish_hidden_gem(
+            gate = (
                 row["score"],
                 row["velocity"],
                 row["acceleration"],
                 row["fork_star_ratio"],
-                last_pub_days,
-                row["is_monotonic"],
-                score_threshold=threshold,
+            )
+            if not should_publish_hidden_gem(
+                *gate, last_pub_days, row["is_monotonic"], score_threshold=threshold
             ):
+                if should_publish_hidden_gem(
+                    *gate, NEVER_POSTED_DAYS, row["is_monotonic"], score_threshold=threshold
+                ):
+                    on_cooldown += 1
                 continue
 
             description = ""
@@ -497,4 +506,11 @@ async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
                     "acceleration": row["acceleration"],
                 }
             )
+    # print, not logging: the agents configure no log handler, so INFO never
+    # reaches the CI log.
+    print(
+        f"@github-radar momentum stages: pool={len(histories)} scored={len(scored)} "
+        f"threshold={threshold} on_cooldown={on_cooldown} published={len(results)}",
+        flush=True,
+    )
     return results

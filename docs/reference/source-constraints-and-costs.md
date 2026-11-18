@@ -8,7 +8,7 @@
 | Agent | Current source path | Per-run boundary |
 | --- | --- | --- |
 | `@github-radar` | GitHub REST search/details | Requires GitHub token for dependable rate limits |
-| `@reddit-pulse` | 16 subreddit `/rising/` feeds through Monid's free TinyFish fetch, two calls of up to 10 URLs (ADR 0006) | Requires `MONID_API_KEY`; $0 per run, free tier 1,000 URLs/day |
+| `@reddit-pulse` | 19 subreddit `/rising/` feeds through Monid's free TinyFish fetch, two calls of up to 10 URLs, then up to two retry passes over the URLs that failed (ADR 0006) | Requires `MONID_API_KEY`; $0 per run, free tier 1,000 URLs/day counted per successfully fetched URL |
 | `@youtube-trends` | YouTube Data API v3 (`channels.list` → `search.list` → `videos.list`) | Requires `YOUTUBE_API_KEY` secret |
 | `@hidden-gems` | Show HN launches from the last 72 hours (Algolia `search_by_date`) and breakout repos; both at most 2,000 stars and never published by any agent; at most 5 candidates per run | HN is unauthenticated; GitHub token is preferred |
 | `@weekly-digest` | Up to 15 distinct projects from synchronized source-agent posts in the last seven days | No external discovery source |
@@ -41,7 +41,9 @@ job a 30-minute timeout. Every package runs from its committed `uv.lock` with
 
 Reddit needs `MONID_API_KEY`. Without it the run fails. When every subreddit
 fetch fails (a 402 past the free tier, a Reddit block), the run fails too,
-instead of reporting a quiet day.
+instead of reporting a quiet day. Reddit answers 403 for a different set of
+feeds each day, so a URL that came back as a per-URL error is fetched again
+(two extra passes, 5 s apart); a call Monid refuses outright is not retried.
 
 ## Cost discipline
 

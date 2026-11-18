@@ -39,6 +39,9 @@ DAILY_DIGEST_MAX_ITEMS = 5
 DAILY_DIGEST_MIN_ITEMS = 2
 DAILY_DIGEST_MAX_PER_AGENT = 3
 DAILY_DIGEST_MAX_VIDEOS = 1
+# Reddit threads out-score repos on raw upvotes (2026-11-18: 11 threads at 37-94
+# against 4 repos), so repos that clear the floor are reserved this many slots.
+DAILY_DIGEST_MIN_REPOS = 2
 # Calibrated on 2026-11-09 posts: real breakouts score 100+, a 1K-view video 36.
 DAILY_DIGEST_MIN_SCORE = 50
 DAILY_DIGEST_MEMORY_DAYS = 30
@@ -411,13 +414,30 @@ async def _evidence(db, post: dict) -> dict:
 
 
 def _choose(candidates: list[dict]) -> list[dict]:
-    """Strongest first: up to 5 above the floor, never fewer than 2, capped per source."""
-    chosen: list[dict] = []
+    """Strongest first: up to 5 above the floor, never fewer than 2, capped per source.
+
+    The best ``DAILY_DIGEST_MIN_REPOS`` repos above the floor are chosen first,
+    the other slots go to the strongest remaining items, and the result is
+    ordered by score.
+    """
+    ranked = sorted(candidates, key=lambda c: c["score"], reverse=True)
+    reserved = [
+        c
+        for c in ranked
+        if c["post"].get("project", {}).get("kind") == "repo"
+        and c["score"] >= DAILY_DIGEST_MIN_SCORE
+    ][:DAILY_DIGEST_MIN_REPOS]
+    chosen: list[dict] = list(reserved)
     per_agent: dict[str, int] = {}
+    for candidate in reserved:
+        agent = candidate["post"].get("agentHandle", "")
+        per_agent[agent] = per_agent.get(agent, 0) + 1
     videos = 0
-    for candidate in sorted(candidates, key=lambda c: c["score"], reverse=True):
+    for candidate in ranked:
         if len(chosen) >= DAILY_DIGEST_MAX_ITEMS:
             break
+        if any(candidate is picked for picked in reserved):
+            continue
         if candidate["score"] < DAILY_DIGEST_MIN_SCORE and len(chosen) >= DAILY_DIGEST_MIN_ITEMS:
             break
         agent = candidate["post"].get("agentHandle", "")
@@ -429,7 +449,7 @@ def _choose(candidates: list[dict]) -> list[dict]:
         per_agent[agent] = per_agent.get(agent, 0) + 1
         videos += is_video
         chosen.append(candidate)
-    return chosen
+    return sorted(chosen, key=lambda c: c["score"], reverse=True)
 
 
 def _digest_item(rank: int, candidate: dict, pick: dict) -> dict:

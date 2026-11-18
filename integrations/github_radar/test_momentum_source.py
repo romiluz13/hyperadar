@@ -64,6 +64,80 @@ async def test_momentum_returns_candidates_with_score(db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_momentum_reports_the_pool_through_each_stage(db, monkeypatch, capsys):
+    """A run that publishes nothing must say where the pool emptied: below the
+    threshold, behind the 14-day cooldown, or published."""
+    import re
+
+    from github_radar import github_source
+
+    async def fake_track(db):
+        return 0
+
+    monkeypatch.setattr(github_source, "track_daily_snapshots", fake_track)
+
+    async_db = mongo._get_db()
+    repo_url = "https://github.com/test/trending-logged"
+    snaps = _snapshots([200 + i * 6 for i in range(14)], forks=30)
+    for s in snaps:
+        s["projectId"] = repo_url
+    db.signals.delete_many({"projectId": repo_url})
+    db.signals.insert_many(snaps)
+
+    try:
+        results = await github_source.fetch_trending_candidates_with_momentum(async_db)
+    finally:
+        db.signals.delete_many({"projectId": repo_url})
+
+    match = re.search(
+        r"momentum stages: pool=(\d+) scored=(\d+) threshold=(\d+) "
+        r"on_cooldown=(\d+) published=(\d+)",
+        capsys.readouterr().out,
+    )
+    assert match
+    pool, scored, _threshold, on_cooldown, published = (int(g) for g in match.groups())
+    assert pool >= scored >= on_cooldown + published
+    assert published == len(results)
+
+
+@pytest.mark.asyncio
+async def test_momentum_counts_repos_held_back_only_by_the_cooldown(
+    db, monkeypatch, capsys
+):
+    import re
+
+    from github_radar import github_source
+
+    async def fake_track(db):
+        return 0
+
+    async def posted_three_days_ago(db, url):
+        return 3
+
+    monkeypatch.setattr(github_source, "track_daily_snapshots", fake_track)
+    monkeypatch.setattr(github_source, "get_last_published_days", posted_three_days_ago)
+
+    async_db = mongo._get_db()
+    repo_url = "https://github.com/test/trending-cooling"
+    snaps = _snapshots([200 + i * 6 for i in range(14)], forks=30)
+    for s in snaps:
+        s["projectId"] = repo_url
+    db.signals.delete_many({"projectId": repo_url})
+    db.signals.insert_many(snaps)
+
+    try:
+        results = await github_source.fetch_trending_candidates_with_momentum(async_db)
+    finally:
+        db.signals.delete_many({"projectId": repo_url})
+
+    assert results == []
+    out = capsys.readouterr().out
+    match = re.search(r"on_cooldown=(\d+) published=0", out)
+    assert match, out
+    assert int(match.group(1)) >= 1
+
+
+@pytest.mark.asyncio
 async def test_momentum_excludes_repos_with_insufficient_history(db, monkeypatch):
     """Repos with <7 days of snapshots are excluded."""
     from github_radar import github_source

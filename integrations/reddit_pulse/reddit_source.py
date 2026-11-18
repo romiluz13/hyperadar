@@ -21,6 +21,13 @@ from _shared.heat import compute_heat_score, should_publish_heat
 from _shared.mongo import _get_db
 
 # Target subreddits for AI developer discourse.
+# Launch communities post a repo with 3-5 upvotes, so a 10-upvote floor hides the
+# very posts that corroborate @github-radar. They are kept down to 1 upvote as
+# snapshot rows only: the publish gate (heat.py) still wants 20 upvotes, and
+# posts under DEFAULT_NOISE_FLOOR stay out of the heat baseline.
+LAUNCH_SUBREDDITS = ("OpenSourceAI", "mcp", "ollama")
+DEFAULT_NOISE_FLOOR = 10
+LAUNCH_NOISE_FLOOR = 1
 SUBREDDITS = [
     "LocalLLaMA",
     "LLMDevs",
@@ -38,14 +45,23 @@ SUBREDDITS = [
     "startups",
     "singularity",
     "MachineLearning",
+    *LAUNCH_SUBREDDITS,
 ]
 MONID_API_URL = "https://api.monid.ai"
 MONID_FETCH_BATCH = 10  # the free fetch takes 1-10 URLs per call
-MONID_HTTP_TIMEOUT_SECONDS = 120
+MONID_HTTP_TIMEOUT_SECONDS = 150  # TinyFish docs: client timeout of at least 150 s
+FETCH_RETRIES = 2
+FETCH_RETRY_DELAY_SECONDS = 5
 MONID_RUN_DEADLINE_SECONDS = 180
 MONID_POLL_INTERVAL_SECONDS = 3
 COOLDOWN_DAYS = 7
 _PERMALINK = re.compile(r"^/r/([^/]+)/comments/([^/]+)")
+
+
+def _noise_floor(subreddit: str) -> int:
+    if subreddit.lower() in {name.lower() for name in LAUNCH_SUBREDDITS}:
+        return LAUNCH_NOISE_FLOOR
+    return DEFAULT_NOISE_FLOOR
 
 
 def _visibility_from_upvotes(upvotes: int, comments: int) -> float:
@@ -228,7 +244,7 @@ def parse_rising_feed(markup: str) -> list[dict]:
         except (KeyError, ValueError):
             continue
         readable += 1
-        if upvotes < 10:  # filter noise
+        if upvotes < _noise_floor(subreddit):
             continue
         link = values.get("content-href", "").strip()
         parts = [title, " ".join(parser.bodies.get(post_id, []))]
@@ -313,31 +329,51 @@ async def _monid_free_fetch(client: httpx.AsyncClient, urls: list[str]) -> dict:
 async def _fetch_all_subreddits(
     client: httpx.AsyncClient,
 ) -> tuple[list[dict], list[str], set[str]]:
-    """Parsed posts, one failure message per failed subreddit, and the subreddits read."""
+    """Parsed posts, one failure message per failed subreddit, and the subreddits read.
+
+    Reddit answers 403 for a different set of feeds on different days, and the
+    free fetch counts only successful URLs, so a URL that came back as a per-URL
+    error gets ``FETCH_RETRIES`` more passes. A call Monid refuses outright
+    (402, 429, outage) is not retried: the allowance or the service is gone.
+    """
     urls = {_rising_feed_url(name): name for name in SUBREDDITS}
     pending = list(urls)
     posts: list[dict] = []
-    failures: list[str] = []
+    failures: dict[str, str] = {}
     read: set[str] = set()
-    for i in range(0, len(pending), MONID_FETCH_BATCH):
-        batch = pending[i : i + MONID_FETCH_BATCH]
-        try:
-            output = await _monid_free_fetch(client, batch)
-        except (httpx.HTTPError, RuntimeError, ValueError) as error:
-            failures.extend(f"r/{urls[u]}: {error}" for u in batch)
-            continue
-        for error in output["errors"]:
-            name = urls.get(error.get("url"), error.get("url"))
-            failures.append(f"r/{name}: {error.get('error')} {error.get('status') or ''}".strip())
-        for result in output["results"]:
-            name = urls.get(result.get("url"), result.get("url"))
+    for attempt in range(1 + FETCH_RETRIES):
+        if attempt:
+            await asyncio.sleep(FETCH_RETRY_DELAY_SECONDS)
+        retry: list[str] = []
+        for i in range(0, len(pending), MONID_FETCH_BATCH):
+            batch = pending[i : i + MONID_FETCH_BATCH]
             try:
-                posts.extend(parse_rising_feed(result.get("text") or ""))
-            except ValueError as error:
-                failures.append(f"r/{name}: {error}")
+                output = await _monid_free_fetch(client, batch)
+            except (httpx.HTTPError, RuntimeError, ValueError) as error:
+                for u in batch:
+                    failures[u] = f"r/{urls[u]}: {error}"
                 continue
-            read.add(name)
-    return posts, failures, read
+            for error in output["errors"]:
+                u = error.get("url")
+                failures[u] = (
+                    f"r/{urls.get(u, u)}: {error.get('error')} {error.get('status') or ''}"
+                ).strip()
+                if u in urls:
+                    retry.append(u)
+            for result in output["results"]:
+                u = result.get("url")
+                name = urls.get(u, u)
+                try:
+                    posts.extend(parse_rising_feed(result.get("text") or ""))
+                except ValueError as error:
+                    failures[u] = f"r/{name}: {error}"
+                    continue
+                failures.pop(u, None)
+                read.add(name)
+        pending = retry
+        if not pending:
+            break
+    return posts, list(failures.values()), read
 
 
 async def fetch_reddit_candidates(
@@ -401,7 +437,9 @@ async def fetch_reddit_candidates(
             subreddit=c.get("subreddit", ""),
         )
 
-    # Attach heat scores to all unique candidates (before the gate).
+    # Heat and the publish gate see only posts that cleared the default floor:
+    # snapshot-only launch posts would drag their subreddit's baseline down.
+    unique = [c for c in unique if c["num_upvotes"] >= DEFAULT_NOISE_FLOOR]
     attach_reddit_heat(unique)
 
     # Publish gate: cooldown + threshold + noise floor + outperform.
