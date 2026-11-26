@@ -1,8 +1,9 @@
-"""DB tests for the trending_snapshots writer (needs MONGODB_URI)."""
+"""DB tests for the trending_snapshots writer (needs MONGODB_URI).
+
+The 30-day TTL index belongs to setup (scripts/test_setup_mongodb.py).
+"""
 
 from datetime import datetime, timezone
-
-_THIRTY_DAYS_SECONDS = 2_592_000
 
 
 def _rows():
@@ -75,29 +76,6 @@ async def test_each_row_is_written_with_its_capture_time(db):
                 "capturedAt": captured_at.replace(tzinfo=None),
             },
         ]
-    finally:
-        db.trending_snapshots.delete_many({"capturedAt": captured_at})
-
-
-async def test_snapshots_expire_30_days_after_capture(db):
-    import trending_source
-    from _shared import mongo
-
-    captured_at = datetime(2026, 11, 26, 0, 23, 8, tzinfo=timezone.utc)
-    db.trending_snapshots.delete_many({"capturedAt": captured_at})
-    try:
-        await trending_source.write_trending_snapshots(
-            mongo._get_db(), _rows(), captured_at=captured_at
-        )
-
-        ttl = [
-            details
-            for details in db.trending_snapshots.index_information().values()
-            if "expireAfterSeconds" in details
-        ]
-        assert len(ttl) == 1
-        assert ttl[0]["key"] == [("capturedAt", 1)]
-        assert ttl[0]["expireAfterSeconds"] == _THIRTY_DAYS_SECONDS
     finally:
         db.trending_snapshots.delete_many({"capturedAt": captured_at})
 

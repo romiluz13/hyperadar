@@ -1876,22 +1876,10 @@ async def test_runner_repairs_historical_pending_posts_before_source_scan(
         }
     ).inserted_id
 
-    class FakeCheckpointer:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
     class QuietAgent:
         async def ainvoke(self, *_args, **_kwargs):
             return None
 
-    monkeypatch.setattr(
-        runner_module.MongoDBSaver,
-        "from_conn_string",
-        lambda *_args, **_kwargs: FakeCheckpointer(),
-    )
     monkeypatch.setattr(port_client, "upsert_agent", lambda *_args: {"ok": True})
     port_projects = []
 
@@ -1940,13 +1928,6 @@ async def test_runner_stops_an_agent_invocation_that_exceeds_its_deadline(monkey
     from _shared import port_client
     from _shared import runner as runner_module
 
-    class FakeCheckpointer:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
     class HangingAgent:
         async def ainvoke(self, *_args, **_kwargs):
             await asyncio.Event().wait()
@@ -1954,11 +1935,6 @@ async def test_runner_stops_an_agent_invocation_that_exceeds_its_deadline(monkey
     monkeypatch.setenv("MONGODB_URI", "mongodb://example.invalid/hyperadar")
     monkeypatch.setattr(
         runner_module, "AGENT_INVOCATION_TIMEOUT_SECONDS", 0.01, raising=False
-    )
-    monkeypatch.setattr(
-        runner_module.MongoDBSaver,
-        "from_conn_string",
-        lambda *_args, **_kwargs: FakeCheckpointer(),
     )
     monkeypatch.setattr(port_client, "upsert_agent", lambda *_args: {"ok": True})
     # The doctor preflight makes live credential calls; this test is about
@@ -2119,13 +2095,6 @@ async def test_runner_still_scans_when_port_rejects_login(monkeypatch):
 
     _port_login_rejected(monkeypatch)
 
-    class FakeCheckpointer:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
     scans = []
 
     class QuietAgent:
@@ -2137,11 +2106,6 @@ async def test_runner_still_scans_when_port_rejects_login(monkeypatch):
         return []
 
     monkeypatch.setenv("MONGODB_URI", "mongodb://example.invalid/hyperadar")
-    monkeypatch.setattr(
-        runner_module.MongoDBSaver,
-        "from_conn_string",
-        lambda *_args, **_kwargs: FakeCheckpointer(),
-    )
     monkeypatch.setattr(runner_module.doctor, "preflight", fake_preflight)
     monkeypatch.setattr(
         runner_module.write_post, "repair_pending_posts", AsyncMock(return_value=0)

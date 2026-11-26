@@ -1,14 +1,21 @@
+import os
 import unittest
+import uuid
 from datetime import datetime, timezone
 
+import pymongo
 from pymongo.errors import OperationFailure
 
 from setup_mongodb import (
     backfill_publication_identities,
     ensure_index,
     ensure_reaction_indexes,
+    ensure_storage_bounds,
     reconcile_reaction_counts,
 )
+
+_DAY_SECONDS = 24 * 60 * 60
+_TEST_DB_PREFIX = os.environ.get("MONGODB_TEST_DB", "")
 
 
 class FakeCollection:
@@ -240,6 +247,71 @@ class MongoIndexSetupTests(unittest.TestCase):
         self.assertEqual(
             posts[0]["reactionCounts"], {"likes": 3, "comments": 0, "shares": 0}
         )
+
+
+@unittest.skipUnless(
+    os.environ.get("MONGODB_URI") and _TEST_DB_PREFIX.endswith("_test"),
+    "needs MONGODB_URI and a *_test MONGODB_TEST_DB",
+)
+class StorageBoundsTests(unittest.TestCase):
+    """Setup bounds stored data on a real database of its own (ticket 09)."""
+
+    def setUp(self):
+        self.client = pymongo.MongoClient(os.environ["MONGODB_URI"])
+        name = f"{_TEST_DB_PREFIX[: -len('_test')]}_setup_{uuid.uuid4().hex[:8]}_test"
+        self.db = self.client[name]
+
+    def tearDown(self):
+        self.client.drop_database(self.db.name)
+        self.client.close()
+
+    def _key_indexes(self, collection, key):
+        return [
+            details
+            for details in self.db[collection].index_information().values()
+            if details["key"] == key
+        ]
+
+    def assert_bounded(self):
+        for collection, field, days in [
+            ("reddit_post_snapshots", "capturedAt", 30),
+            ("youtube_view_snapshots", "capturedAt", 30),
+            ("trending_snapshots", "capturedAt", 30),
+            ("agent_runs", "finishedAt", 90),
+        ]:
+            (index,) = self._key_indexes(collection, [(field, 1)])
+            self.assertEqual(
+                index.get("expireAfterSeconds"), days * _DAY_SECONDS, collection
+            )
+        self.assertIn(
+            "expire_trending_snapshots",
+            self.db.trending_snapshots.index_information(),
+        )
+        self.assertEqual(
+            len(self._key_indexes("posts", [("postedAt", -1), ("rankScore", -1)])), 1
+        )
+
+    def test_setup_creates_the_ttl_and_feed_indexes_and_reruns_cleanly(self):
+        ensure_storage_bounds(self.db)
+        self.assert_bounded()
+
+        ensure_storage_bounds(self.db)
+        self.assert_bounded()
+
+    def test_setup_turns_existing_indexes_on_the_same_key_into_the_right_ttl(self):
+        self.db.reddit_post_snapshots.create_index("capturedAt")
+        self.db.agent_runs.create_index("finishedAt", name="finished_at")
+        self.db.trending_snapshots.create_index(
+            "capturedAt",
+            expireAfterSeconds=7 * _DAY_SECONDS,
+            name="expire_trending_snapshots",
+        )
+
+        ensure_storage_bounds(self.db)
+        self.assert_bounded()
+
+        ensure_storage_bounds(self.db)
+        self.assert_bounded()
 
 
 if __name__ == "__main__":

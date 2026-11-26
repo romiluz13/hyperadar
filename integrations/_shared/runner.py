@@ -2,8 +2,9 @@
 
 Each agent's main.py calls run_agent() with its build_agent function, or, for
 an agent that picks by plain code, a plain_scan coroutine function.
-Handles: Port agent upsert, Deep Agents invocation, MongoDBSaver checkpointing,
-and post-count reporting.
+Handles: Port agent upsert, Deep Agents invocation, and post-count reporting.
+Runs keep no LangGraph checkpoints: every run starts a fresh thread, so stored
+state would never be resumed and would only grow the database (decision Q18).
 """
 
 import asyncio
@@ -17,8 +18,6 @@ load_dotenv()  # load repo-root .env
 
 # Add parent dir to path so we can import _shared and the agent package
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from langgraph.checkpoint.mongodb import MongoDBSaver  # noqa: E402
 
 from _shared import mongo  # noqa: E402
 from _shared import doctor, port_client, write_post  # noqa: E402
@@ -134,7 +133,7 @@ async def run_agent(
 
     An agent picks with an LLM built by ``build_agent_fn``, or with plain code:
     ``plain_scan`` is a coroutine function returning how many candidates it
-    considered, run with no LLM and no checkpointer.
+    considered, run with no LLM.
 
     Every run — healthy, unhealthy, or crashed — leaves one agent_runs document
     in MongoDB so a broken source is queryable evidence, not a red GHA icon
@@ -194,7 +193,7 @@ async def _run_agent_cycle(
         f"agent sync for {agent_handle}",
     )
 
-    # 2. MongoDBSaver checkpoint (durable and inspectable for this run)
+    # 2. Invoke the plain scan or the agent under this run's thread id
     thread_id = f"{agent_handle}:{datetime.now(timezone.utc).isoformat()}"
     run_record["threadId"] = thread_id
     config = {"configurable": {"thread_id": thread_id}}
@@ -212,23 +211,20 @@ async def _run_agent_cycle(
                 plain_scan(), timeout=AGENT_INVOCATION_TIMEOUT_SECONDS
             )
         else:
-            with MongoDBSaver.from_conn_string(
-                os.environ["MONGODB_URI"]
-            ) as checkpointer:
-                agent = build_agent_fn(checkpointer=checkpointer)
-                try:
-                    result = await asyncio.wait_for(
-                        agent.ainvoke(
-                            {"messages": f"Run today's {agent_handle} scan."},
-                            config=config,
-                        ),
-                        timeout=AGENT_INVOCATION_TIMEOUT_SECONDS,
-                    )
-                except TimeoutError:
-                    raise RuntimeError(
-                        f"{agent_handle} invocation timed out after "
-                        f"{AGENT_INVOCATION_TIMEOUT_SECONDS} seconds"
-                    ) from None
+            agent = build_agent_fn()
+            try:
+                result = await asyncio.wait_for(
+                    agent.ainvoke(
+                        {"messages": f"Run today's {agent_handle} scan."},
+                        config=config,
+                    ),
+                    timeout=AGENT_INVOCATION_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                raise RuntimeError(
+                    f"{agent_handle} invocation timed out after "
+                    f"{AGENT_INVOCATION_TIMEOUT_SECONDS} seconds"
+                ) from None
     finally:
         write_post.current_run_id.reset(token)
 

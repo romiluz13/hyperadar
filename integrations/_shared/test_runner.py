@@ -221,3 +221,71 @@ async def test_recording_failure_never_masks_the_runs_own_error(monkeypatch):
     # The run's own error surfaces; the recording failure is only logged.
     with pytest.raises(RuntimeError, match="source exploded"):
         await runner.run_agent("@reddit-pulse", "Reddit Pulse", "bio", "reddit", None)
+
+
+# ─── No checkpoints: an LLM run stores no LangGraph state (ticket 09) ───
+
+
+@pytest.mark.asyncio
+async def test_an_llm_run_builds_its_agent_without_a_checkpointer(monkeypatch):
+    """The faked agent is a real LangGraph graph compiled with whatever the
+    runner hands ``build_agent_fn``; with no checkpointer it keeps no state.
+
+    MONGODB_URI points at an unresolvable host, so a runner that still opened
+    a checkpointer fails fast instead of writing to ``checkpointing_db``.
+    """
+    from unittest.mock import AsyncMock
+
+    from langgraph.graph import END, START, StateGraph
+    from typing_extensions import TypedDict
+
+    class _State(TypedDict):
+        messages: str
+
+    build_kwargs = []
+    graphs = []
+
+    def build_agent_fn(**kwargs):
+        build_kwargs.append(kwargs)
+        graph = StateGraph(_State)
+        graph.add_node("scan", lambda state: {"messages": state["messages"]})
+        graph.add_edge(START, "scan")
+        graph.add_edge("scan", END)
+        graphs.append(graph.compile(checkpointer=kwargs.get("checkpointer")))
+        return graphs[-1]
+
+    async def no_preflight(_handle):
+        return []
+
+    monkeypatch.setenv(
+        "MONGODB_URI", "mongodb://example.invalid/?serverSelectionTimeoutMS=200"
+    )
+    monkeypatch.setattr(runner.doctor, "preflight", no_preflight)
+    monkeypatch.setattr(runner.port_client, "upsert_agent", lambda *_args: {"ok": True})
+    monkeypatch.setattr(
+        runner.port_client, "record_agent_success", lambda *_args: {"ok": True}
+    )
+    monkeypatch.setattr(
+        runner.write_post, "repair_pending_posts", AsyncMock(return_value=0)
+    )
+    monkeypatch.setattr(
+        runner,
+        "summarize_run",
+        AsyncMock(
+            return_value={
+                "thread_id": "t",
+                "posts_today": 0,
+                "posts_written": 0,
+                "synced_this_run": 0,
+                "pending_port_syncs": 0,
+                "ok": False,
+            }
+        ),
+    )
+
+    await runner._run_agent_cycle(
+        "@reddit-pulse", "Reddit Pulse", "bio", "reddit", build_agent_fn, {}
+    )
+
+    assert build_kwargs == [{}]
+    assert graphs[0].checkpointer is None

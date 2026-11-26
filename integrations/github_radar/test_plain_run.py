@@ -123,9 +123,6 @@ class _Collection:
         self.posted = posted or {}
         self.inserted: list[dict] = []
 
-    async def create_index(self, *_args, **_kwargs):
-        return "index"
-
     async def insert_many(self, docs):
         self.inserted += docs
 
@@ -423,9 +420,6 @@ async def test_the_runner_runs_the_plain_scan_without_an_agent_or_checkpointer(
     from _shared import port_client, write_post
     from _shared import runner as runner_module
 
-    def no_checkpointer(*_args, **_kwargs):
-        raise AssertionError("the plain scan opened a LangGraph checkpointer")
-
     async def no_preflight(_handle):
         return []
 
@@ -442,7 +436,6 @@ async def test_the_runner_runs_the_plain_scan_without_an_agent_or_checkpointer(
             "ok": agent_was_active,
         }
 
-    monkeypatch.setattr(runner_module.MongoDBSaver, "from_conn_string", no_checkpointer)
     monkeypatch.setattr(runner_module.doctor, "preflight", no_preflight)
     monkeypatch.setattr(port_client, "upsert_agent", lambda *_args: {"ok": True})
     monkeypatch.setattr(

@@ -3,25 +3,44 @@
 Sets asyncio_mode=auto so async test methods work without @pytest.mark.asyncio.
 Adds the integrations/ dir to sys.path so `from _shared import ...` works.
 Provides a shared `db` fixture.
+
+Each session derives its own database from the MONGODB_TEST_DB prefix
+(``hyperadar_test`` -> ``hyperadar_<8 hex>_test``) and drops it at the end,
+so concurrent sessions sharing one prefix never see or drop each other's data.
 """
 
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import pymongo
 import pytest
 from dotenv import load_dotenv
+from pymongo.errors import PyMongoError
 
 sys.path.insert(0, str(Path(__file__).parent))
 load_dotenv()
 
-_test_db_name = os.environ.get("MONGODB_TEST_DB", "")
-if not (_test_db_name.startswith("test_") or _test_db_name.endswith("_test")):
+
+def _is_test_db_name(name: str) -> bool:
+    return name.startswith("test_") or name.endswith("_test")
+
+
+def _session_db_name(prefix: str) -> str:
+    token = uuid.uuid4().hex[:8]
+    if prefix.endswith("_test"):
+        return f"{prefix[: -len('_test')]}_{token}_test"
+    return f"{prefix}_{token}"
+
+
+_test_db_prefix = os.environ.get("MONGODB_TEST_DB", "")
+if not _is_test_db_name(_test_db_prefix):
     raise pytest.UsageError(
         "Set MONGODB_TEST_DB to an explicit test-only database name "
         "(test_* or *_test); refusing to run against production."
     )
+_test_db_name = _session_db_name(_test_db_prefix)
 os.environ["MONGODB_DB"] = _test_db_name
 os.environ["PORT_CLIENT_ID"] = "test-suite-no-network"
 os.environ["PORT_CLIENT_SECRET"] = "test-suite-no-network"
@@ -29,6 +48,18 @@ os.environ["PORT_CLIENT_SECRET"] = "test-suite-no-network"
 
 def pytest_configure(config):
     config.option.asyncio_mode = "auto"
+
+
+def pytest_sessionfinish(session, exitstatus):
+    client = pymongo.MongoClient(
+        os.environ["MONGODB_URI"], serverSelectionTimeoutMS=5000
+    )
+    try:
+        client.drop_database(_test_db_name)
+    except PyMongoError as error:
+        print(f"\nWARNING: could not drop {_test_db_name}: {error}", file=sys.stderr)
+    finally:
+        client.close()
 
 
 @pytest.fixture(scope="session")

@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 import httpx
 
 MAX_PAGES = 6
-SNAPSHOT_TTL_SECONDS = 30 * 24 * 60 * 60
 _MIN_ROWS = 5
 _RETRY_DELAY_SECONDS = 30
 # Generic on purpose: no user, project or token identifies the reader. English
@@ -184,7 +183,9 @@ async def fetch_trending(
 async def write_trending_snapshots(
     db, rows: list[TrendingRow], captured_at: datetime | None = None
 ) -> int:
-    """Store one ``trending_snapshots`` document per row, kept for 30 days.
+    """Store one ``trending_snapshots`` document per row.
+
+    ``scripts/setup_mongodb.py`` owns the 30-day TTL index on ``capturedAt``.
 
     The printed windowed stars are kept only here, as a cross-check against
     star history (CONTEXT.md, Stars this week).
@@ -192,11 +193,6 @@ async def write_trending_snapshots(
     if not rows:
         return 0
     captured_at = captured_at or datetime.now(timezone.utc)
-    await db.trending_snapshots.create_index(
-        "capturedAt",
-        expireAfterSeconds=SNAPSHOT_TTL_SECONDS,
-        name="expire_trending_snapshots",
-    )
     result = await db.trending_snapshots.insert_many(
         [
             {
