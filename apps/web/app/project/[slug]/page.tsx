@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { unstable_cache } from "next/cache";
 import { cache } from "react";
 import type { ObjectId } from "mongodb";
 
@@ -12,35 +13,21 @@ import {
 	publishedSignalFilter,
 } from "@/lib/publication";
 import { isValidObjectId, toObjectId } from "@/lib/objectId";
+import {
+	findProject,
+	PROJECT_POST_PROJECTION,
+	type ProjectRecord,
+} from "@/lib/projectLookup";
 import { projectHref } from "@/lib/routes";
 import {
 	comparableSignalSeries,
 	evidenceLocator,
 } from "@/lib/signalSeries";
-import {
-	legacySlugCandidates,
-	legacyUrlPatterns,
-	urlToSlug,
-} from "@/lib/slug";
 
 export const dynamic = "force-dynamic";
 
-type Project = {
-	url: string;
-	slug: string;
-	legacySlugs?: string[];
-	title: string;
-	description: string;
-	topics: string[];
-	kind?: string;
-	momentumScore: number;
-	hypeVerdict: string;
-	firstSeenAt: string | Date;
-	embedding?: number[];
-};
-
 type Signal = {
-	_id: ObjectId;
+	_id: ObjectId | string;
 	capturedAt: string | Date;
 	metric: string;
 	value: number;
@@ -100,35 +87,13 @@ const dateFormatter = new Intl.DateTimeFormat("en", {
 
 const numberFormatter = new Intl.NumberFormat("en", { notation: "compact" });
 
-async function findProject(slug: string) {
-	const db = await getDb();
-	const projects = db.collection<Project>("projects");
-	const direct = await projects
-		.find({ $or: [{ slug }, { legacySlugs: slug }] })
-		.limit(2)
-		.toArray();
-	if (direct.length === 1) return direct[0];
-	if (direct.length > 1) return null;
-
-	const urlPatterns = legacyUrlPatterns(slug);
-	if (urlPatterns.length > 0) {
-		const urlMatch = await projects.findOne({ url: { $in: urlPatterns } });
-		if (urlMatch) return urlMatch;
-	}
-
-	const legacySlugs = legacySlugCandidates(slug);
-	if (legacySlugs.length === 0) return null;
-	const candidates = await projects
-		.find({ slug: { $in: legacySlugs } })
-		.limit(25)
-		.toArray();
-	return candidates.find((item) => urlToSlug(item.url) === slug) ?? null;
-}
-
-async function getSimilarProjects(project: Project): Promise<SimilarSearchResult> {
-	if (!project.embedding?.length) return { items: [], unavailable: false };
-	try {
+const similarProjects = unstable_cache(
+	async (projectUrl: string): Promise<SimilarProject[]> => {
 		const db = await getDb();
+		const source = await db
+			.collection<{ url: string; embedding?: number[] }>("projects")
+			.findOne({ url: projectUrl }, { projection: { _id: 0, embedding: 1 } });
+		if (!source?.embedding?.length) return [];
 		const candidates = (await db
 			.collection("projects")
 			.aggregate([
@@ -136,10 +101,10 @@ async function getSimilarProjects(project: Project): Promise<SimilarSearchResult
 					$vectorSearch: {
 						index: "projects_vector_index",
 						path: "embedding",
-						queryVector: project.embedding,
+						queryVector: source.embedding,
 						numCandidates: 50,
 						limit: 20,
-						filter: { url: { $ne: project.url } },
+						filter: { url: { $ne: projectUrl } },
 					},
 				},
 				{ $project: { _id: 0, title: 1, url: 1, momentumScore: 1, slug: 1 } },
@@ -148,139 +113,154 @@ async function getSimilarProjects(project: Project): Promise<SimilarSearchResult
 		const candidateUrls = candidates
 			.map((candidate) => candidate.url)
 			.filter((url) => !url.startsWith("hyperadar://"));
-		if (candidateUrls.length === 0) return { items: [], unavailable: false };
+		if (candidateUrls.length === 0) return [];
 		const publishedUrls = new Set(
 			await db.collection("posts").distinct<string>("project.url", {
 				...PUBLIC_POST_FILTER,
 				"project.url": { $in: candidateUrls },
 			}),
 		);
-		return {
-			items: candidates
-				.filter((candidate) => publishedUrls.has(candidate.url))
-				.slice(0, 5),
-			unavailable: false,
-		};
+		return candidates
+			.filter((candidate) => publishedUrls.has(candidate.url))
+			.slice(0, 5);
+	},
+	["project-similar"],
+	{ revalidate: 86400 },
+);
+
+async function getSimilarProjects(projectUrl: string): Promise<SimilarSearchResult> {
+	try {
+		return { items: await similarProjects(projectUrl), unavailable: false };
 	} catch (error) {
 		console.error("Similar project search failed", error);
 		return { items: [], unavailable: true };
 	}
 }
 
-const getProjectData = cache(async (slug: string, postId?: string) => {
-	const project = await findProject(slug);
-	if (!project) return null;
-	const db = await getDb();
-	const selectedPost =
-		postId && isValidObjectId(postId)
-			? ((await db.collection("posts").findOne({
-					...PUBLIC_POST_FILTER,
-					_id: toObjectId(postId),
-					"project.url": project.url,
-				})) as unknown as Post | null)
-			: null;
-	if (postId && !selectedPost) return null;
-	const displayProject: Project = selectedPost
-		? {
-				...project,
-				...selectedPost.project,
-				description:
-					selectedPost.project.description || selectedPost.body || project.description,
-				hypeVerdict: selectedPost.verdict || project.hypeVerdict,
-				topics: selectedPost.project.topics || project.topics,
-			}
-		: project;
-	const publishedPostIds = selectedPost
-		? [selectedPost._id.toString()]
-		: (
-				await db
-					.collection("posts")
+const projectData = unstable_cache(
+	async (slug: string, postId?: string) => {
+		const db = await getDb();
+		const project = await findProject(db.collection<ProjectRecord>("projects"), slug);
+		if (!project) return null;
+		const selectedPost =
+			postId && isValidObjectId(postId)
+				? ((await db.collection("posts").findOne(
+						{
+							...PUBLIC_POST_FILTER,
+							_id: toObjectId(postId),
+							"project.url": project.url,
+						},
+						{ projection: PROJECT_POST_PROJECTION },
+					)) as unknown as Post | null)
+				: null;
+		if (postId && !selectedPost) return null;
+		const displayProject: ProjectRecord = selectedPost
+			? {
+					...project,
+					...selectedPost.project,
+					description:
+						selectedPost.project.description || selectedPost.body || project.description,
+					hypeVerdict: selectedPost.verdict || project.hypeVerdict,
+					topics: selectedPost.project.topics || project.topics,
+				}
+			: project;
+		const publishedPostIds = selectedPost
+			? [selectedPost._id.toString()]
+			: (
+					await db
+						.collection("posts")
+						.find(
+							{
+								...PUBLIC_POST_FILTER,
+								"project.url": displayProject.url,
+							},
+							{ projection: { _id: 1 } },
+						)
+						.toArray()
+				).map((publishedPost) => publishedPost._id.toString());
+		const legacySignalVerifications = (
+			await db
+				.collection<LegacySignalVerification>("legacy_signal_verifications")
+				.find(
+					{
+						projectId: displayProject.url,
+						postId: { $in: publishedPostIds },
+					},
+					{ projection: { signalId: 1, signalOverride: 1 } },
+				)
+				.toArray()
+		);
+		const verifiedLegacySignalIds = legacySignalVerifications.map(
+			(verification) => verification.signalId,
+		);
+		const canonicalSignalIds = (
+			await db
+				.collection<SignalReceipt>("signal_receipts")
+				.find(
+					{
+						_id: { $in: publishedPostIds },
+						state: "complete",
+						"signal.projectId": displayProject.url,
+					},
+					{ projection: { signalId: 1 } },
+				)
+				.toArray()
+		).map((receipt) => receipt.signalId);
+		const legacyOverrides = new Map(
+			legacySignalVerifications.map((verification) => [
+				verification.signalId.toString(),
+				verification.signalOverride,
+			]),
+		);
+		const postsPromise = selectedPost
+			? Promise.resolve([selectedPost])
+			: db
+					.collection<Post>("posts")
 					.find(
 						{
 							...PUBLIC_POST_FILTER,
 							"project.url": displayProject.url,
 						},
-						{ projection: { _id: 1 } },
+						{ projection: PROJECT_POST_PROJECTION },
 					)
-					.toArray()
-			).map((publishedPost) => publishedPost._id.toString());
-	const legacySignalVerifications = (
-		await db
-			.collection<LegacySignalVerification>("legacy_signal_verifications")
-			.find(
-				{
-					projectId: displayProject.url,
-					postId: { $in: publishedPostIds },
-				},
-				{ projection: { signalId: 1, signalOverride: 1 } },
-			)
-			.toArray()
-	);
-	const verifiedLegacySignalIds = legacySignalVerifications.map(
-		(verification) => verification.signalId,
-	);
-	const canonicalSignalIds = (
-		await db
-			.collection<SignalReceipt>("signal_receipts")
-			.find(
-				{
-					_id: { $in: publishedPostIds },
-					state: "complete",
-					"signal.projectId": displayProject.url,
-				},
-				{ projection: { signalId: 1 } },
-			)
-			.toArray()
-	).map((receipt) => receipt.signalId);
-	const legacyOverrides = new Map(
-		legacySignalVerifications.map((verification) => [
-			verification.signalId.toString(),
-			verification.signalOverride,
-		]),
-	);
-	const postsPromise = selectedPost
-		? Promise.resolve([selectedPost])
-		: db
-				.collection<Post>("posts")
-				.find({
-					...PUBLIC_POST_FILTER,
-					"project.url": displayProject.url,
-				})
-				.sort({ postedAt: -1 })
-				.limit(20)
-				.toArray();
-	const [signalsNewest, posts, similar] = await Promise.all([
-		db
-			.collection<Signal>("signals")
-			.find(
-				publishedSignalFilter(
-					displayProject.url,
-					canonicalSignalIds,
-					verifiedLegacySignalIds,
-				),
-			)
-			.sort({ capturedAt: -1 })
-			.toArray(),
-		postsPromise,
-		getSimilarProjects(displayProject),
-	]);
-	const publishedPosts = posts.map((publishedPost) => ({
-		...publishedPost,
-		_id: publishedPost._id.toString(),
-	}));
-	if (publishedPosts.length === 0) return null;
-	return {
-		project: displayProject,
-		signals: signalsNewest
-			.map((signal) => ({
-				...signal,
-				...(legacyOverrides.get(signal._id.toString()) ?? {}),
-			}))
-			.reverse(),
-		posts: publishedPosts,
-		similar,
-	};
-});
+					.sort({ postedAt: -1 })
+					.limit(20)
+					.toArray();
+		const [signalsNewest, posts] = await Promise.all([
+			db
+				.collection<Signal>("signals")
+				.find(
+					publishedSignalFilter(
+						displayProject.url,
+						canonicalSignalIds,
+						verifiedLegacySignalIds,
+					),
+				)
+				.sort({ capturedAt: -1 })
+				.toArray(),
+			postsPromise,
+		]);
+		const publishedPosts = posts.map((publishedPost) => ({
+			...publishedPost,
+			_id: publishedPost._id.toString(),
+		}));
+		if (publishedPosts.length === 0) return null;
+		return {
+			project: displayProject,
+			signals: signalsNewest
+				.map((signal) => ({
+					...signal,
+					...(legacyOverrides.get(signal._id.toString()) ?? {}),
+				}))
+				.reverse(),
+			posts: publishedPosts,
+		};
+	},
+	["project-data"],
+	{ revalidate: 86400 },
+);
+
+const getProjectData = cache(projectData);
 
 export async function generateMetadata({
 	params,
@@ -340,7 +320,8 @@ export default async function ProjectPage({
 		);
 	}
 
-	const { project, signals, posts, similar } = data;
+	const { project, signals, posts } = data;
+	const similar = await getSimilarProjects(project.url);
 	const projectTitle = cleanDisplayTitle(project.title);
 	const latest = signals.at(-1);
 	const trendSignals = comparableSignalSeries(signals);

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
 	distinctProjectPostsPipeline,
+	FEED_POST_PROJECTION,
 	mergeHybridResults,
 	recentPostsMatch,
 	textOnlySearchPipeline,
@@ -289,4 +290,70 @@ test("weekly evidence queries stay inside the digest measurement window", () => 
 			postedAt: { $gte: since, $lte: until },
 		},
 	);
+});
+
+function assertProjectsWithoutEmbedding(projection: unknown) {
+	assert.ok(projection && typeof projection === "object", "missing projection");
+	const keys = Object.keys(projection as Record<string, unknown>);
+	assert.ok(keys.length > 0, "projection must name fields");
+	assert.ok(
+		keys.every((key) => (projection as Record<string, unknown>)[key] === 1),
+		"projection must be an inclusion list",
+	);
+	assert.ok(
+		!keys.some((key) => key === "embedding" || key.startsWith("embedding.")),
+		"projection must not include embedding",
+	);
+}
+
+for (const [name, pipeline] of [
+	["current feed", distinctProjectPostsPipeline({ portSyncStatus: "synced" }, 20)],
+	["text search", textSearchPostsPipeline("agents", 20)],
+	["text-only search", textOnlySearchPipeline("agents", 20)],
+] as const) {
+	test(`${name} pipeline projects posts before $$ROOT is grouped`, () => {
+		const projectIndex = pipeline.findIndex((stage) => "$project" in stage);
+		const groupIndex = pipeline.findIndex((stage) => "$group" in stage);
+		assert.ok(projectIndex >= 0, "pipeline must include $project");
+		assert.ok(projectIndex < groupIndex, "$project must run before $group");
+		assertProjectsWithoutEmbedding(pipeline[projectIndex].$project);
+	});
+}
+
+test("vector search pipeline projects the joined post", () => {
+	const pipeline = vectorSearchProjectsPipeline([0.1, 0.2], 20);
+	const lookup = (
+		pipeline.find((stage) => "$lookup" in stage) as {
+			$lookup: { pipeline: Record<string, unknown>[] };
+		}
+	).$lookup;
+	const projectStage = lookup.pipeline.find((stage) => "$project" in stage);
+	assertProjectsWithoutEmbedding(projectStage?.$project);
+});
+
+test("feed projection keeps every field the feed and digest render", () => {
+	for (const field of [
+		"_id",
+		"agentHandle",
+		"body",
+		"verdict",
+		"rankScore",
+		"postedAt",
+		"signalsSummary",
+		"project.url",
+		"project.title",
+		"project.kind",
+		"project.momentumScore",
+		"project.topics",
+		"reactionCounts",
+		"signal.evidenceUrl",
+		"signal.evidenceLabel",
+	]) {
+		assert.equal(
+			(FEED_POST_PROJECTION as Record<string, unknown>)[field],
+			1,
+			`missing ${field}`,
+		);
+	}
+	assertProjectsWithoutEmbedding(FEED_POST_PROJECTION);
 });

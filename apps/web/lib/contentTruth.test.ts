@@ -59,15 +59,15 @@ test("project dossiers explain scores and expose the complete canonical trail", 
 });
 
 test("discovery controls continue into theme, archive, and wave trails", () => {
-	const homePage = readAppFile("page.tsx");
+	const themeFeed = readAppFile("components/ThemeFeed.tsx");
 	const agentPage = readAppFile("agent/[handle]/page.tsx");
 	const wavesPage = readAppFile("waves/page.tsx");
 	const digestPage = readAppFile("digest/[week]/page.tsx");
 	const projectPage = readAppFile("project/[slug]/page.tsx");
 
-	assert.match(homePage, /query:\s*\{\s*theme:\s*topic\s*\}/s);
-	assert.match(homePage, /requestedTheme\?\.trim\(\)/);
-	assert.match(homePage, /No current radar signals match/);
+	assert.match(themeFeed, /query:\s*\{\s*theme:\s*topic\s*\}/s);
+	assert.match(themeFeed, /searchParams\.get\("theme"\)/);
+	assert.match(themeFeed, /No current radar signals match/);
 	assert.match(agentPage, /archive-pagination/);
 	assert.match(agentPage, /Showing .* of/);
 	assert.match(wavesPage, /id=\{themeAnchor\(wave\.label\)\}/);

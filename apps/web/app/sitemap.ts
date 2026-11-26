@@ -5,7 +5,7 @@ import { getDb } from "@/lib/mongo";
 import { PUBLIC_DIGEST_FILTER, PUBLIC_POST_FILTER } from "@/lib/publication";
 import { projectHref } from "@/lib/routes";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 3600;
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 	const baseUrl =

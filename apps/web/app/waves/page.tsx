@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { unstable_cache } from "next/cache";
 
 import { getDb } from "@/lib/mongo";
 import { publicationWindowMatch } from "@/lib/postQueries";
@@ -33,42 +34,46 @@ const windowFormatter = new Intl.DateTimeFormat("en", {
 	timeZone: "UTC",
 });
 
-async function getWaves(weekId?: string) {
-	const db = await getDb();
-	const digestFilter = weekId
-		? { ...PUBLIC_DIGEST_FILTER, weekId }
-		: PUBLIC_DIGEST_FILTER;
-	const digest = await db
-		.collection<WaveDigest>("digests")
-		.findOne(
-			digestFilter,
-			{ sort: { weekOf: -1 } },
-		);
-	const windowEnd = digest?.weekOf ? new Date(digest.weekOf) : null;
-	if (!windowEnd || (!weekId && !isFreshWaveWindow(windowEnd, new Date()))) {
-		return { waves: [], windowStart: null, windowEnd: null };
-	}
-	const windowStart = new Date(windowEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
-	const waves = digest?.waves ?? [];
-	const projectUrls = [...new Set(waves.flatMap((wave) => wave.projects.map((p) => p.url)))];
-	if (projectUrls.length === 0) return { waves: [], windowStart, windowEnd };
-	const posts = await db
-		.collection<{ agentHandle: string; project: { url: string } }>("posts")
-		.find(
-			publicationWindowMatch(
-				{
-					...PUBLIC_POST_FILTER,
-					agentHandle: { $ne: "@weekly-digest" },
-					"project.url": { $in: projectUrls },
-				},
-				windowStart,
-				windowEnd,
-			),
-			{ projection: { _id: 0, agentHandle: 1, "project.url": 1 } },
-		)
-		.toArray();
-	return { waves: visibleWaves(waves, posts), windowStart, windowEnd };
-}
+const getWaves = unstable_cache(
+	async (weekId?: string) => {
+		const db = await getDb();
+		const digestFilter = weekId
+			? { ...PUBLIC_DIGEST_FILTER, weekId }
+			: PUBLIC_DIGEST_FILTER;
+		const digest = await db
+			.collection<WaveDigest>("digests")
+			.findOne(
+				digestFilter,
+				{ sort: { weekOf: -1 } },
+			);
+		const windowEnd = digest?.weekOf ? new Date(digest.weekOf) : null;
+		if (!windowEnd || (!weekId && !isFreshWaveWindow(windowEnd, new Date()))) {
+			return { waves: [], windowStart: null, windowEnd: null };
+		}
+		const windowStart = new Date(windowEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
+		const waves = digest?.waves ?? [];
+		const projectUrls = [...new Set(waves.flatMap((wave) => wave.projects.map((p) => p.url)))];
+		if (projectUrls.length === 0) return { waves: [], windowStart, windowEnd };
+		const posts = await db
+			.collection<{ agentHandle: string; project: { url: string } }>("posts")
+			.find(
+				publicationWindowMatch(
+					{
+						...PUBLIC_POST_FILTER,
+						agentHandle: { $ne: "@weekly-digest" },
+						"project.url": { $in: projectUrls },
+					},
+					windowStart,
+					windowEnd,
+				),
+				{ projection: { _id: 0, agentHandle: 1, "project.url": 1 } },
+			)
+			.toArray();
+		return { waves: visibleWaves(waves, posts), windowStart, windowEnd };
+	},
+	["waves"],
+	{ revalidate: 3600 },
+);
 
 export const metadata = {
 	title: "Hype Waves · HypeRadar",
@@ -82,7 +87,10 @@ export default async function WavesPage({
 }) {
 	const { week } = await searchParams;
 	const requestedWeek = week?.trim().slice(0, 32);
-	const { waves, windowStart, windowEnd } = await getWaves(requestedWeek);
+	const measured = await getWaves(requestedWeek);
+	const { waves } = measured;
+	const windowStart = measured.windowStart ? new Date(measured.windowStart) : null;
+	const windowEnd = measured.windowEnd ? new Date(measured.windowEnd) : null;
 	const shared = waves.filter(isMultiAgentTheme);
 	const otherThemes = waves.filter((wave) => !isMultiAgentTheme(wave));
 
