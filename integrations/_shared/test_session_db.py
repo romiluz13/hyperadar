@@ -47,7 +47,15 @@ def _session_dir(tmp_path: Path) -> Path:
 
 
 def _start_session(session: Path, test_db: str, meeting: Path) -> subprocess.Popen:
-    env = {**os.environ, "MONGODB_TEST_DB": test_db, "SESSION_MEETING": str(meeting)}
+    pythonpath = os.pathsep.join(
+        filter(None, [str(_ROOT_CONFTEST.parent), os.environ.get("PYTHONPATH")])
+    )
+    env = {
+        **os.environ,
+        "MONGODB_TEST_DB": test_db,
+        "SESSION_MEETING": str(meeting),
+        "PYTHONPATH": pythonpath,
+    }
     return subprocess.Popen(
         [
             sys.executable,
