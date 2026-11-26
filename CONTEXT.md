@@ -9,7 +9,7 @@ HypeRadar finds what AI developers are hyping, and RomBot sends a once-a-day dig
 - **Hype score**: the score that orders repo candidates in the digest (ADR 0007). It is built from stars this week, relative growth, stars today and HN points, and applies to repos only.
 - **Momentum score**: hidden-gems' breakout-prediction score, built from star velocity and acceleration over tracked snapshots (ADR 0003). It is not the hype score.
 - **Slot**: a place in the daily digest reserved for one kind of item: up to 3 repos, then at most 1 Reddit thread, 1 HN post and 1 video (ADR 0008). Each kind is ranked only within its own kind, and an empty slot stays empty.
-- **What**: one plain sentence saying what an item is. It contains no numbers, and no word or name that its sources (About line, README, topics or post body) don't contain.
+- **What**: one plain sentence (at most 25 words) saying what an item is. Every number and every content word in it appears in its sources (About line, README excerpt, topics or post body); anything else rejects it, and the item falls back to its cleaned About line.
 - **Stat line**: an item's numbers (stars this week, trending rank, upvotes, points, views), taken only from evidence and never written by an LLM.
 - **rankScore**: the web feed's ordering score. It does not order the digest.
 - **digestScore**: the retired cross-kind digest score, replaced by slots.

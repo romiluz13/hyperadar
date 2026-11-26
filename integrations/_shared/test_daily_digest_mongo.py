@@ -69,7 +69,11 @@ def _seed(db, monkeypatch):
         return []
 
     monkeypatch.setattr(daily_digest, "fetch_stars_this_week_batch", fake_batch)
+    async def no_readme(*_args, **_kwargs):
+        return ""
+
     monkeypatch.setattr(daily_digest, "_fetch_github_repo", no_lookup)
+    monkeypatch.setattr(daily_digest, "_fetch_github_readme", no_readme)
     monkeypatch.setattr(daily_digest, "fetch_hn_engagement", no_lookup)
     monkeypatch.setattr(daily_digest, "fetch_hn_story", no_lookup)
     monkeypatch.setattr(daily_digest, "_call_grove", fake_grove)
@@ -77,6 +81,7 @@ def _seed(db, monkeypatch):
 
 def _cleanup(db):
     db.posts.delete_many({"testTag": TAG})
+    db.trending_snapshots.delete_many({"testTag": TAG})
     db.digests.delete_many({"testTag": TAG})
     db.digests.delete_many({"date": NOW.strftime("%Y-%m-%d"), "digestType": "daily"})
 
@@ -113,5 +118,33 @@ async def test_a_repo_featured_10_days_ago_is_not_repeated(db, monkeypatch):
 
         assert [item["url"] for item in result["items"]] == [THREAD_URL]
         assert result["belowFloor"] is True
+    finally:
+        _cleanup(db)
+
+
+async def test_the_items_carry_the_stat_fields_and_today_s_trending_rank(
+    db, monkeypatch
+):
+    _seed(db, monkeypatch)
+    day_rows = [
+        ("acme/Slot-Test-Repo", 7, "all/daily", NOW - timedelta(hours=3)),
+        ("acme/slot-test-repo", 1, "all/daily", NOW - timedelta(days=1)),
+    ]
+    db.trending_snapshots.insert_many(
+        [
+            {"testTag": TAG, "slug": slug, "rank": rank, "page": page, "capturedAt": at}
+            for slug, rank, page, at in day_rows
+        ]
+    )
+    try:
+        result = await daily_digest.generate_daily_digest(db=mongo._get_db(), now=NOW)
+
+        repo, thread = result["items"]
+        assert (repo["trendingRank"], repo["trendingSince"]) == (7, "daily")
+        assert (repo["starsThisWeek"], repo["starsToday"]) == (280, 30)
+        assert (repo["weeklyGain"], repo["weeklyGainWindowDays"]) == (280, 7)
+        assert (thread["upvotes"], thread["comments"]) == (2040, 63)
+        assert thread["trendingRank"] is None
+        assert result["whatRejections"] == 2
     finally:
         _cleanup(db)

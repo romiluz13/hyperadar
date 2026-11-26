@@ -3,17 +3,11 @@
 import { NextResponse } from "next/server";
 
 import { getDb } from "@/lib/mongo";
-import { getLatestDailyDigest } from "@/lib/dailyDigest";
+import { dailyDigestResponse } from "@/lib/dailyDigest";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-	try {
-		const db = await getDb();
-		const result = await getLatestDailyDigest(db);
-		return NextResponse.json(result, { status: 200 });
-	} catch (err) {
-		console.error("daily-digest GET error:", err);
-		return NextResponse.json({ error: "internal error" }, { status: 500 });
-	}
+	const { body, init } = await dailyDigestResponse(getDb);
+	return NextResponse.json(body, init);
 }
