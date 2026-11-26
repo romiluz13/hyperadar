@@ -5,6 +5,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -46,50 +47,46 @@ def port_test_token(monkeypatch):
     return token
 
 
-def _mock_candidate(unique: str) -> dict:
-    return {
-        "url": f"https://github.com/hyperadar-test/{unique}",
-        "title": f"hyperadar-test/{unique}",
-        "kind": "repo",
-        "description": "A deterministic test trending AI repo",
-        "topics": ["ai", "agents"],
-        "stars": 9000,
-        "created_at": "2026-06-01T00:00:00Z",
-        "owner": "hyperadar-test",
-        "repo": unique,
-    }
+def _scored_repo(unique: str):
+    from agent import ScoredRepo
+    from github_source import Repo
+
+    return ScoredRepo(
+        repo=Repo(
+            slug=f"hyperadar-test/{unique}",
+            url=f"https://github.com/hyperadar-test/{unique}",
+            description="A deterministic test trending AI repo",
+            topics=["ai", "agents"],
+            stars=9000,
+            forks=120,
+            created_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        ),
+        stars_this_week=1500,
+        stars_today=300,
+        hn_points=None,
+        hype=2.4,
+    )
 
 
 def test_agent_run_writes_mongodb_and_port(db, port_test_token):
     """The write spine persists one unique project and its exact Port relations."""
     import agent
-    import github_source
     from _shared import mongo
     from _shared.slug import project_slug_for_url
-    from agent import _CANDIDATE_CACHE
 
-    candidate = _mock_candidate(f"e2e-{uuid4().hex}")
-    test_url = candidate["url"]
-    candidate["_momentum"] = github_source.compute_momentum(candidate, [], 0)
-    _CANDIDATE_CACHE.clear()
-    _CANDIDATE_CACHE[test_url] = candidate
+    scored = _scored_repo(f"e2e-{uuid4().hex}")
+    test_url = scored.repo.url
     post_ids: list[str] = []
     cleanup_errors: list[str] = []
 
-    async def invoke_tool():
+    async def publish():
         try:
-            return await agent.write_hype_post.ainvoke(
-                {
-                    "repo_url": test_url,
-                    "verdict": "hype looks real",
-                }
-            )
+            return await agent.publish(scored, datetime.now(timezone.utc))
         finally:
             await mongo.close_client()
 
     try:
-        output = asyncio.run(invoke_tool())
-        assert "Posted" in output
+        assert asyncio.run(publish())
 
         post = db.posts.find_one({"project.url": test_url})
         assert post is not None
@@ -101,7 +98,7 @@ def test_agent_run_writes_mongodb_and_port(db, port_test_token):
 
         project = db.projects.find_one({"url": test_url})
         assert project is not None
-        assert project["momentumScore"] == candidate["_momentum"]["momentumScore"]
+        assert project["momentumScore"] == 60
         assert db.signals.find_one({"projectId": test_url, "metric": "github_stars"})
 
         port_post = _port_request(

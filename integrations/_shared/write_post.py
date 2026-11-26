@@ -72,8 +72,11 @@ def validate_publication_input(project: dict, verdict: str, rank_score: float) -
     _bounded_score(rank_score, "Post rank score")
 
 
+_DIGEST_CONTENT_FIELDS = ("bodyText", "contentHref", "storyText")
+
+
 def _project_snapshot(project: dict, verdict: str) -> dict:
-    return {
+    snapshot = {
         "url": project["url"],
         "title": project["title"],
         "kind": project["kind"],
@@ -82,6 +85,10 @@ def _project_snapshot(project: dict, verdict: str) -> dict:
         "momentumScore": project.get("momentumScore", 0),
         "hypeVerdict": verdict,
     }
+    for field in _DIGEST_CONTENT_FIELDS:
+        if isinstance(project.get(field), str):
+            snapshot[field] = project[field]
+    return snapshot
 
 
 def _signal_snapshot(signal: dict, source_type: str, project_url: str) -> dict:

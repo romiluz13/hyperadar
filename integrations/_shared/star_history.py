@@ -21,12 +21,19 @@ Contract notes (verified live from this runtime, 200 OK):
 Authority rule: our own daily snapshots stay the source of truth. Backfill
 only inserts days the signals collection does not already have, deduplicated
 by calendar date, and never overwrites an organic snapshot.
+
+The same endpoint also defines **stars this week** (``CONTEXT.md``) for
+@github-radar and the digest (ADR 0007): ``fetch_stars_this_week`` and its
+batch form read the last 7 complete days, and ``check_trending_agreement``
+compares them with trending's printed number. There star history is the
+measure, not an approximation.
 """
 
 import logging
 import os
 from collections.abc import Sequence
 from datetime import date, datetime, time, timedelta, timezone
+from typing import TypedDict
 
 import httpx
 
@@ -45,6 +52,7 @@ _MIN_DENSE_SNAPSHOTS = 31
 # Mid-day UTC: the momentum math only uses capturedAt for ordering, so any
 # consistent time-of-day keeps backfilled docs sorted between their neighbors.
 _CAPTURE_TIME = time(12, 0)
+_DAY_SECONDS = 86400
 
 _github_token = os.environ.get("GITHUB_TOKEN", "")
 _headers = {
@@ -176,3 +184,125 @@ async def backfill_star_history(
         project_id,
     )
     return len(docs)
+
+
+class StarsThisWeek(TypedDict):
+    starsThisWeek: int
+    starsToday: int
+    days: list[tuple[date, int]]
+
+
+async def fetch_stars_this_week(
+    slug: str,
+    now: datetime | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> StarsThisWeek:
+    """Return a repo's ``starsThisWeek``, ``starsToday`` and per-day series.
+
+    Complete-day rule: day ``i`` of a weekly bucket covers
+    ``[week + i*86400, week + (i+1)*86400)`` on the API's own clock, taken from
+    the bucket's ``week`` timestamp rather than assumed UTC midnight (GitHub
+    does not guarantee UTC-aligned boundaries). A day is complete once its end
+    is at or before ``now``. The day containing ``now`` is the day in progress
+    and is excluded, and so are the zero-filled future days of the current
+    week. The grid is anchored on the newest bucket's week start, so a ``now``
+    just after a new week starts counts the whole previous week whether or not
+    the new week's bucket is present yet.
+
+    ``starsToday`` is the last complete day, ``starsThisWeek`` the sum of the
+    last 7 complete days, and ``days`` those 7 days newest first as
+    ``(date of the day's start in UTC, stars)``. Deltas are GitHub's net
+    per-day values, unclamped. A day inside the grid that the response does
+    not cover (a repo younger than the window) counts 0. Raises on HTTP or
+    contract errors, on an empty history, and on a week whose start is off the
+    newest week's day grid, so missing evidence never reads as a quiet week.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    entries = await fetch_star_history(slug, client=client)
+    if not entries:
+        raise ValueError(f"empty star history for {slug}")
+
+    newest_week = entries[0]["week"]
+    stars_by_day_start: dict[int, int] = {}
+    for entry in entries:
+        if (newest_week - entry["week"]) % _DAY_SECONDS:
+            raise ValueError(f"star-history week {entry['week']} is off the day grid")
+        for i, delta in enumerate(entry["days"]):
+            stars_by_day_start[entry["week"] + i * _DAY_SECONDS] = int(delta)
+
+    in_progress_start = (
+        newest_week
+        + int((now.timestamp() - newest_week) // _DAY_SECONDS) * _DAY_SECONDS
+    )
+    days = []
+    for days_back in range(1, 8):
+        start = in_progress_start - days_back * _DAY_SECONDS
+        day = datetime.fromtimestamp(start, tz=timezone.utc).date()
+        days.append((day, stars_by_day_start.get(start, 0)))
+    return {
+        "starsThisWeek": sum(stars for _, stars in days),
+        "starsToday": days[0][1],
+        "days": days,
+    }
+
+
+class StarHistoryBatchFailed(RuntimeError):
+    """More than half of a batch's star-history lookups failed."""
+
+
+async def fetch_stars_this_week_batch(
+    slugs: Sequence[str],
+    now: datetime | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> tuple[dict[str, StarsThisWeek], dict[str, str]]:
+    """Look up ``fetch_stars_this_week`` once per distinct slug.
+
+    Returns ``(results, failures)`` keyed by slug, logging each failure as a
+    warning. Raises ``StarHistoryBatchFailed`` when more than half of the
+    distinct slugs fail, so a broken source is never mistaken for a quiet
+    day. Calls run one at a time on a shared client.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    distinct = list(dict.fromkeys(slugs))
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(timeout=20)
+    results: dict[str, StarsThisWeek] = {}
+    failures: dict[str, str] = {}
+    try:
+        for slug in distinct:
+            try:
+                results[slug] = await fetch_stars_this_week(
+                    slug, now=now, client=client
+                )
+            except Exception as e:
+                failures[slug] = repr(e)
+                logging.warning("Star-history lookup failed for '%s': %s", slug, e)
+    finally:
+        if owns_client:
+            await client.aclose()
+    if len(failures) * 2 > len(distinct):
+        raise StarHistoryBatchFailed(
+            f"star history failed for {len(failures)} of {len(distinct)} repos"
+        )
+    return results, failures
+
+
+def check_trending_agreement(
+    slug: str, printed_stars_this_week: int, stars_this_week: int
+) -> None:
+    """Warn when trending's printed weekly stars and star history differ >3×.
+
+    Star history is the measure; the trending page's number is only a
+    cross-check, so a disagreement is logged for the operator, never raised.
+    """
+    low, high = sorted((printed_stars_this_week, stars_this_week))
+    if high > 3 * low:
+        logging.warning(
+            "Trending prints %d stars this week for '%s' but star history has %d",
+            printed_stars_this_week,
+            slug,
+            stars_this_week,
+        )

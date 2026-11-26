@@ -149,6 +149,7 @@ async def write_hidden_gem(gem_url: str, verdict: str) -> str:
         "title": c["title"],
         "kind": c["kind"],
         "description": c["description"],
+        "storyText": c.get("story_text", ""),
         "topics": c["topics"],
         "momentumScore": round(momentum, 1),
         "hypeVerdict": verdict,

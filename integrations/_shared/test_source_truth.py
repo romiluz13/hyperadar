@@ -159,151 +159,8 @@ def test_hidden_gem_hn_evidence_never_becomes_github_stars():
     assert "stars" not in candidate
 
 
-def test_github_velocity_is_labeled_as_lifetime_average_not_recent_growth():
-    source = load_source("github_radar/github_source.py", "github_truth_source")
-    candidate = {
-        "stars": 700,
-        "created_at": (datetime.now(timezone.utc) - timedelta(days=14)).isoformat(),
-    }
-
-    momentum = source.compute_momentum(candidate, [], prior_posts=4)
-
-    assert momentum["avgStarsPerWeekSinceCreation"] == pytest.approx(350, abs=30)
-    assert momentum["sustainedSixWeekGrowth"] is False
-    assert "starsPerWeek" not in momentum
-
-
-def test_github_sustained_growth_requires_six_observations_spanning_five_weeks():
-    source = load_source("github_radar/github_source.py", "github_sustained_source")
-    start = datetime.now(timezone.utc) - timedelta(days=35)
-    history = [
-        {"capturedAt": start + timedelta(days=7 * index), "value": 100 + 10 * index}
-        for index in range(6)
-    ]
-    candidate = {
-        "stars": 200,
-        "created_at": (start - timedelta(days=10)).isoformat(),
-    }
-
-    momentum = source.compute_momentum(candidate, history, prior_posts=5)
-
-    assert momentum["sustainedSixWeekGrowth"] is True
-
-
-def test_github_sustained_growth_rejects_flat_history_and_a_current_regression():
-    source = load_source("github_radar/github_source.py", "github_growth_guard_source")
-    start = datetime.now(timezone.utc) - timedelta(days=35)
-    flat_history = [
-        {"capturedAt": start + timedelta(days=7 * index), "value": 100}
-        for index in range(6)
-    ]
-    rising_history = [
-        {"capturedAt": start + timedelta(days=7 * index), "value": 100 + 10 * index}
-        for index in range(6)
-    ]
-
-    flat = source.compute_momentum(
-        {"stars": 100, "created_at": start.isoformat()}, flat_history, prior_posts=1
-    )
-    regressed = source.compute_momentum(
-        {"stars": 140, "created_at": start.isoformat()},
-        rising_history,
-        prior_posts=1,
-    )
-
-    assert flat["sustainedSixWeekGrowth"] is False
-    assert regressed["sustainedSixWeekGrowth"] is False
-
-
 @pytest.mark.asyncio
-async def test_github_ossinsight_includes_repos_with_ai_description_not_just_topics(
-    monkeypatch,
-):
-    """A repo with no AI topics but an AI-related description should pass the filter.
-
-    The previous narrow topic filter (ai/llm/agent/gpt/openai/ml) missed 63%
-    of OSSInsight trending repos. Description-based matching catches repos
-    like stablyai/orca (agent fleet) that lack ai as a topic.
-    """
-    source = load_source("github_radar/github_source.py", "github_ossinsight_source")
-    monkeypatch.setattr(source, "_token", "fake-token")
-    monkeypatch.setattr(source, "_headers", {"Authorization": "token fake-token"})
-
-    class FakeResponse:
-        def __init__(self, data, status=200):
-            self._data = data
-            self.status_code = status
-
-        def json(self):
-            return self._data
-
-        def raise_for_status(self):
-            if self.status_code != 200:
-                raise RuntimeError(f"HTTP {self.status_code}")
-
-    class FakeClient:
-        call_count = 0
-
-        def __init__(self, **_kw):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            pass
-
-        async def get(self, url, **kw):
-            type(self).call_count += 1
-            if "ossinsight" in url:
-                return FakeResponse(
-                    {
-                        "data": {
-                            "rows": [
-                                {
-                                    "repo_name": "stablyai/orca",
-                                    "description": "Agent fleet manager",
-                                    "stars": 6,
-                                    "primary_language": "Python",
-                                },
-                                {
-                                    "repo_name": "someuser/nonai",
-                                    "description": "A recipe app",
-                                    "stars": 5,
-                                    "primary_language": "Go",
-                                },
-                            ]
-                        }
-                    }
-                )
-            # GitHub API call for repo details
-            if "stablyai/orca" in url:
-                return FakeResponse(
-                    {
-                        "topics": ["cli", "automation"],
-                        "description": "Agent fleet manager for parallel agents",
-                        "stargazers_count": 500,
-                        "created_at": "2026-06-01",
-                        "pushed_at": "2026-07-19",
-                    }
-                )
-            return FakeResponse(
-                {
-                    "topics": ["recipes"],
-                    "description": "A recipe app",
-                    "stargazers_count": 10,
-                    "created_at": "2026-01-01",
-                    "pushed_at": "2026-07-01",
-                },
-                status=200,
-            )
-
-    monkeypatch.setattr(source.httpx, "AsyncClient", FakeClient)
-    candidates = await source._fetch_ossinsight_trending(max_results=5)
-    titles = [c["title"] for c in candidates]
-    assert "stablyai/orca" in titles
-    assert "someuser/nonai" not in titles
-
+async def test_momentum_history_reads_only_synchronized_receipts(monkeypatch):
     from _shared import mongo
 
     post_id = ObjectId()
@@ -1056,6 +913,30 @@ def test_publication_input_rejects_values_that_port_cannot_store():
         validate_publication_input({**project, "url": ""}, "emerging", 50)
     with pytest.raises(ValueError, match="rank score"):
         validate_publication_input(project, "emerging", 101)
+
+
+def test_project_snapshot_keeps_the_content_fields_the_digest_gates_read():
+    from _shared.write_post import _project_snapshot
+
+    stored = _project_snapshot(
+        {
+            "url": "https://reddit.com/r/LocalLLaMA/comments/abc/x",
+            "title": "x",
+            "kind": "thread",
+            "bodyText": "  a long self post body  ",
+            "contentHref": "https://github.com/acme/tool",
+            "storyText": "<p>Show HN text</p>",
+            "modelScratchpad": "must never persist",
+        },
+        "emerging",
+    )
+
+    assert stored["bodyText"] == "  a long self post body  "
+    assert stored["contentHref"] == "https://github.com/acme/tool"
+    assert stored["storyText"] == "<p>Show HN text</p>"
+    assert "modelScratchpad" not in stored
+    bare = _project_snapshot({"url": "u", "title": "t", "kind": "repo"}, "emerging")
+    assert not {"bodyText", "contentHref", "storyText"} & bare.keys()
 
 
 def test_signal_snapshot_preserves_only_auditable_source_locators():

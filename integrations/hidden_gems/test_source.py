@@ -525,3 +525,73 @@ async def test_show_hn_asks_only_for_launches_from_the_last_72_hours():
     assert before - 5 <= since <= before + 5
     # Strongest launch first.
     assert [c["title"] for c in candidates] == ["Show HN: Big", "Show HN: Small"]
+
+
+@pytest.mark.asyncio
+async def test_show_hn_keeps_the_story_text_of_a_self_text_post():
+    """Algolia sends story_text only on self-text posts (task 14 sample: URL posts omit it)."""
+    import httpx
+
+    from hidden_gems.source import fetch_hn_candidates
+
+    story_text = "I built this because &#x27;agents&#x27; kept <i>forgetting</i>.<p>It works."
+    hits = [
+        # Hand-built: the recorded sample held URL posts only.
+        {"objectID": "7", "title": "Show HN: Text", "url": None, "points": 150,
+         "num_comments": 20, "story_text": story_text},
+        # Shape of the real 2026-11-26 sample hit: no story_text key at all.
+        {"objectID": "50659697", "title": "Show HN: AgentDesign",
+         "url": "https://getagentdesign.com/", "points": 120, "num_comments": 0},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"hits": hits})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        text_post, url_post = await fetch_hn_candidates(max_results=5, client=client)
+
+    assert text_post["story_text"] == story_text
+    assert url_post["story_text"] == ""
+
+
+@pytest.mark.asyncio
+async def test_written_show_hn_project_carries_the_story_text(monkeypatch):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from hidden_gems import agent
+
+    written = {}
+
+    async def capture_write(*args, **_kwargs):
+        written["project"] = args[4]
+        return "post-1"
+
+    async def never_posted(_db, _url):
+        return mongo.NEVER_POSTED_DAYS
+
+    monkeypatch.setattr(agent, "write_post", capture_write)
+    monkeypatch.setattr(agent, "get_last_published_days", never_posted)
+    monkeypatch.setattr(agent, "_get_db", lambda: None)
+    url = "https://news.ycombinator.com/item?id=7"
+    monkeypatch.setitem(
+        agent._CANDIDATE_CACHE,
+        url,
+        {
+            "url": url,
+            "title": "Show HN: Text",
+            "kind": "thread",
+            "description": "Show HN: Text",
+            "story_text": "I built this.",
+            "topics": ["hn"],
+            "discovery_source": "hacker_news",
+            "evidence_url": url,
+            "hn_points": 150,
+            "hn_comments": 20,
+        },
+    )
+
+    await agent.write_hidden_gem.ainvoke({"gem_url": url, "verdict": "emerging"})
+
+    assert written["project"]["storyText"] == "I built this."

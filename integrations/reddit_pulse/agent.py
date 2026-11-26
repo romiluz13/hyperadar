@@ -87,6 +87,8 @@ async def write_reddit_post(post_url: str, verdict: str) -> str:
         "title": c["title"],
         "kind": c["kind"],
         "description": c["description"],
+        "bodyText": c.get("body_text", ""),
+        "contentHref": c.get("content_href", ""),
         "topics": c["topics"],
         "momentumScore": round(momentum, 1),
         "hypeVerdict": verdict,

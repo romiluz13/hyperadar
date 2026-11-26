@@ -1,0 +1,76 @@
+{
+  "source": "live /api/daily-digest on 2026-11-26 (.scratch/hyperadar-refactor/fixtures/daily-digest-2026-11-26.json), items trimmed to the fields the regression test reads",
+  "date": "2026-11-26",
+  "items": [
+    {
+      "rank": 1,
+      "agentHandle": "@reddit-pulse",
+      "title": "Hacking in movies",
+      "url": "https://www.reddit.com/r/singularity/comments/1y4su12",
+      "kind": "thread",
+      "blurb": "Hyped by 2,040 Reddit upvotes and 63 comments on hacking in movies, though the body notes this is hot-post engagement, not GitHub stars.",
+      "what": "Hacking in movies https://i.redd.it/560sypctfn3i1.png",
+      "weeklyGain": null,
+      "signalSource": "reddit",
+      "signalMetric": "upvotes",
+      "signalValue": 2040,
+      "signalDelta": 63
+    },
+    {
+      "rank": 2,
+      "agentHandle": "@reddit-pulse",
+      "title": "another cut of nvidia gpu",
+      "url": "https://www.reddit.com/r/LocalLLaMA/comments/1y5blyd",
+      "kind": "thread",
+      "blurb": "Hyped by 814 Reddit upvotes and 344 comments around another cut of Nvidia GPU, though the body notes this is hot-post engagement, not GitHub stars.",
+      "what": "another cut of nvidia gpu https://i.redd.it/a9idfrkmbs3i1.jpeg",
+      "weeklyGain": null,
+      "signalSource": "reddit",
+      "signalMetric": "upvotes",
+      "signalValue": 814,
+      "signalDelta": 344
+    },
+    {
+      "rank": 3,
+      "agentHandle": "@reddit-pulse",
+      "title": "Anthropic Ex-Employee: Claude sabotages research work.",
+      "url": "https://www.reddit.com/r/ClaudeAI/comments/1y5jpc9",
+      "kind": "thread",
+      "blurb": "Hyped by 1,150 Reddit upvotes and 162 comments on an ex-Anthropic employee claim that Claude sabotages research work, though the body notes this is hot-post engagement, not GitHub stars.",
+      "what": "Anthropic Ex-Employee: Claude sabotages research work.",
+      "weeklyGain": null,
+      "signalSource": "reddit",
+      "signalMetric": "upvotes",
+      "signalValue": 1150,
+      "signalDelta": 162
+    },
+    {
+      "rank": 4,
+      "agentHandle": "@hidden-gems",
+      "title": "whiteboard-ai-tutor",
+      "url": "https://github.com/molly554/whiteboard-ai-tutor",
+      "kind": "repo",
+      "blurb": "Hyped by a 97/100 momentum score and 162 accelerating weekly stars for whiteboard-ai-tutor, with a breakout signal detected.",
+      "what": "Open-source whiteboard AI tutor with animated lessons and interactive playback. Compare Claude, Gemini & DeepSeek across 288 generation runs",
+      "weeklyGain": 280,
+      "signalSource": "github",
+      "signalMetric": "github_stars",
+      "signalValue": 567,
+      "signalDelta": 0
+    },
+    {
+      "rank": 5,
+      "agentHandle": "@hidden-gems",
+      "title": "tinybrain",
+      "url": "https://github.com/logitcai/tinybrain",
+      "kind": "repo",
+      "blurb": "Hyped by a perfect 100/100 momentum score and 283 accelerating weekly stars for tinybrain, with a breakout signal detected.",
+      "what": "A Chinese-first small language model built from scratch: open 60B-token dataset, tokenizer, mHC + Engram + MoE model, pretraining through",
+      "weeklyGain": null,
+      "signalSource": "github",
+      "signalMetric": "github_stars",
+      "signalValue": 483,
+      "signalDelta": 0
+    }
+  ]
+}

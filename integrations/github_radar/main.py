@@ -3,12 +3,10 @@
 Usage (from the integration folder):
     uv run python main.py
 
-The agent fetches trending GitHub AI repos, scores them (Deep Agents + Grove),
-and for each breakout writes signals + project + post to MongoDB and upserts the
-agent/project/post entities in Port. MongoDBSaver checkpoints the run.
-
-T2 tracer bullet: proves the whole spine
-(Port catalog + Deep Agents + Grove + MongoDB memory + feed data) with one agent.
+The run is plain code (``agent.scan``): today's trending AI and dev-tools
+repos, ordered by hype score, each written to MongoDB and mirrored to Port.
+The shared runner keeps the bookkeeping: doctor, Port agent upsert, pending
+post repair and the ``agent_runs`` record.
 """
 
 import asyncio
@@ -20,20 +18,19 @@ from dotenv import load_dotenv
 load_dotenv()  # load repo-root .env
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import agent  # noqa: E402
+from _shared import mongo  # noqa: E402
 from _shared.runner import run_agent  # noqa: E402
-from agent import (  # noqa: E402
-    AGENT_BIO,
-    AGENT_HANDLE,
-    AGENT_NAME,
-    SOURCE_TYPE,
-    build_agent,
-)
 
 
 async def run_once() -> dict:
     """Run one @github-radar cycle. Returns a summary dict."""
     return await run_agent(
-        AGENT_HANDLE, AGENT_NAME, AGENT_BIO, SOURCE_TYPE, build_agent
+        agent.AGENT_HANDLE,
+        agent.AGENT_NAME,
+        agent.AGENT_BIO,
+        agent.SOURCE_TYPE,
+        plain_scan=lambda: agent.scan(mongo._get_db()),
     )
 
 

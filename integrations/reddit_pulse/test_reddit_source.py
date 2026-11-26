@@ -171,6 +171,32 @@ def test_feed_parser_keeps_the_post_body_for_the_corpus():
     assert "(nested)" in post["description"]
 
 
+def test_feed_parser_keeps_the_body_and_link_as_their_own_fields():
+    """The digest's Reddit gate reads the self-text and the link apart (ticket 06)."""
+    source = load_source()
+    markup = shreddit_post(
+        "s1", title="Self post", body="Long self text", created=fresh()
+    ) + shreddit_post(
+        "i1", title="Image post", content_href="https://i.redd.it/560sypctfn3i1.png",
+        created=fresh(),
+    )
+
+    posts = {p["title"]: p for p in source.parse_rising_feed(markup)}
+
+    assert posts["Self post"]["body_text"] == "Long self text (nested)"
+    assert posts["Self post"]["content_href"] == ""
+    assert posts["Image post"]["body_text"] == ""
+    assert posts["Image post"]["content_href"] == "https://i.redd.it/560sypctfn3i1.png"
+
+
+def test_feed_parser_caps_the_stored_body():
+    source = load_source()
+    [post] = source.parse_rising_feed(
+        shreddit_post("long", body="word " * 1000, created=fresh())
+    )
+    assert len(post["body_text"]) == source.REDDIT_BODY_MAX_CHARS
+
+
 def test_feed_parser_keeps_every_post_when_a_body_is_left_open():
     """A truncated body must not swallow the posts after it."""
     source = load_source()
@@ -865,3 +891,39 @@ async def test_snapshot_stores_thread_text_for_corpus():
     assert doc["comments"] == 10
     assert "capturedAt" in doc
 
+
+
+@pytest.mark.asyncio
+async def test_written_thread_project_carries_the_body_and_link(monkeypatch):
+    """write_reddit_post hands the gate's fields to write_post on the project."""
+    import agent
+
+    written = {}
+
+    async def capture_write(*args, **_kwargs):
+        written["project"] = args[4]
+        return "post-1"
+
+    monkeypatch.setattr(agent, "write_post", capture_write)
+    url = "https://www.reddit.com/r/LocalLLaMA/comments/s1"
+    monkeypatch.setitem(
+        agent._CANDIDATE_CACHE,
+        url,
+        {
+            "url": url,
+            "title": "Self post",
+            "kind": "thread",
+            "description": "Self post Long self text",
+            "body_text": "Long self text",
+            "content_href": "https://github.com/acme/tool",
+            "topics": ["reddit"],
+            "num_upvotes": 400,
+            "num_comments": 40,
+            "evidence_url": url,
+        },
+    )
+
+    await agent.write_reddit_post.ainvoke({"post_url": url, "verdict": "emerging"})
+
+    assert written["project"]["bodyText"] == "Long self text"
+    assert written["project"]["contentHref"] == "https://github.com/acme/tool"

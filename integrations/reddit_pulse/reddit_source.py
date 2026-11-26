@@ -5,6 +5,13 @@ Reddit's rising-feed markup, whose ``<shreddit-post>`` elements carry the score,
 comment count and creation time. Reddit's JSON listings answer 403 to it, and
 the earlier Bright Data pipeline was paid; see ADR 0006.
 
+Each candidate keeps the post's self-text as ``body_text`` (at most
+``REDDIT_BODY_MAX_CHARS``) and its ``content-href`` link as ``content_href``
+(empty when absent), apart from the joined ``description``; the agent stores
+them as ``project.bodyText`` and ``project.contentHref``, which the daily
+digest's Reddit gate reads. The parser reads no flair: none is among the
+attributes ADR 0006 records, and no live capture has checked for one.
+
 Requires: ``MONID_API_KEY`` (a Monid API key; the free endpoint bills $0).
 """
 
@@ -55,6 +62,7 @@ FETCH_RETRY_DELAY_SECONDS = 5
 MONID_RUN_DEADLINE_SECONDS = 180
 MONID_POLL_INTERVAL_SECONDS = 3
 COOLDOWN_DAYS = 7
+REDDIT_BODY_MAX_CHARS = 2000
 _PERMALINK = re.compile(r"^/r/([^/]+)/comments/([^/]+)")
 
 
@@ -247,7 +255,8 @@ def parse_rising_feed(markup: str) -> list[dict]:
         if upvotes < _noise_floor(subreddit):
             continue
         link = values.get("content-href", "").strip()
-        parts = [title, " ".join(parser.bodies.get(post_id, []))]
+        body = " ".join(parser.bodies.get(post_id, []))
+        parts = [title, body]
         if link and "reddit.com" not in link:
             parts.append(link)
         description = " ".join(part for part in parts if part)
@@ -260,6 +269,8 @@ def parse_rising_feed(markup: str) -> list[dict]:
                 "title": title[:200],
                 "kind": "thread",
                 "description": description[:500],
+                "body_text": body[:REDDIT_BODY_MAX_CHARS],
+                "content_href": link,
                 "topics": ["reddit", "ai", subreddit],
                 "subreddit": subreddit,
                 "num_upvotes": upvotes,
