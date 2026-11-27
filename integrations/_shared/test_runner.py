@@ -182,6 +182,7 @@ async def test_unhealthy_run_records_its_summary_and_doctor_findings(monkeypatch
             "posts_written": 0,
             "synced_this_run": 0,
             "pending_port_syncs": 0,
+            "synced_without_embedding": 0,
             "ok": False,
         }
 
@@ -221,3 +222,69 @@ async def test_recording_failure_never_masks_the_runs_own_error(monkeypatch):
     # The run's own error surfaces; the recording failure is only logged.
     with pytest.raises(RuntimeError, match="source exploded"):
         await runner.run_agent("@reddit-pulse", "Reddit Pulse", "bio", "reddit", None)
+
+
+# ─── No checkpoints: an LLM run stores no LangGraph state (ticket 09) ───
+
+
+@pytest.mark.asyncio
+async def test_an_llm_run_builds_its_agent_without_a_checkpointer(monkeypatch):
+    """``build_agent_fn`` takes no arguments, as every agent's ``build_agent``
+    does, and its real LangGraph graph is compiled with no checkpointer.
+
+    MONGODB_URI points at an unresolvable host, so a runner that still opened
+    a checkpointer fails fast instead of writing to ``checkpointing_db``.
+    """
+    from unittest.mock import AsyncMock
+
+    from langgraph.graph import END, START, StateGraph
+    from typing_extensions import TypedDict
+
+    class _State(TypedDict):
+        messages: str
+
+    graphs = []
+
+    def build_agent_fn():
+        graph = StateGraph(_State)
+        graph.add_node("scan", lambda state: {"messages": state["messages"]})
+        graph.add_edge(START, "scan")
+        graph.add_edge("scan", END)
+        graphs.append(graph.compile())
+        return graphs[-1]
+
+    async def no_preflight(_handle):
+        return []
+
+    monkeypatch.setenv(
+        "MONGODB_URI", "mongodb://example.invalid/?serverSelectionTimeoutMS=200"
+    )
+    monkeypatch.setattr(runner.doctor, "preflight", no_preflight)
+    monkeypatch.setattr(runner.port_client, "upsert_agent", lambda *_args: {"ok": True})
+    monkeypatch.setattr(
+        runner.port_client, "record_agent_success", lambda *_args: {"ok": True}
+    )
+    monkeypatch.setattr(
+        runner.write_post, "repair_pending_posts", AsyncMock(return_value=0)
+    )
+    monkeypatch.setattr(
+        runner,
+        "summarize_run",
+        AsyncMock(
+            return_value={
+                "thread_id": "t",
+                "posts_today": 0,
+                "posts_written": 0,
+                "synced_this_run": 0,
+                "pending_port_syncs": 0,
+                "ok": False,
+            }
+        ),
+    )
+
+    await runner._run_agent_cycle(
+        "@reddit-pulse", "Reddit Pulse", "bio", "reddit", build_agent_fn, {}
+    )
+
+    assert len(graphs) == 1
+    assert graphs[0].checkpointer is None

@@ -1,7 +1,8 @@
 """Reproducible MongoDB Atlas setup for HypeRadar.
 
 Creates all collections (signals as time-series), schema validators, indexes,
-and the Atlas Vector Search + Atlas Search indexes. Idempotent — safe to re-run.
+the TTL indexes that keep snapshots and run records bounded, and the Atlas
+Vector Search + Atlas Search indexes. Idempotent — safe to re-run.
 
 Usage:
     set -a && source .env && set +a
@@ -35,6 +36,54 @@ def ensure_index(col, keys, **kwargs):
     name = kwargs.get("name", "idx")
     col.create_index(keys, **kwargs)
     print(f"  ✓ {col.name}.{name}")
+
+
+_DAY_SECONDS = 24 * 60 * 60
+TTL_INDEXES = [
+    ("reddit_post_snapshots", "capturedAt", 30, "expire_reddit_post_snapshots"),
+    ("youtube_view_snapshots", "capturedAt", 30, "expire_youtube_view_snapshots"),
+    ("trending_snapshots", "capturedAt", 30, "expire_trending_snapshots"),
+    ("agent_runs", "finishedAt", 90, "expire_agent_runs"),
+]
+
+
+def ensure_ttl_index(col, field, expire_after_seconds, name):
+    """One single-field TTL index on ``field``, whatever index was there before.
+
+    create_index raises IndexOptionsConflict when an index on the same key
+    already exists with other options, so an existing one (plain or with
+    another expiry) is changed in place with collMod, the documented way to
+    add or change ``expireAfterSeconds`` on a single-field index.
+    """
+    existing = next(
+        (
+            details
+            for details in col.index_information().values()
+            if details["key"] == [(field, 1)]
+        ),
+        None,
+    )
+    if existing is None:
+        ensure_index(col, field, expireAfterSeconds=expire_after_seconds, name=name)
+    elif existing.get("expireAfterSeconds") != expire_after_seconds:
+        col.database.command(
+            "collMod",
+            col.name,
+            index={
+                "keyPattern": {field: 1},
+                "expireAfterSeconds": expire_after_seconds,
+            },
+        )
+        print(f"  ✓ {col.name}.{field} now expires after {expire_after_seconds}s")
+    else:
+        print(f"  {col.name}.{field} TTL exists ✓")
+
+
+def ensure_storage_bounds(db):
+    """Keep stored data bounded so it fits Atlas Free."""
+    for collection, field, days, name in TTL_INDEXES:
+        ensure_ttl_index(db[collection], field, days * _DAY_SECONDS, name)
+    ensure_index(db.posts, [("postedAt", -1), ("rankScore", -1)], name="feed_recent")
 
 
 def ensure_reaction_indexes(col):
@@ -328,6 +377,9 @@ def main():
     # 8. episodes (episodic memory — T8)
     ensure_collection(db, "episodes")
     ensure_index(db.episodes, "projectUrl", name="project_url")
+
+    # 8b. Storage bounds for Atlas Free: snapshot and run-health TTLs, feed index
+    ensure_storage_bounds(db)
 
     # 9. Atlas Vector Search index on projects.embedding (1024-dim, Voyage 4 Large)
     try:

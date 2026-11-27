@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from _shared.html_text import plain_text
+
 _GITHUB_HOSTS = {"github.com", "www.github.com"}
 _HN_ALGOLIA_SEARCH_URL = "https://hn.algolia.com/api/v1/search"
 _HN_ALGOLIA_ITEM_URL = "https://hn.algolia.com/api/v1/items"
@@ -36,10 +38,21 @@ _REPO_SLUG_RE = re.compile(
 )
 
 
+_REPO_SEGMENT_RE = re.compile(r"[A-Za-z0-9_.\-]+")
+
+
+def is_repo_segment(segment: str) -> bool:
+    """A GitHub owner or repo name; ``.`` and ``..`` would walk the API path."""
+    return bool(_REPO_SEGMENT_RE.fullmatch(segment)) and segment not in (".", "..")
+
+
 def repo_slug(repo_url: str) -> str | None:
     """Extract ``owner/repo`` from a GitHub URL, or None for other URLs."""
     match = _REPO_SLUG_RE.search(repo_url or "")
-    return match.group(1).rstrip("/") if match else None
+    if not match:
+        return None
+    slug = match.group(1).rstrip("/")
+    return slug if all(map(is_repo_segment, slug.split("/"))) else None
 
 
 def engagement_boost(points: int, comments: int) -> int:
@@ -58,12 +71,6 @@ def engagement_boost(points: int, comments: int) -> int:
     return points_component + comments_component
 
 
-def strip_html(text: str) -> str:
-    """Collapse HN's HTML-ish comment markup (<p>, <a href=...>) to plain text."""
-    plain = re.sub(r"<[^>]+>", " ", text or "")
-    return re.sub(r"\s+", " ", plain).strip()
-
-
 def pick_top_comment(children: list) -> dict | None:
     """Pick the first substantive comment from an HN item's children.
 
@@ -72,7 +79,7 @@ def pick_top_comment(children: list) -> dict | None:
     the community's opening take.
     """
     for child in children or []:
-        text = strip_html(child.get("text") or "")
+        text = plain_text(child.get("text"))
         author = (child.get("author") or "").strip()
         # A deleted author means the comment is gone — its text is a husk.
         if text and author and author.lower() != "[deleted]":

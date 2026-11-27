@@ -159,225 +159,6 @@ def test_hidden_gem_hn_evidence_never_becomes_github_stars():
     assert "stars" not in candidate
 
 
-def test_github_velocity_is_labeled_as_lifetime_average_not_recent_growth():
-    source = load_source("github_radar/github_source.py", "github_truth_source")
-    candidate = {
-        "stars": 700,
-        "created_at": (datetime.now(timezone.utc) - timedelta(days=14)).isoformat(),
-    }
-
-    momentum = source.compute_momentum(candidate, [], prior_posts=4)
-
-    assert momentum["avgStarsPerWeekSinceCreation"] == pytest.approx(350, abs=30)
-    assert momentum["sustainedSixWeekGrowth"] is False
-    assert "starsPerWeek" not in momentum
-
-
-def test_github_sustained_growth_requires_six_observations_spanning_five_weeks():
-    source = load_source("github_radar/github_source.py", "github_sustained_source")
-    start = datetime.now(timezone.utc) - timedelta(days=35)
-    history = [
-        {"capturedAt": start + timedelta(days=7 * index), "value": 100 + 10 * index}
-        for index in range(6)
-    ]
-    candidate = {
-        "stars": 200,
-        "created_at": (start - timedelta(days=10)).isoformat(),
-    }
-
-    momentum = source.compute_momentum(candidate, history, prior_posts=5)
-
-    assert momentum["sustainedSixWeekGrowth"] is True
-
-
-def test_github_sustained_growth_rejects_flat_history_and_a_current_regression():
-    source = load_source("github_radar/github_source.py", "github_growth_guard_source")
-    start = datetime.now(timezone.utc) - timedelta(days=35)
-    flat_history = [
-        {"capturedAt": start + timedelta(days=7 * index), "value": 100}
-        for index in range(6)
-    ]
-    rising_history = [
-        {"capturedAt": start + timedelta(days=7 * index), "value": 100 + 10 * index}
-        for index in range(6)
-    ]
-
-    flat = source.compute_momentum(
-        {"stars": 100, "created_at": start.isoformat()}, flat_history, prior_posts=1
-    )
-    regressed = source.compute_momentum(
-        {"stars": 140, "created_at": start.isoformat()},
-        rising_history,
-        prior_posts=1,
-    )
-
-    assert flat["sustainedSixWeekGrowth"] is False
-    assert regressed["sustainedSixWeekGrowth"] is False
-
-
-@pytest.mark.asyncio
-async def test_github_ossinsight_includes_repos_with_ai_description_not_just_topics(
-    monkeypatch,
-):
-    """A repo with no AI topics but an AI-related description should pass the filter.
-
-    The previous narrow topic filter (ai/llm/agent/gpt/openai/ml) missed 63%
-    of OSSInsight trending repos. Description-based matching catches repos
-    like stablyai/orca (agent fleet) that lack ai as a topic.
-    """
-    source = load_source("github_radar/github_source.py", "github_ossinsight_source")
-    monkeypatch.setattr(source, "_token", "fake-token")
-    monkeypatch.setattr(source, "_headers", {"Authorization": "token fake-token"})
-
-    class FakeResponse:
-        def __init__(self, data, status=200):
-            self._data = data
-            self.status_code = status
-
-        def json(self):
-            return self._data
-
-        def raise_for_status(self):
-            if self.status_code != 200:
-                raise RuntimeError(f"HTTP {self.status_code}")
-
-    class FakeClient:
-        call_count = 0
-
-        def __init__(self, **_kw):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            pass
-
-        async def get(self, url, **kw):
-            type(self).call_count += 1
-            if "ossinsight" in url:
-                return FakeResponse(
-                    {
-                        "data": {
-                            "rows": [
-                                {
-                                    "repo_name": "stablyai/orca",
-                                    "description": "Agent fleet manager",
-                                    "stars": 6,
-                                    "primary_language": "Python",
-                                },
-                                {
-                                    "repo_name": "someuser/nonai",
-                                    "description": "A recipe app",
-                                    "stars": 5,
-                                    "primary_language": "Go",
-                                },
-                            ]
-                        }
-                    }
-                )
-            # GitHub API call for repo details
-            if "stablyai/orca" in url:
-                return FakeResponse(
-                    {
-                        "topics": ["cli", "automation"],
-                        "description": "Agent fleet manager for parallel agents",
-                        "stargazers_count": 500,
-                        "created_at": "2026-06-01",
-                        "pushed_at": "2026-07-19",
-                    }
-                )
-            return FakeResponse(
-                {
-                    "topics": ["recipes"],
-                    "description": "A recipe app",
-                    "stargazers_count": 10,
-                    "created_at": "2026-01-01",
-                    "pushed_at": "2026-07-01",
-                },
-                status=200,
-            )
-
-    monkeypatch.setattr(source.httpx, "AsyncClient", FakeClient)
-    candidates = await source._fetch_ossinsight_trending(max_results=5)
-    titles = [c["title"] for c in candidates]
-    assert "stablyai/orca" in titles
-    assert "someuser/nonai" not in titles
-
-    from _shared import mongo
-
-    post_id = ObjectId()
-    signal_id = ObjectId()
-
-    class FakeCursor:
-        def __init__(self, documents):
-            self.documents = documents
-
-        def sort(self, *_args):
-            return self
-
-        def limit(self, *_args):
-            return self
-
-        async def to_list(self, length=None):
-            return list(self.documents if length is None else self.documents[:length])
-
-    class FakePosts:
-        query = None
-
-        def find(self, query, _projection):
-            self.query = query
-            return FakeCursor([{"_id": post_id}])
-
-    class FakeReceipts:
-        query = None
-
-        def find(self, query, _projection):
-            self.query = query
-            return FakeCursor([{"signalId": signal_id}])
-
-    class FakeSignals:
-        query = None
-
-        def find(self, query):
-            self.query = query
-            return FakeCursor([])
-
-    class FakeDatabase:
-        posts = FakePosts()
-        signal_receipts = FakeReceipts()
-        signals = FakeSignals()
-
-    database = FakeDatabase()
-    monkeypatch.setattr(mongo, "_get_db", lambda: database)
-
-    await mongo.get_momentum_history(
-        "https://github.com/example/project",
-        source="github",
-        metric="github_stars",
-    )
-
-    assert database.posts.query == {
-        "project.url": "https://github.com/example/project",
-        "portSyncStatus": "synced",
-        "evidenceContractVersion": 2,
-        "legacyDuplicateOf": {"$exists": False},
-    }
-    assert database.signal_receipts.query == {
-        "_id": {"$in": [str(post_id)]},
-        "state": "complete",
-        "signal.projectId": "https://github.com/example/project",
-        "signal.source": "github",
-        "signal.metric": "github_stars",
-    }
-    assert database.signals.query == {
-        "_id": {"$in": [signal_id]},
-        "projectId": "https://github.com/example/project",
-        "source": "github",
-        "metric": "github_stars",
-    }
-
-
 @pytest.mark.asyncio
 async def test_weekly_digest_summary_is_derived_only_from_synchronized_wave_counts(
     monkeypatch,
@@ -1014,16 +795,11 @@ def test_agent_identity_sync_preserves_operator_health_state(monkeypatch):
 
 def test_source_evidence_copy_is_generated_only_from_observed_values():
     from _shared.evidence_copy import (
-        github_evidence_copy,
         hidden_gem_evidence_copy,
         reddit_evidence_copy,
         youtube_evidence_copy,
     )
 
-    assert github_evidence_copy(338.4, 2294, False) == (
-        "AVG 338.4★/wk since creation. 2,294 GitHub stars observed; "
-        "recent growth was not independently measured."
-    )
     assert youtube_evidence_copy(362154) == (
         "362,154 YouTube views observed. Search surfaced this video; "
         "upload-age view velocity was not measured."
@@ -1056,6 +832,30 @@ def test_publication_input_rejects_values_that_port_cannot_store():
         validate_publication_input({**project, "url": ""}, "emerging", 50)
     with pytest.raises(ValueError, match="rank score"):
         validate_publication_input(project, "emerging", 101)
+
+
+def test_project_snapshot_keeps_the_content_fields_the_digest_gates_read():
+    from _shared.write_post import _project_snapshot
+
+    stored = _project_snapshot(
+        {
+            "url": "https://reddit.com/r/LocalLLaMA/comments/abc/x",
+            "title": "x",
+            "kind": "thread",
+            "bodyText": "  a long self post body  ",
+            "contentHref": "https://github.com/acme/tool",
+            "storyText": "<p>Show HN text</p>",
+            "modelScratchpad": "must never persist",
+        },
+        "emerging",
+    )
+
+    assert stored["bodyText"] == "  a long self post body  "
+    assert stored["contentHref"] == "https://github.com/acme/tool"
+    assert stored["storyText"] == "<p>Show HN text</p>"
+    assert "modelScratchpad" not in stored
+    bare = _project_snapshot({"url": "u", "title": "t", "kind": "repo"}, "emerging")
+    assert not {"bodyText", "contentHref", "storyText"} & bare.keys()
 
 
 def test_signal_snapshot_preserves_only_auditable_source_locators():
@@ -1995,22 +1795,10 @@ async def test_runner_repairs_historical_pending_posts_before_source_scan(
         }
     ).inserted_id
 
-    class FakeCheckpointer:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
     class QuietAgent:
         async def ainvoke(self, *_args, **_kwargs):
             return None
 
-    monkeypatch.setattr(
-        runner_module.MongoDBSaver,
-        "from_conn_string",
-        lambda *_args, **_kwargs: FakeCheckpointer(),
-    )
     monkeypatch.setattr(port_client, "upsert_agent", lambda *_args: {"ok": True})
     port_projects = []
 
@@ -2059,13 +1847,6 @@ async def test_runner_stops_an_agent_invocation_that_exceeds_its_deadline(monkey
     from _shared import port_client
     from _shared import runner as runner_module
 
-    class FakeCheckpointer:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
     class HangingAgent:
         async def ainvoke(self, *_args, **_kwargs):
             await asyncio.Event().wait()
@@ -2073,11 +1854,6 @@ async def test_runner_stops_an_agent_invocation_that_exceeds_its_deadline(monkey
     monkeypatch.setenv("MONGODB_URI", "mongodb://example.invalid/hyperadar")
     monkeypatch.setattr(
         runner_module, "AGENT_INVOCATION_TIMEOUT_SECONDS", 0.01, raising=False
-    )
-    monkeypatch.setattr(
-        runner_module.MongoDBSaver,
-        "from_conn_string",
-        lambda *_args, **_kwargs: FakeCheckpointer(),
     )
     monkeypatch.setattr(port_client, "upsert_agent", lambda *_args: {"ok": True})
     # The doctor preflight makes live credential calls; this test is about
@@ -2238,13 +2014,6 @@ async def test_runner_still_scans_when_port_rejects_login(monkeypatch):
 
     _port_login_rejected(monkeypatch)
 
-    class FakeCheckpointer:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
     scans = []
 
     class QuietAgent:
@@ -2256,11 +2025,6 @@ async def test_runner_still_scans_when_port_rejects_login(monkeypatch):
         return []
 
     monkeypatch.setenv("MONGODB_URI", "mongodb://example.invalid/hyperadar")
-    monkeypatch.setattr(
-        runner_module.MongoDBSaver,
-        "from_conn_string",
-        lambda *_args, **_kwargs: FakeCheckpointer(),
-    )
     monkeypatch.setattr(runner_module.doctor, "preflight", fake_preflight)
     monkeypatch.setattr(
         runner_module.write_post, "repair_pending_posts", AsyncMock(return_value=0)
@@ -2343,7 +2107,9 @@ async def test_post_is_published_when_port_rejects_login(db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_audit_failure_keeps_post_private_until_retry(db, monkeypatch):
+async def test_an_audit_outage_publishes_the_post_and_repair_writes_the_audit(
+    db, monkeypatch
+):
     from _shared import embeddings, episodic_memory, port_client
     from _shared import write_post as write_post_module
 
@@ -2380,37 +2146,27 @@ async def test_audit_failure_keeps_post_private_until_retry(db, monkeypatch):
     signal = {"source": "test", "metric": "mentions", "value": 1, "delta": 1}
 
     try:
-        with pytest.raises(RuntimeError, match="simulated audit outage"):
-            await write_post_module.write_post(
-                "@test-agent",
-                "Test Agent",
-                "Tests audit recovery",
-                "test",
-                project,
-                "Audit should gate publication.",
-                "emerging",
-                signal,
-                60,
-            )
-
-        pending = db.posts.find_one({"project.url": url})
-        assert pending["portSyncStatus"] == "pending"
-
-        repaired_id = await write_post_module.write_post(
+        post_id = await write_post_module.write_post(
             "@test-agent",
             "Test Agent",
             "Tests audit recovery",
             "test",
             project,
-            "Audit should gate publication.",
+            "An audit outage must not hold the post back.",
             "emerging",
             signal,
             60,
         )
-        assert repaired_id == str(pending["_id"])
-        repaired = db.posts.find_one({"_id": pending["_id"]})
-        assert repaired["portSyncStatus"] == "synced"
-        assert db.embeddings_audit.count_documents({"postId": repaired_id}) == 1
+
+        published = db.posts.find_one({"_id": ObjectId(post_id)})
+        assert published["portSyncStatus"] == "synced"
+        assert db.embeddings_audit.count_documents({"postId": post_id}) == 0
+
+        await write_post_module.repair_pending_posts(
+            "@test-agent", "Test Agent", "Tests audit recovery", "test"
+        )
+
+        assert db.embeddings_audit.count_documents({"postId": post_id}) == 1
         assert db.posts.count_documents({"project.url": url}) == 1
         assert db.signals.count_documents({"projectId": url}) == 1
     finally:

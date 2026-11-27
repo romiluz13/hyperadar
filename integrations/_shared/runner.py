@@ -1,8 +1,10 @@
 """Shared runner for all HypeRadar agent-creators.
 
-Each agent's main.py calls run_agent() with its build_agent function.
-Handles: Port agent upsert, Deep Agents invocation, MongoDBSaver checkpointing,
-and post-count reporting.
+Each agent's main.py calls run_agent() with its build_agent function, or, for
+an agent that picks by plain code, a plain_scan coroutine function.
+Handles: Port agent upsert, Deep Agents invocation, and post-count reporting.
+Runs keep no LangGraph checkpoints: every run starts a fresh thread, so stored
+state would never be resumed and would only grow the database (ADR 0002).
 """
 
 import asyncio
@@ -17,10 +19,9 @@ load_dotenv()  # load repo-root .env
 # Add parent dir to path so we can import _shared and the agent package
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from langgraph.checkpoint.mongodb import MongoDBSaver  # noqa: E402
-
 from _shared import mongo  # noqa: E402
 from _shared import doctor, port_client, write_post  # noqa: E402
+from _shared.run_notes import current_notes  # noqa: E402
 
 AGENT_INVOCATION_TIMEOUT_SECONDS = 20 * 60
 
@@ -92,12 +93,21 @@ async def summarize_run(
     pending_port_syncs = await mongo.db.posts.count_documents(
         {"agentHandle": agent_handle, "portSyncStatus": "pending"}
     )
+    synced_without_embedding = await mongo.db.posts.count_documents(
+        {
+            "agentHandle": agent_handle,
+            "runId": thread_id,
+            "portSyncStatus": "synced",
+            "embeddingMissing": True,
+        }
+    )
     return {
         "thread_id": thread_id,
         "posts_today": posts_today,
         "posts_written": posts_written,
         "synced_this_run": synced_this_run,
         "pending_port_syncs": pending_port_syncs,
+        "synced_without_embedding": synced_without_embedding,
         "ok": _run_ok(
             posts_written, synced_this_run, pending_port_syncs, agent_was_active
         ),
@@ -109,8 +119,9 @@ def _run_ok(posts_written, synced_this_run, pending_port_syncs, agent_was_active
 
     A quiet day — every candidate gated by the pool-scaled threshold or the
     republish cooldown, 0 posts — is the system working as designed, not a
-    failure. A run where the agent never called a fetch_*/write_* tool (broken
-    source or broken agent) or left Port syncs pending is a failure.
+    failure. A run where the agent never called a fetch_*/write_* tool, or whose
+    plain scan considered no candidate (broken source or broken agent), or that
+    left Port syncs pending is a failure.
     """
     if pending_port_syncs != 0:
         return False
@@ -119,8 +130,20 @@ def _run_ok(posts_written, synced_this_run, pending_port_syncs, agent_was_active
     return posts_written == 0 and agent_was_active
 
 
-async def run_agent(agent_handle, agent_name, agent_bio, source_type, build_agent_fn):
+async def run_agent(
+    agent_handle,
+    agent_name,
+    agent_bio,
+    source_type,
+    build_agent_fn=None,
+    *,
+    plain_scan=None,
+):
     """Run one agent cycle. Returns a summary dict.
+
+    An agent picks with an LLM built by ``build_agent_fn``, or with plain code:
+    ``plain_scan`` is a coroutine function returning how many candidates it
+    considered, run with no LLM.
 
     Every run — healthy, unhealthy, or crashed — leaves one agent_runs document
     in MongoDB so a broken source is queryable evidence, not a red GHA icon
@@ -128,6 +151,8 @@ async def run_agent(agent_handle, agent_name, agent_bio, source_type, build_agen
     """
     started_at = datetime.now(timezone.utc)
     run_record: dict = {"agentHandle": agent_handle, "ok": False, "doctor": []}
+    notes: list[str] = []
+    notes_token = current_notes.set(notes)
     try:
         summary = await _run_agent_cycle(
             agent_handle,
@@ -136,16 +161,21 @@ async def run_agent(agent_handle, agent_name, agent_bio, source_type, build_agen
             source_type,
             build_agent_fn,
             run_record,
+            **({} if plain_scan is None else {"plain_scan": plain_scan}),
         )
         run_record["ok"] = summary["ok"]
         run_record["postsWritten"] = summary["posts_written"]
         run_record["syncedThisRun"] = summary["synced_this_run"]
         run_record["pendingPortSyncs"] = summary["pending_port_syncs"]
+        run_record["syncedWithoutEmbedding"] = summary["synced_without_embedding"]
         return summary
     except Exception as error:
         run_record["error"] = repr(error)
         raise
     finally:
+        current_notes.reset(notes_token)
+        if notes:
+            run_record["note"] = "; ".join(notes)
         run_record["threadId"] = run_record.get("threadId") or (
             f"{agent_handle}:crash:{started_at.isoformat()}"
         )
@@ -155,7 +185,14 @@ async def run_agent(agent_handle, agent_name, agent_bio, source_type, build_agen
 
 
 async def _run_agent_cycle(
-    agent_handle, agent_name, agent_bio, source_type, build_agent_fn, run_record
+    agent_handle,
+    agent_name,
+    agent_bio,
+    source_type,
+    build_agent_fn,
+    run_record,
+    *,
+    plain_scan=None,
 ):
     """Run one cycle while its MongoDB client remains owned by this loop."""
     # 0. Source doctor: live credential/source health into the run log.
@@ -172,7 +209,7 @@ async def _run_agent_cycle(
         f"agent sync for {agent_handle}",
     )
 
-    # 2. MongoDBSaver checkpoint (durable and inspectable for this run)
+    # 2. Invoke the plain scan or the agent under this run's thread id
     thread_id = f"{agent_handle}:{datetime.now(timezone.utc).isoformat()}"
     run_record["threadId"] = thread_id
     config = {"configurable": {"thread_id": thread_id}}
@@ -185,12 +222,17 @@ async def _run_agent_cycle(
         await write_post.repair_pending_posts(
             agent_handle, agent_name, agent_bio, source_type
         )
-        with MongoDBSaver.from_conn_string(os.environ["MONGODB_URI"]) as checkpointer:
-            agent = build_agent_fn(checkpointer=checkpointer)
+        if plain_scan is not None:
+            considered = await asyncio.wait_for(
+                plain_scan(), timeout=AGENT_INVOCATION_TIMEOUT_SECONDS
+            )
+        else:
+            agent = build_agent_fn()
             try:
                 result = await asyncio.wait_for(
                     agent.ainvoke(
-                        {"messages": f"Run today's {agent_handle} scan."}, config=config
+                        {"messages": f"Run today's {agent_handle} scan."},
+                        config=config,
                     ),
                     timeout=AGENT_INVOCATION_TIMEOUT_SECONDS,
                 )
@@ -202,20 +244,25 @@ async def _run_agent_cycle(
     finally:
         write_post.current_run_id.reset(token)
 
-    # Log the LLM tool-call trace so a "wrote 0" event is self-diagnosing:
-    # fetch_calls>0 + write_calls=0 = gate/cooldown (healthy quiet day);
-    # fetch_calls=0 + write_calls=0 = a broken source or agent worth chasing.
-    tool_calls = _extract_tool_trace(result)
-    write_call_count = sum(1 for n in tool_calls if n.startswith("write_"))
-    fetch_call_count = sum(1 for n in tool_calls if n.startswith("fetch_"))
-    run_record["fetchCalls"] = fetch_call_count
-    run_record["writeCalls"] = write_call_count
-    agent_was_active = (fetch_call_count + write_call_count) > 0
-    print(
-        f"{agent_handle} runner: fetch_calls={fetch_call_count} "
-        f"write_calls={write_call_count} tool_trace={tool_calls}",
-        flush=True,
-    )
+    if plain_scan is not None:
+        run_record["candidatesConsidered"] = considered
+        agent_was_active = considered > 0
+        print(f"{agent_handle} runner: candidates_considered={considered}", flush=True)
+    else:
+        # Log the LLM tool-call trace so a "wrote 0" event is self-diagnosing:
+        # fetch_calls>0 + write_calls=0 = gate/cooldown (healthy quiet day);
+        # fetch_calls=0 + write_calls=0 = a broken source or agent worth chasing.
+        tool_calls = _extract_tool_trace(result)
+        write_call_count = sum(1 for n in tool_calls if n.startswith("write_"))
+        fetch_call_count = sum(1 for n in tool_calls if n.startswith("fetch_"))
+        run_record["fetchCalls"] = fetch_call_count
+        run_record["writeCalls"] = write_call_count
+        agent_was_active = (fetch_call_count + write_call_count) > 0
+        print(
+            f"{agent_handle} runner: fetch_calls={fetch_call_count} "
+            f"write_calls={write_call_count} tool_trace={tool_calls}",
+            flush=True,
+        )
 
     # 3. Count posts created today by this agent
     summary = await summarize_run(

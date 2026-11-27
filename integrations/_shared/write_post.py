@@ -1,9 +1,13 @@
 """Shared write path — the twin-model write (MongoDB + Port) for all agents.
 
 Every agent-creator calls write_post() to persist a hype post. A new claim is
-private until its embedding audit succeeds. Port twins are mirrored best effort:
-a Port failure is logged, never blocks publication. MongoDB then promotes the
-project snapshot and post visibility together in one transaction.
+private until its evidence is written; the embedding and its audit are best
+effort: a post whose embedding failed is still published, carries
+``embeddingMissing`` (``embeddingAuditMissing`` for a missing audit), and
+repair_pending_posts backfills both later. Port
+twins are mirrored best effort: a Port failure is logged, never blocks
+publication. MongoDB then promotes the project snapshot and post visibility
+together in one transaction.
 
 Agent identity (handle, name, bio, source_type) is passed in so each agent
 gets its own voice but shares the write infrastructure.
@@ -12,6 +16,7 @@ gets its own voice but shares the write infrastructure.
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 import asyncio
+import logging
 import math
 import uuid
 from urllib.parse import urlparse
@@ -72,8 +77,11 @@ def validate_publication_input(project: dict, verdict: str, rank_score: float) -
     _bounded_score(rank_score, "Post rank score")
 
 
+_DIGEST_CONTENT_FIELDS = ("bodyText", "contentHref", "storyText")
+
+
 def _project_snapshot(project: dict, verdict: str) -> dict:
-    return {
+    snapshot = {
         "url": project["url"],
         "title": project["title"],
         "kind": project["kind"],
@@ -82,6 +90,10 @@ def _project_snapshot(project: dict, verdict: str) -> dict:
         "momentumScore": project.get("momentumScore", 0),
         "hypeVerdict": verdict,
     }
+    for field in _DIGEST_CONTENT_FIELDS:
+        if isinstance(project.get(field), str):
+            snapshot[field] = project[field]
+    return snapshot
 
 
 def _signal_snapshot(signal: dict, source_type: str, project_url: str) -> dict:
@@ -97,6 +109,31 @@ def _signal_snapshot(signal: dict, source_type: str, project_url: str) -> dict:
         if isinstance(value, str) and value.strip():
             snapshot[field] = value.strip()
     return snapshot
+
+
+def _try_embed(project: dict) -> list[float] | None:
+    try:
+        return embeddings.embed_project(
+            project["title"], project.get("description", ""), project.get("topics", [])
+        )
+    except Exception as error:
+        logging.warning(
+            "Embedding skipped for %s; repair will backfill it: %s",
+            project.get("url"),
+            error,
+        )
+        return None
+
+
+async def _audit_embedding(
+    post_id: str, project_url: str, agent_handle: str, embedding: list[float]
+) -> bool:
+    try:
+        await _ensure_embedding_audit(post_id, project_url, agent_handle, embedding)
+    except Exception as error:
+        logging.warning("Embedding audit skipped for post %s: %s", post_id, error)
+        return False
+    return True
 
 
 async def _ensure_embedding_audit(
@@ -352,9 +389,7 @@ async def _reconcile_multi_source_locked(
         )
         embedding = stored_project.get("embedding") if stored_project else None
     if embedding is None:
-        embedding = embeddings.embed_project(
-            project["title"], project.get("description", ""), project.get("topics", [])
-        )
+        embedding = _try_embed(project)
 
     target_ids = [target["post"]["_id"] for target in targets]
 
@@ -464,15 +499,18 @@ async def _reconcile_multi_source_locked(
                 and target["post"]["_id"] == current_object_id
             ):
                 sync_state["portSyncedByRunId"] = run_id
+            if embedding is None:
+                sync_state["embeddingMissing"] = True
+                update = {"$set": sync_state}
+            else:
+                update = {"$set": sync_state, "$unset": {"embeddingMissing": ""}}
             updated = await database.posts.update_one(
                 {
                     "_id": target["post"]["_id"],
                     "portSyncStatus": "pending",
                     "multiSourceSyncStatus": "pending",
                 },
-                {
-                    "$set": sync_state,
-                },
+                update,
                 session=session,
             )
             if updated.matched_count != 1:
@@ -491,7 +529,7 @@ async def _sync_port_twin(
     agent_bio: str,
     source_type: str,
     project: dict,
-    embedding: list[float],
+    embedding: list[float] | None,
 ) -> None:
     port_client.warn_on_failure(
         await asyncio.to_thread(
@@ -503,13 +541,19 @@ async def _sync_port_twin(
         ),
         f"agent sync for {agent_handle}",
     )
-    await _ensure_embedding_audit(post_id, project["url"], agent_handle, embedding)
+    audited = embedding is not None and await _audit_embedding(
+        post_id, project["url"], agent_handle, embedding
+    )
     await _reconcile_multi_source(
         project["url"],
         current_post_id=post_id,
         project_snapshot=project,
         embedding=embedding,
     )
+    if not audited:
+        await mongo.db.posts.update_one(
+            {"_id": ObjectId(post_id)}, {"$set": {"embeddingAuditMissing": True}}
+        )
 
 
 async def _repair_existing_post(
@@ -548,11 +592,7 @@ async def _repair_existing_post(
     if pending and not prefer_project:
         repair_embedding = None
     if not repair_embedding:
-        repair_embedding = embeddings.embed_project(
-            existing_project["title"],
-            existing_project.get("description", ""),
-            existing_project.get("topics", []),
-        )
+        repair_embedding = _try_embed(existing_project)
     stored_signal = existing.get("signal") or signal
     if stored_signal:
         if "projectId" not in stored_signal:
@@ -577,7 +617,7 @@ async def repair_pending_posts(
     source_type: str,
     batch_size: int = 100,
 ) -> int:
-    """Converge stored pending twins before relying on a fresh source scan."""
+    """Converge stored pending twins, then backfill embeddings that failed."""
     pending_posts = await (
         mongo.db.posts.find(
             {
@@ -618,7 +658,48 @@ async def repair_pending_posts(
             prefer_project=not current_contract,
         )
         repaired += 1
+    unembedded = await (
+        mongo.db.posts.find(
+            {
+                "agentHandle": agent_handle,
+                "portSyncStatus": "synced",
+                "$or": [{"embeddingMissing": True}, {"embeddingAuditMissing": True}],
+            }
+        )
+        .sort("postedAt", 1)
+        .to_list(length=batch_size)
+    )
+    for post in unembedded:
+        await _backfill_embedding(post)
     return repaired
+
+
+async def _backfill_embedding(post: dict) -> None:
+    project_url = post.get("project", {}).get("url")
+    stored = await mongo.db.projects.find_one({"url": project_url}, {"embedding": 1})
+    if stored is None:
+        logging.warning(
+            "Embedding backfill skipped for post %s: no project %s", post["_id"], project_url
+        )
+        return
+    embedding = stored.get("embedding")
+    if embedding is None:
+        embedding = _try_embed(post["project"])
+        if embedding is None:
+            return
+        await mongo.db.projects.update_one(
+            {"url": project_url}, {"$set": {"embedding": embedding}}
+        )
+    if await _audit_embedding(
+        str(post["_id"]), project_url, post["agentHandle"], embedding
+    ):
+        update = {"$unset": {"embeddingMissing": "", "embeddingAuditMissing": ""}}
+    else:
+        update = {
+            "$unset": {"embeddingMissing": ""},
+            "$set": {"embeddingAuditMissing": True},
+        }
+    await mongo.db.posts.update_one({"_id": post["_id"]}, update)
 
 
 async def write_post(
@@ -648,10 +729,8 @@ async def write_post(
     # 0. Validate every Port-constrained value before creating a pending claim.
     validate_publication_input(project, verdict, rank_score)
 
-    # 1. Embed the project (for $vectorSearch "similar projects")
-    embedding = embeddings.embed_project(
-        project["title"], project.get("description", ""), project.get("topics", [])
-    )
+    # 1. Embed the project (for $vectorSearch "similar projects"); best effort.
+    embedding = _try_embed(project)
 
     # 1b. Heal an unfinished twin before applying the daily dedup boundary.
     pending = await mongo.db.posts.find_one(
@@ -714,8 +793,12 @@ async def write_post(
     #     This is transparent recall, not a learned input to the current verdict.
     from . import episodic_memory
 
-    similar_episodes = await episodic_memory.retrieve_similar_episodes(
-        embedding, agent_handle=agent_handle, limit=3
+    similar_episodes = (
+        await episodic_memory.retrieve_similar_episodes(
+            embedding, agent_handle=agent_handle, limit=3
+        )
+        if embedding is not None
+        else []
     )
     episodes_context = None
     if similar_episodes:

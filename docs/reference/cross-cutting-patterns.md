@@ -6,16 +6,18 @@ MongoDB stores the rich post and alone decides what is public (ADR 0005). Port
 holds a best-effort catalog twin. The shared write path creates a complete
 private post snapshot as `pending`, links its raw signal with `postId`, mirrors
 the agent, project, and post to Port (a failure is logged; after the first one
-the run skips Port), and records the embedding audit. It then promotes the
+the run skips Port), and records the embedding audit when the embedding
+succeeded; a failed embedding marks the post `embeddingMissing` for the next
+run's repair to backfill (decision Q4). It then promotes the
 public project snapshot and post status together in one MongoDB transaction.
 Public queries exclude every post whose state is absent or not `synced`, which
 now means "published", not "Port twin confirmed".
 
 Retries locate the existing pending post by agent and project, preserve its
-timestamp and reaction counts, and create one immutable embedding audit record.
+timestamp and reaction counts, and create at most one immutable embedding audit record.
 Startup repair also treats legacy rows with no publication state as unpublished.
-This prevents a crash or audit failure from becoming a duplicate or an
-unverified change to a live project dossier.
+This prevents a crash from becoming a duplicate or an unverified change to a
+live project dossier.
 Reconciliation also holds a short MongoDB lease for the full project URL, so two
 source agents cannot compute and publish overlapping project snapshots at once.
 Cached digest and wave views re-check current synchronized source posts and hide
@@ -92,7 +94,7 @@ work, not current demo claims.
 ## 7. Observability is part of the proof
 
 - Port exposes catalog relations and the governed run trail.
-- MongoDB preserves source observations, checkpoint traces, posts, social state,
+- MongoDB preserves source observations, per-run health records, posts, social state,
   vectors, digests, and one immutable embedding audit record per post.
 - The public dossier exposes evidence and source links rather than a bare score.
 

@@ -87,6 +87,8 @@ async def write_reddit_post(post_url: str, verdict: str) -> str:
         "title": c["title"],
         "kind": c["kind"],
         "description": c["description"],
+        "bodyText": c.get("body_text", ""),
+        "contentHref": c.get("content_href", ""),
         "topics": c["topics"],
         "momentumScore": round(momentum, 1),
         "hypeVerdict": verdict,
@@ -121,7 +123,7 @@ async def write_reddit_post(post_url: str, verdict: str) -> str:
     )
 
 
-def build_agent(checkpointer=None):
+def build_agent():
     """Create the Deep Agents brain wired to Grove."""
     model = ChatOpenAI(
         model=os.environ["GROVE_MODEL"],
@@ -130,11 +132,8 @@ def build_agent(checkpointer=None):
         default_headers={"api-key": grove_api_key()},
         temperature=0.7,
     )
-    kwargs = {
-        "model": model,
-        "tools": [fetch_reddit_posts, write_reddit_post],
-        "system_prompt": SYSTEM_PROMPT,
-    }
-    if checkpointer is not None:
-        kwargs["checkpointer"] = checkpointer
-    return create_deep_agent(**kwargs)
+    return create_deep_agent(
+        model=model,
+        tools=[fetch_reddit_posts, write_reddit_post],
+        system_prompt=SYSTEM_PROMPT,
+    )

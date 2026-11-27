@@ -6,6 +6,10 @@ novel repos and repos identified by the momentum-score breakout gate.
 arXiv paper discovery was removed: export.arxiv.org inconsistently rejects
 the Python HTTP client with 406 (while accepting curl), so the source could
 not be made reliable.
+
+Each Show HN candidate keeps Algolia's ``story_text`` (the post's own text, as
+HTML; empty for a URL post, whose hit omits the key) as ``story_text``; the
+agent stores it as ``project.storyText``, which the daily digest's HN gate reads.
 """
 
 import logging
@@ -30,6 +34,7 @@ from _shared.mongo import (
     get_last_published_days,
     load_active_star_histories,
 )
+from _shared.run_notes import add_run_note
 from hidden_gems.tracker import track_daily_snapshots
 
 _github_token = os.environ.get("GITHUB_TOKEN", "")
@@ -99,6 +104,11 @@ async def fetch_hn_candidates(
     finally:
         if owns_client:
             await client.aclose()
+    if not hits:
+        add_run_note(
+            f"HN Algolia returned 0 Show HN stories over {SHOW_HN_MIN_POINTS} points "
+            f"in the last {SHOW_HN_WINDOW_HOURS}h"
+        )
     hits.sort(key=lambda hit: hit.get("points") or 0, reverse=True)
     for hit in hits:
         if len(candidates) >= max_results:
@@ -119,6 +129,7 @@ async def fetch_hn_candidates(
                 "evidence_url": f"https://news.ycombinator.com/item?id={story_id}",
                 "hn_points": hit.get("points", 0),
                 "hn_comments": hit.get("num_comments", 0),
+                "story_text": hit.get("story_text") or "",
             }
         )
     return candidates

@@ -33,7 +33,9 @@ keep `require_success`, because there a Port failure is the failure.
 
 - A Port outage no longer freezes the feed. The Port catalog can drift until the
   next successful sync of the same entity.
-- The embedding audit and the MongoDB lease and transaction still gate
-  publication.
+- The MongoDB lease and transaction still gate publication. The embedding
+  audit gated it too until decision Q4 (ticket 04) made the embedding and its
+  audit best effort: a post whose embedding fails is published with
+  `embeddingMissing`, and `repair_pending_posts` backfills it.
 - Run health no longer depends on Port; the daily refresh alert covers agent and
   digest failures.

@@ -1,34 +1,16 @@
-"""GitHub trending source — OSSInsight velocity API + Search API fallback.
-
-OSSInsight ingests the GH Archive (10B+ events) and counts WatchEvent (star)
-events in fixed time windows, giving deterministic star *velocity* (stars
-gained today), not the lifetime-total sorting the GitHub Search API is limited
-to. The Search API remains a fallback when OSSInsight is unreachable.
+"""GitHub's REST API for @github-radar: repo enrichment, README excerpts and the
+search fallback used when the trending pages fail (ADR 0007).
 """
 
 import asyncio
-import contextlib
+import base64
+import binascii
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 import httpx
-
-from _shared.momentum import (
-    _acceleration,
-    _is_monotonic_growth,
-    _velocity,
-    compute_momentum_score,
-    passes_fake_star_filter,
-    publish_score_threshold,
-    should_publish_hidden_gem,
-)
-from _shared.mongo import (
-    NEVER_POSTED_DAYS,
-    get_last_published_days,
-    load_active_star_histories,
-)
-from github_radar.tracker import track_daily_snapshots
 
 _token = os.environ.get("GITHUB_TOKEN", "")
 _headers = (
@@ -37,22 +19,45 @@ _headers = (
     else {}
 )
 
-# Rate limiting: sleep between per-repo GitHub API calls to avoid 429s.
-_PER_REPO_SLEEP_SECONDS = 0.1
 _RETRY_MAX_ATTEMPTS = 3
+_README_EXCERPT_CHARS = 2_000
+_SEARCH_URL = "https://api.github.com/search/repositories"
+FALLBACK_TOPICS = ("ai", "llm", "agent")
+FALLBACK_MAX_AGE = timedelta(days=90)
+FALLBACK_MIN_STARS = 100
+_FALLBACK_PER_QUERY = 30
 
 
-def _stars_int(value) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+class EnrichmentFailed(RuntimeError):
+    """More than half of a run's repo lookups failed."""
 
 
-async def _fetch_repo_with_retry(
-    client: httpx.AsyncClient, url: str
-) -> httpx.Response | None:
-    """Fetch a repo with simple retry on 429/5xx (exponential backoff).
+@dataclass(frozen=True)
+class Repo:
+    slug: str
+    url: str
+    description: str
+    topics: list[str]
+    stars: int
+    forks: int
+    created_at: datetime
+
+
+def _repo(data: dict) -> Repo:
+    """A repo from a ``/repos/{o}/{r}`` answer or a search item (same fields)."""
+    return Repo(
+        slug=data["full_name"],
+        url=data["html_url"],
+        description=(data.get("description") or "").strip(),
+        topics=data.get("topics") or [],
+        stars=data["stargazers_count"],
+        forks=data["forks_count"],
+        created_at=datetime.fromisoformat(data["created_at"].replace("Z", "+00:00")),
+    )
+
+
+async def _get_with_retry(client: httpx.AsyncClient, url: str) -> httpx.Response | None:
+    """GET a GitHub API URL with simple retry on 429/5xx (exponential backoff).
 
     Returns the response on success, or None if all retries are exhausted.
     """
@@ -91,426 +96,66 @@ async def _fetch_repo_with_retry(
     return None
 
 
-async def _fetch_ossinsight_trending(max_results: int) -> list[dict]:
-    """Fetch repos trending by star velocity via the OSSInsight public API.
+async def enrich(client: httpx.AsyncClient, slugs: list[str]) -> list[Repo]:
+    """One ``GET /repos/{o}/{r}`` per slug, in order.
 
-    Returns star *deltas* (stars gained in the period), not lifetime totals.
-    Post-filters for AI relevance via repo topics on the GitHub API.
+    A failed lookup is logged and skipped. More than half failing raises
+    ``EnrichmentFailed``, so a GitHub outage is never mistaken for a quiet day.
+    The client must follow redirects: a renamed repo answers with a 301.
     """
-    candidates: list[dict] = []
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(
-            "https://api.ossinsight.io/v1/trends/repos/",
-            params={"period": "past_24_hours"},
-            headers={"Accept": "application/json"},
-        )
-        r.raise_for_status()
-        body = r.json()
-        rows = body.get("data", {}).get("rows", body.get("data", []))
-        if not isinstance(rows, list):
-            return []
-        for row in rows[: max_results * 5]:  # over-fetch 5x, then AI-filter
-            repo_name = row.get("repo_name") or ""
-            if not repo_name or "/" not in repo_name:
-                continue
-            owner, repo = repo_name.split("/", 1)
-            candidates.append(
-                {
-                    "url": f"https://github.com/{repo_name}",
-                    "title": repo_name,
-                    "kind": "repo",
-                    "description": row.get("description") or "",
-                    "topics": [],  # resolved below via GitHub API
-                    "stars": _stars_int(row.get("stars")),  # velocity delta
-                    "created_at": None,
-                    "pushed_at": None,
-                    "language": row.get("primary_language"),
-                    "owner": owner,
-                    "repo": repo,
-                    "trending_stars_24h": _stars_int(row.get("stars")),
-                }
-            )
-    if not candidates:
-        return []
-    # Enrich with GitHub topics + metadata, filter for AI relevance.
-    # Broader than topics alone: also check the description for AI keywords,
-    # since many AI repos (e.g. stablyai/orca) lack ai as a GitHub topic.
-    ai_topic_keywords = {
-        "ai",
-        "llm",
-        "agent",
-        "gpt",
-        "openai",
-        "machine-learning",
-        "ml",
-        "chatgpt",
-        "claude",
-        "anthropic",
-        "rag",
-        "transformer",
-        "deep-learning",
-        "neural-network",
-        "copilot",
-        "agentic",
-    }
-    ai_desc_keywords = [
-        "ai",
-        "agent",
-        "llm",
-        "gpt",
-        "model",
-        "coding",
-        "code agent",
-        "dev tool",
-        "automation",
-        "copilot",
-        "prompt",
-        "inference",
-        "fine-tune",
-        "embedding",
-        "vector",
-        "chatbot",
-        "assistant",
-    ]
-    ai_candidates: list[dict] = []
-    async with httpx.AsyncClient(timeout=30) as client:
-        for c in candidates:
-            if len(ai_candidates) >= max_results:
-                break
-            try:
-                r = await _fetch_repo_with_retry(
-                    client,
-                    f"https://api.github.com/repos/{c['owner']}/{c['repo']}",
+    repos: list[Repo] = []
+    for slug in slugs:
+        response = await _get_with_retry(client, f"https://api.github.com/repos/{slug}")
+        try:
+            if response is None or response.status_code != 200:
+                raise ValueError(
+                    "no answer" if response is None else f"HTTP {response.status_code}"
                 )
-                if r is None or r.status_code != 200:
-                    continue
-                data = r.json()
-                topics = data.get("topics") or []
-                desc = (data.get("description") or c["description"] or "").lower()
-                topic_match = {t.lower() for t in topics} & ai_topic_keywords
-                desc_match = any(kw in desc for kw in ai_desc_keywords)
-                if not topic_match and not desc_match:
-                    continue  # not AI-related by topic or description
-                c["topics"] = topics
-                c["stars"] = data.get("stargazers_count", c["stars"])
-                # Skip repos with 0 stars (data unavailable or brand-new).
-                if c["stars"] == 0:
-                    continue
-                c["created_at"] = data.get("created_at")
-                c["pushed_at"] = data.get("pushed_at")
-                c["description"] = data.get("description") or c["description"]
-                c["forks"] = data.get("forks_count")
-                ai_candidates.append(c)
-            except Exception as e:
-                logging.warning(
-                    "Failed to enrich OSSInsight candidate %s/%s via GitHub API: %s",
-                    c.get("owner"),
-                    c.get("repo"),
-                    e,
-                )
-                continue
-            # Rate limit: sleep between per-repo GitHub API calls.
-            await asyncio.sleep(_PER_REPO_SLEEP_SECONDS)
-    return ai_candidates
+            repos.append(_repo(response.json()))
+        except (KeyError, TypeError, ValueError) as e:
+            logging.warning("Repo lookup failed for '%s': %s", slug, e)
+    failed = len(slugs) - len(repos)
+    if failed * 2 > len(slugs):
+        raise EnrichmentFailed(f"repo lookup failed for {failed} of {len(slugs)} repos")
+    return repos
 
 
-def _passes_fake_star_filter(stars: int, forks) -> bool:
-    """Pass through when fork data is missing; otherwise apply the fake-star filter."""
-    if forks is None:
-        return True
-    return passes_fake_star_filter(stars, forks)
-
-
-def _github_owner_repo(url: object) -> tuple[str, str] | None:
-    """OWNER/REPO from a strict github.com URL; other hosts and subpaths are skipped.
-
-    Twin of _shared.daily_digest._github_owner_repo — keep the two in sync: a
-    URL one accepts and the other rejects decides whether a repo is published
-    with its description or enriched at digest time.
-    """
-    if not isinstance(url, str):
-        return None
-    parts = [p for p in url[len("https://github.com/") :].split("/") if p]
-    if not url.startswith("https://github.com/") or len(parts) != 2:
-        return None
-    owner, repo = parts
-    if repo.endswith(".git"):
-        repo = repo[: -len(".git")]
-    if not owner or not repo:
-        return None
-    return owner, repo
-
-
-async def _repo_about_description(client, owner, repo) -> str:
-    """The repo's own About line for a momentum candidate; "" on any failure.
-
-    The client must be built with follow_redirects=True: a renamed repo
-    answers its About GET with a 301 to the new owner/repo, and httpx does
-    not follow redirects by default — the clause would be lost silently.
-    """
-    response = await _fetch_repo_with_retry(
-        client, f"https://api.github.com/repos/{owner}/{repo}"
+async def readme_excerpt(client: httpx.AsyncClient, slug: str) -> str:
+    """The start of a repo's README as text; "" when it has none or GitHub cannot say."""
+    response = await _get_with_retry(
+        client, f"https://api.github.com/repos/{slug}/readme"
     )
     if response is None or response.status_code != 200:
         return ""
     try:
-        return (response.json().get("description") or "").strip()
-    except ValueError:
+        content = base64.b64decode(response.json()["content"])
+    except (KeyError, TypeError, ValueError, binascii.Error) as e:
+        logging.warning("README for '%s' could not be read: %s", slug, e)
         return ""
+    return content.decode("utf-8", errors="replace")[:_README_EXCERPT_CHARS]
 
 
-async def fetch_trending_candidates(max_results: int = 10) -> list[dict]:
-    """Fetch trending candidate repos via OSSInsight velocity, Search API fallback.
+async def search_fallback(client: httpx.AsyncClient, now: datetime) -> list[Repo]:
+    """Young AI repos by stars, one search per topic in ``FALLBACK_TOPICS``.
 
-    OSSInsight returns repos by stars-gained-today (velocity); the Search API
-    fallback returns recently-created high-star repos (lifetime total). Both
-    paths are filtered for AI relevance.
+    Each topic is its own query, so the search needs no OR syntax. A failed
+    search raises: with trending already down, an empty pool would be silent.
     """
-    try:
-        candidates = await _fetch_ossinsight_trending(max_results)
-        if candidates:
-            return [
-                c
-                for c in candidates
-                if _passes_fake_star_filter(c.get("stars", 0), c.get("forks"))
-            ]
-        logging.info("OSSInsight returned no AI repos; falling back to Search API")
-    except Exception as e:
-        logging.warning(
-            "OSSInsight trending fetch failed, falling back to Search API: %s", e
-        )
-
-    since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
-    params = {
-        "q": f"created:>{since} stars:>200 topic:ai",
-        "sort": "stars",
-        "order": "desc",
-        "per_page": max_results,
-    }
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(
-            "https://api.github.com/search/repositories",
-            params=params,
+    since = (now - FALLBACK_MAX_AGE).date().isoformat()
+    repos: dict[str, Repo] = {}
+    for topic in FALLBACK_TOPICS:
+        response = await client.get(
+            _SEARCH_URL,
+            params={
+                "q": f"topic:{topic} created:>{since} stars:>{FALLBACK_MIN_STARS}",
+                "sort": "stars",
+                "order": "desc",
+                "per_page": _FALLBACK_PER_QUERY,
+            },
             headers=_headers,
         )
-        r.raise_for_status()
-        items = r.json().get("items", [])
-
-    candidates = []
-    for it in items:
-        candidates.append(
-            {
-                "url": it["html_url"],
-                "title": it["full_name"],
-                "kind": "repo",
-                "description": it.get("description") or "",
-                "topics": it.get("topics") or [],
-                "stars": it.get("stargazers_count", 0),
-                "forks": it.get("forks_count", 0),
-                "created_at": it.get("created_at"),
-                "pushed_at": it.get("pushed_at"),
-                "language": it.get("language"),
-                "owner": it["owner"]["login"],
-                "repo": it["name"],
-            }
-        )
-    return [
-        c
-        for c in candidates
-        if _passes_fake_star_filter(c.get("stars", 0), c.get("forks"))
-    ]
-
-
-async def get_repo_details(owner: str, repo: str) -> dict:
-    """Full repo metadata (1 req, cheap)."""
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(
-            f"https://api.github.com/repos/{owner}/{repo}", headers=_headers
-        )
-        r.raise_for_status()
-        return r.json()
-
-
-def _as_utc(value) -> datetime | None:
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    if isinstance(value, str):
-        with contextlib.suppress(ValueError):
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-    return None
-
-
-def _has_sustained_six_week_growth(
-    history: list[dict], current_value: float, current_at: datetime
-) -> bool:
-    observations = sorted(
-        [
-            (captured_at, float(signal.get("value", 0)))
-            for signal in history
-            if (captured_at := _as_utc(signal.get("capturedAt"))) is not None
-        ]
-        + [(current_at, float(current_value))],
-        key=lambda observation: observation[0],
-    )
-    if len(observations) < 6:
-        return False
-    if observations[-1][0] - observations[0][0] < timedelta(days=35):
-        return False
-    return observations[-1][1] > observations[0][1] and all(
-        current[1] >= previous[1]
-        for previous, current in zip(observations, observations[1:])
-    )
-
-
-def compute_momentum(candidate: dict, history: list[dict], prior_posts: int) -> dict:
-    """Deterministic momentum score (0-100) per docs/specs design.
-
-    Legacy scoring path. Prefer ``fetch_trending_candidates_with_momentum``
-    which uses the shared ``compute_momentum_score`` from ``_shared.momentum``.
-
-    Velocity (40%): lifetime-average stars per week since creation.
-    Sustainedness (25%): six observations spanning at least five weeks, net-positive
-    and non-decreasing through the current candidate value.
-    Novelty (15%): fewer prior posts => more novel.
-    Multi-source (20%): N/A in @github-radar alone (set in T5 cross-agent) -> base 50.
-
-    Returns explicitly labeled evidence fields so lifetime averages cannot be
-    presented as recent star velocity.
-    """
-    now = datetime.now(timezone.utc)
-    created = _as_utc(candidate.get("created_at"))
-    age_days = 30.0  # default if missing
-    if created:
-        age_days = max((now - created).total_seconds() / 86_400, 1)
-    stars = candidate.get("stars", 0)
-    average_stars_per_week = stars / (age_days / 7)
-
-    velocity = min(average_stars_per_week / 50, 1.0) * 100
-    sustained_six_week_growth = _has_sustained_six_week_growth(history, stars, now)
-    sustained = 60.0 if sustained_six_week_growth else 30.0
-    novel = max(100 - prior_posts * 25, 0)
-    multisource = 50.0  # base; boosted in T5 when cross-agent confirmation exists
-
-    score = 0.40 * velocity + 0.25 * sustained + 0.20 * multisource + 0.15 * novel
-    return {
-        "momentumScore": round(min(score, 100), 1),
-        "avgStarsPerWeekSinceCreation": round(average_stars_per_week, 1),
-        "sustainedSixWeekGrowth": sustained_six_week_growth,
-        "novel": prior_posts == 0,
-    }
-
-
-# ─── Shared Momentum Score path (compute_momentum_score from _shared.momentum) ───
-
-_MIN_HISTORY_DAYS = 7
-
-
-async def fetch_trending_candidates_with_momentum(db) -> list[dict]:
-    """Fetch trending AI repos using the shared Momentum Score.
-
-    1. Store today's snapshots via ``track_daily_snapshots``.
-    2. Load repos snapshotted this week with >=7 days of history, in batch.
-    3. Score every repo in the pool, then scale the publish threshold to the
-       pool's 80th percentile (``publish_score_threshold``).
-    4. Apply the fake-star filter and the publishing gate (with cross-agent
-       cooldown) against that threshold.
-    5. Return candidates with momentumScore, velocity, acceleration.
-    """
-    await track_daily_snapshots(db)
-
-    histories, post_counts = await load_active_star_histories(db, _MIN_HISTORY_DAYS)
-
-    # First pass: score every repo in the pool so the publish threshold can
-    # scale to today's distribution instead of a hardcoded cutoff that only
-    # already-trending repos could clear.
-    scored: list[dict] = []
-    for doc in histories:
-        project_url = doc["_id"]
-        history = doc["history"]
-
-        velocity = _velocity(history, 7)
-        acceleration = _acceleration(history)
-        stars = history[-1].get("github_stars", 0)
-        forks = history[-1].get("github_forks", 0)
-        fork_star_ratio = forks / stars if stars > 0 else 0.0
-
-        if not passes_fake_star_filter(stars, forks):
-            continue
-
-        prior_count = post_counts.get(project_url, 0)
-        score = compute_momentum_score(history, prior_post_count=prior_count)
-
-        scored.append(
-            {
-                "project_url": project_url,
-                "score": score,
-                "velocity": velocity,
-                "acceleration": acceleration,
-                "stars": stars,
-                "forks": forks,
-                "fork_star_ratio": fork_star_ratio,
-                "is_monotonic": _is_monotonic_growth(history),
-            }
-        )
-
-    threshold = publish_score_threshold([row["score"] for row in scored])
-
-    # Second pass: behavioral gates + cross-agent cooldown, against the
-    # pool-scaled threshold. Published candidates get the repo's own About
-    # line as their description (fail-soft to "") instead of a hard-coded
-    # empty string, so downstream consumers have a `what`.
-    results: list[dict] = []
-    on_cooldown = 0
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        for row in scored:
-            project_url = row["project_url"]
-            last_pub_days = await get_last_published_days(db, project_url)
-            gate = (
-                row["score"],
-                row["velocity"],
-                row["acceleration"],
-                row["fork_star_ratio"],
-            )
-            if not should_publish_hidden_gem(
-                *gate, last_pub_days, row["is_monotonic"], score_threshold=threshold
-            ):
-                if should_publish_hidden_gem(
-                    *gate, NEVER_POSTED_DAYS, row["is_monotonic"], score_threshold=threshold
-                ):
-                    on_cooldown += 1
-                continue
-
-            description = ""
-            owner_repo = _github_owner_repo(project_url)
-            if owner_repo:
-                description = await _repo_about_description(
-                    client, owner_repo[0], owner_repo[1]
-                )
-                await asyncio.sleep(_PER_REPO_SLEEP_SECONDS)
-
-            results.append(
-                {
-                    "url": project_url,
-                    "title": project_url.rsplit("/", 1)[-1],
-                    "kind": "repo",
-                    "description": description,
-                    "topics": ["ai", "github-radar"],
-                    "discovery_source": "momentum",
-                    "evidence_url": project_url,
-                    "stars": row["stars"],
-                    "github_stars": row["stars"],
-                    "github_forks": row["forks"],
-                    "momentumScore": row["score"],
-                    "velocity": row["velocity"],
-                    "acceleration": row["acceleration"],
-                }
-            )
-    # print, not logging: the agents configure no log handler, so INFO never
-    # reaches the CI log.
-    print(
-        f"@github-radar momentum stages: pool={len(histories)} scored={len(scored)} "
-        f"threshold={threshold} on_cooldown={on_cooldown} published={len(results)}",
-        flush=True,
-    )
-    return results
+        response.raise_for_status()
+        for item in response.json().get("items", []):
+            repo = _repo(item)
+            repos.setdefault(repo.slug, repo)
+    return list(repos.values())

@@ -70,5 +70,8 @@ jobs:
       - name: weekly-digest
         run: uv run --frozen --project integrations/weekly_digest pytest integrations/_shared/test_source_truth.py -q -k weekly_digest
 
+      - name: community-ask
+        run: uv run --frozen --project integrations/community_ask pytest integrations/community_ask -q
+
       - name: Setup and migration scripts
         run: uv run --frozen --project integrations/github_radar python -m unittest discover -s scripts -p 'test_*.py'

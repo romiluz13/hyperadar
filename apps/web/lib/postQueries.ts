@@ -1,5 +1,23 @@
 import type { Document } from "mongodb";
 
+export const FEED_POST_PROJECTION = {
+	_id: 1,
+	agentHandle: 1,
+	body: 1,
+	verdict: 1,
+	rankScore: 1,
+	postedAt: 1,
+	signalsSummary: 1,
+	"project.url": 1,
+	"project.title": 1,
+	"project.kind": 1,
+	"project.momentumScore": 1,
+	"project.topics": 1,
+	reactionCounts: 1,
+	"signal.evidenceUrl": 1,
+	"signal.evidenceLabel": 1,
+} as const;
+
 export function recentPostsMatch(match: Document, since: Date): Document {
 	return { ...match, postedAt: { $gte: since } };
 }
@@ -19,6 +37,7 @@ export function distinctProjectPostsPipeline(
 	return [
 		{ $match: match },
 		{ $sort: { postedAt: -1, rankScore: -1 } },
+		{ $project: FEED_POST_PROJECTION },
 		{ $group: { _id: "$project.url", post: { $first: "$$ROOT" } } },
 		{ $replaceRoot: { newRoot: "$post" } },
 		{ $sort: { postedAt: -1, rankScore: -1 } },
@@ -59,6 +78,7 @@ export function vectorSearchProjectsPipeline(
 					{ $match: { portSyncStatus: "synced" } },
 					{ $sort: { rankScore: -1 } },
 					{ $limit: 1 },
+					{ $project: FEED_POST_PROJECTION },
 				],
 				as: "posts",
 			},
@@ -107,6 +127,7 @@ export function textSearchPostsPipeline(
 		// token-based matching, so "not_synced" would also match "synced".
 		{ $match: { portSyncStatus: "synced" } },
 		{ $sort: { rankScore: -1, postedAt: -1 } },
+		{ $project: FEED_POST_PROJECTION },
 		{ $group: { _id: "$project.url", post: { $first: "$$ROOT" } } },
 		{ $replaceRoot: { newRoot: "$post" } },
 		// Sort by rankScore descending after dedup — $group order is undefined.
@@ -201,6 +222,7 @@ export function textOnlySearchPipeline(
 		// token-based matching, so "not_synced" would also match "synced".
 		{ $match: { portSyncStatus: "synced" } },
 		{ $sort: { rankScore: -1, postedAt: -1 } },
+		{ $project: FEED_POST_PROJECTION },
 		{ $group: { _id: "$project.url", post: { $first: "$$ROOT" } } },
 		{ $replaceRoot: { newRoot: "$post" } },
 		// Sort by rankScore descending after dedup — $group order is undefined.

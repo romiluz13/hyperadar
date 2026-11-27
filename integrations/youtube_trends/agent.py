@@ -122,7 +122,7 @@ async def write_youtube_post(video_url: str, verdict: str) -> str:
     )
 
 
-def build_agent(checkpointer=None):
+def build_agent():
     """Create the Deep Agents brain wired to Grove."""
     model = ChatOpenAI(
         model=os.environ["GROVE_MODEL"],
@@ -131,11 +131,8 @@ def build_agent(checkpointer=None):
         default_headers={"api-key": grove_api_key()},
         temperature=0.7,
     )
-    kwargs = {
-        "model": model,
-        "tools": [fetch_youtube_videos, write_youtube_post],
-        "system_prompt": SYSTEM_PROMPT,
-    }
-    if checkpointer is not None:
-        kwargs["checkpointer"] = checkpointer
-    return create_deep_agent(**kwargs)
+    return create_deep_agent(
+        model=model,
+        tools=[fetch_youtube_videos, write_youtube_post],
+        system_prompt=SYSTEM_PROMPT,
+    )

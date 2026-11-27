@@ -25,7 +25,7 @@ the Ocean SDK.
 
 - Port owns agent selection, authorization, dispatch, and the visible run trail.
 - GitHub Actions supplies isolated compute and the committed `uv` environment.
-- MongoDB stores rich evidence, vectors, social state, checkpoints, and posts.
+- MongoDB stores rich evidence, vectors, social state, run records, and posts.
 - Port's REST catalog holds the operational twin of each published post.
 
 Port sync is best effort (ADR 0005). A MongoDB post starts with

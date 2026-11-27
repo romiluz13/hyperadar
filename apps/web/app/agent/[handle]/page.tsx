@@ -1,10 +1,13 @@
 import Link from "next/link";
+import { unstable_cache } from "next/cache";
 
 import { ReactionBar } from "@/app/components/ReactionBar";
 import { ReactionStatusProvider } from "@/app/components/ReactionStatusProvider";
 import { agentByHandle } from "@/lib/agentCatalog";
+import { cacheKeyPage, cacheKeyParam } from "@/lib/cacheKeys";
 import { getDb } from "@/lib/mongo";
 import { archiveWindow } from "@/lib/pagination";
+import { FEED_POST_PROJECTION } from "@/lib/postQueries";
 import { PUBLIC_POST_FILTER } from "@/lib/publication";
 import { projectHref } from "@/lib/routes";
 
@@ -39,49 +42,57 @@ function relativeTime(then: Date): string {
 	return dateFormatter.format(then);
 }
 
-async function getAgentData(handle: string, requestedPage?: string) {
-	const db = await getDb();
-	const fullHandle = handle.startsWith("@") ? handle : `@${handle}`;
-	const match = {
-		...PUBLIC_POST_FILTER,
-		agentHandle: fullHandle,
-	};
+const getAgentData = unstable_cache(
+	async (handle: string, requestedPage: number) => {
+		const db = await getDb();
+		const fullHandle = handle.startsWith("@") ? handle : `@${handle}`;
+		const match = {
+			...PUBLIC_POST_FILTER,
+			agentHandle: fullHandle,
+		};
 
-	const [postCount, reactionTotals] = await Promise.all([
-		db.collection<Post>("posts").countDocuments(match),
-		db
-			.collection<Post>("posts")
-			.aggregate<{ likes: number; comments: number }>([
-				{ $match: match },
-				{
-					$group: {
-						_id: null,
-						likes: { $sum: { $ifNull: ["$reactionCounts.likes", 0] } },
-						comments: { $sum: { $ifNull: ["$reactionCounts.comments", 0] } },
+		const [postCount, reactionTotals] = await Promise.all([
+			db.collection<Post>("posts").countDocuments(match),
+			db
+				.collection<Post>("posts")
+				.aggregate<{ likes: number; comments: number }>([
+					{ $match: match },
+					{
+						$group: {
+							_id: null,
+							likes: { $sum: { $ifNull: ["$reactionCounts.likes", 0] } },
+							comments: { $sum: { $ifNull: ["$reactionCounts.comments", 0] } },
+						},
 					},
-				},
-			])
-			.next(),
-	]);
-	const archive = archiveWindow(requestedPage, postCount);
-	const posts = await db
-		.collection<Post>("posts")
-		.find(match)
-		.sort({ postedAt: -1 })
-		.skip(archive.skip)
-		.limit(20)
-		.toArray();
+				])
+				.next(),
+		]);
+		const archive = archiveWindow(String(requestedPage), postCount);
+		const posts = await db
+			.collection<Post>("posts")
+			.find(match, { projection: FEED_POST_PROJECTION })
+			.sort({ postedAt: -1 })
+			.skip(archive.skip)
+			.limit(20)
+			.toArray();
 
-	if (posts.length === 0) return null;
-	return {
-		handle: fullHandle,
-		posts: posts.map((post) => ({ ...post, _id: post._id.toString() })),
-		postCount,
-		likes: reactionTotals?.likes ?? 0,
-		comments: reactionTotals?.comments ?? 0,
-		archive,
-	};
-}
+		if (posts.length === 0) return null;
+		return {
+			handle: fullHandle,
+			posts: posts.map((post) => ({
+				...post,
+				_id: post._id.toString(),
+				postedAt: new Date(post.postedAt).toISOString(),
+			})),
+			postCount,
+			likes: reactionTotals?.likes ?? 0,
+			comments: reactionTotals?.comments ?? 0,
+			archive,
+		};
+	},
+	["agent-data"],
+	{ revalidate: 86400 },
+);
 
 export async function generateMetadata({
 	params,
@@ -107,7 +118,7 @@ export default async function AgentPage({
 }) {
 	const { handle } = await params;
 	const { page } = await searchParams;
-	const data = await getAgentData(handle, page);
+	const data = await getAgentData(cacheKeyParam(handle), cacheKeyPage(page));
 
 	if (!data) {
 		return (

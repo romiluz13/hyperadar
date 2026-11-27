@@ -171,6 +171,32 @@ def test_feed_parser_keeps_the_post_body_for_the_corpus():
     assert "(nested)" in post["description"]
 
 
+def test_feed_parser_keeps_the_body_and_link_as_their_own_fields():
+    """The digest's Reddit gate reads the self-text and the link apart (ticket 06)."""
+    source = load_source()
+    markup = shreddit_post(
+        "s1", title="Self post", body="Long self text", created=fresh()
+    ) + shreddit_post(
+        "i1", title="Image post", content_href="https://i.redd.it/560sypctfn3i1.png",
+        created=fresh(),
+    )
+
+    posts = {p["title"]: p for p in source.parse_rising_feed(markup)}
+
+    assert posts["Self post"]["body_text"] == "Long self text (nested)"
+    assert posts["Self post"]["content_href"] == ""
+    assert posts["Image post"]["body_text"] == ""
+    assert posts["Image post"]["content_href"] == "https://i.redd.it/560sypctfn3i1.png"
+
+
+def test_feed_parser_caps_the_stored_body():
+    source = load_source()
+    [post] = source.parse_rising_feed(
+        shreddit_post("long", body="word " * 1000, created=fresh())
+    )
+    assert len(post["body_text"]) == source.REDDIT_BODY_MAX_CHARS
+
+
 def test_feed_parser_keeps_every_post_when_a_body_is_left_open():
     """A truncated body must not swallow the posts after it."""
     source = load_source()
@@ -269,20 +295,23 @@ async def test_fetch_polls_an_async_run_until_it_completes():
     source = load_source()
     monkey_page = shreddit_post("async1", score=300, comments=40, created=fresh())
     polls = []
+    batch_urls = []
 
     def run_status(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
+            batch_urls[:] = json.loads(request.content)["input"]["urls"]
             return httpx.Response(202, json={"runId": "r-async", "status": "RUNNING"})
         polls.append(str(request.url))
         if len(polls) < 2:
             return httpx.Response(200, json={"runId": "r-async", "status": "RUNNING"})
+        results = [{"url": u, "text": monkey_page} for u in batch_urls]
         return httpx.Response(
             200,
             json={
                 "runId": "r-async",
                 "status": "COMPLETED",
                 "providerResponse": {"httpStatus": 200},
-                "output": {"results": [{"url": "u", "text": monkey_page}], "errors": []},
+                "output": {"results": results, "errors": []},
             },
         )
 
@@ -416,22 +445,48 @@ async def test_fetch_accepts_a_completed_run_with_a_null_provider_status():
     assert posts
 
 
-@pytest.mark.asyncio
-async def test_fetch_tolerates_some_subreddits_failing():
-    source = load_source()
+def _failing_some(source, failing: int):
+    """LocalLLaMA has one hot post; ``failing`` other subreddits time out."""
+    down = set(source.SUBREDDITS[1 : 1 + failing])
 
     def page_for(name: str):
         if name == "LocalLLaMA":
             return shreddit_post("ok", score=200, comments=20, created=fresh())
-        return {"error": "timeout"}
+        if name in down:
+            return {"error": "timeout"}
+        return shreddit_post(f"p{name}", score=5, subreddit=name, created=fresh())
+
+    return monid_client(page_for)
+
+
+@pytest.mark.asyncio
+async def test_fetch_tolerates_up_to_half_the_subreddits_failing():
+    source = load_source()
+    half = len(source.SUBREDDITS) // 2
 
     candidates = await source.fetch_reddit_candidates(
-        max_results=10, db=FakeDb(url_to_post={}), client=monid_client(page_for)
+        max_results=10, db=FakeDb(url_to_post={}), client=_failing_some(source, half)
     )
 
     assert [c["url"] for c in candidates] == [
         "https://www.reddit.com/r/LocalLLaMA/comments/ok"
     ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_raises_when_over_half_the_subreddits_fail():
+    source = load_source()
+    total = len(source.SUBREDDITS)
+    over_half = total // 2 + 1
+
+    with pytest.raises(
+        RuntimeError, match=f"Reddit source down: {over_half} of {total}.*timeout"
+    ):
+        await source.fetch_reddit_candidates(
+            max_results=10,
+            db=FakeDb(url_to_post={}),
+            client=_failing_some(source, over_half),
+        )
 
 
 @pytest.mark.asyncio
@@ -865,3 +920,39 @@ async def test_snapshot_stores_thread_text_for_corpus():
     assert doc["comments"] == 10
     assert "capturedAt" in doc
 
+
+
+@pytest.mark.asyncio
+async def test_written_thread_project_carries_the_body_and_link(monkeypatch):
+    """write_reddit_post hands the gate's fields to write_post on the project."""
+    import agent
+
+    written = {}
+
+    async def capture_write(*args, **_kwargs):
+        written["project"] = args[4]
+        return "post-1"
+
+    monkeypatch.setattr(agent, "write_post", capture_write)
+    url = "https://www.reddit.com/r/LocalLLaMA/comments/s1"
+    monkeypatch.setitem(
+        agent._CANDIDATE_CACHE,
+        url,
+        {
+            "url": url,
+            "title": "Self post",
+            "kind": "thread",
+            "description": "Self post Long self text",
+            "body_text": "Long self text",
+            "content_href": "https://github.com/acme/tool",
+            "topics": ["reddit"],
+            "num_upvotes": 400,
+            "num_comments": 40,
+            "evidence_url": url,
+        },
+    )
+
+    await agent.write_reddit_post.ainvoke({"post_url": url, "verdict": "emerging"})
+
+    assert written["project"]["bodyText"] == "Long self text"
+    assert written["project"]["contentHref"] == "https://github.com/acme/tool"

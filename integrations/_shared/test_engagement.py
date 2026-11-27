@@ -70,14 +70,14 @@ def test_engagement_boost_partial_story():
     assert engagement.engagement_boost(30, 10) == 1
 
 
-# ─── strip_html / pick_top_comment ───
+# ─── pick_top_comment ───
 
 
-def test_strip_html_collapses_markup():
-    assert (
-        engagement.strip_html('<p>hello <a href="x">world</a></p>\n')
-        == "hello world"
+def test_a_comment_s_markup_and_entities_collapse_to_plain_text():
+    top = engagement.pick_top_comment(
+        [{"author": "bob", "text": '<p>don&#x27;t <a href="x">ship</a></p>\n'}]
     )
+    assert top == {"author": "bob", "text": "don't ship"}
 
 
 def test_pick_top_comment_skips_empty_and_deleted():
@@ -323,3 +323,20 @@ async def test_fetch_hn_story_reads_points_and_comments_of_that_story():
 async def test_fetch_hn_story_degrades_to_none():
     assert await engagement.fetch_hn_story("777", _FakeClient([_Response(500)])) is None
     assert await engagement.fetch_hn_story("777", _FakeClient([_Response(payload={"hits": []})])) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/../repos",
+        "https://github.com/acme/..",
+        "https://github.com/./tool",
+        "https://github.com/acme/.",
+    ],
+)
+def test_a_dot_or_dot_dot_segment_is_not_a_repo(url):
+    assert engagement.repo_slug(url) is None
+
+
+def test_a_dotted_repo_name_is_still_a_repo():
+    assert engagement.repo_slug("https://github.com/acme/tool.js") == "acme/tool.js"

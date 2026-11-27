@@ -10,7 +10,11 @@ import { PUBLIC_DIGEST_FILTER, PUBLIC_POST_FILTER } from "@/lib/publication";
 import { projectHref } from "@/lib/routes";
 import { isMultiAgentTheme, themeAnchor, visibleWaves } from "@/lib/waves";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 86400;
+
+export async function generateStaticParams() {
+	return [];
+}
 
 type DigestProject = {
 	title: string;
