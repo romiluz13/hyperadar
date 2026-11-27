@@ -58,10 +58,16 @@ def _no_live_github(monkeypatch):
 def _keep_every_post(monkeypatch, listed: list[dict]):
     """Item-text tests bypass slots: every listed post becomes an item, in order."""
 
-    def keep_all(posts, evidence, featured, now):
-        chosen = [{"post": post, "slot": None, "evidence": {}} for post in listed]
-        return {"chosen": chosen, "belowFloor": False}
+    def every_post(posts, evidence, featured, now):
+        return [{"post": post, "slot": None, "evidence": {}} for post in listed]
 
+    def keep_all(posts, evidence, featured, now, *, whats):
+        return {
+            "chosen": every_post(posts, evidence, featured, now),
+            "belowFloor": False,
+        }
+
+    monkeypatch.setattr(daily_digest, "digest_candidates", every_post)
     monkeypatch.setattr(daily_digest, "compose_daily_digest", keep_all)
 
 
@@ -153,9 +159,9 @@ def _prompt_items(prompt: str) -> list[dict]:
 class TestGrovePrompt:
     """One Grove prompt: a blurb per chosen item, a grounded `what` where asked."""
 
-    def test_the_items_are_already_chosen_and_grove_only_writes(self):
+    def test_the_items_are_already_ranked_and_grove_only_writes(self):
         prompt = _build_grove_prompt([_entry(0)])
-        assert "already chosen and ordered" in prompt
+        assert "do not drop, reorder or choose among any" in prompt
         assert "JSON" in prompt
 
     def test_what_is_asked_only_for_items_with_sources_and_carries_them(self):
@@ -356,8 +362,13 @@ def _fake_star_history(monkeypatch, weekly: dict[str, int], calls: list | None =
 
 
 def _blurb_every_post(monkeypatch):
+    """Grove blurbs every item; its `what` is grounded only in ``_SUBSTANCE``."""
+
     async def fake_call_grove(posts):
-        return [{"id": i, "blurb": f"blurb {i}"} for i in range(len(posts))]
+        return [
+            {"id": i, "blurb": f"blurb {i}", "what": _SUBSTANCE_WHAT}
+            for i in range(len(posts))
+        ]
 
     monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
 
@@ -493,11 +504,17 @@ class TestGenerateDailyDigest:
                 "delta": 724,
             },
         )
-        post["project"]["bodyText"] = "x" * 200
+        post["project"]["bodyText"] = _SUBSTANCE
         db = _FakeDatabase([post])
 
         async def fake_call_grove(posts):
-            return [{"id": 0, "blurb": "A Reddit discussion is taking off."}]
+            return [
+                {
+                    "id": 0,
+                    "blurb": "A Reddit discussion is taking off.",
+                    "what": _SUBSTANCE_WHAT,
+                }
+            ]
 
         monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
 
@@ -665,7 +682,14 @@ class TestGenerateDailyDigest:
         db = _FakeDatabase(sample_posts)
 
         async def fake_call_grove(posts):
-            return [{"id": 1, "blurb": "Grove blurb for the second item"}]
+            return [
+                {"id": 0, "what": _SUBSTANCE_WHAT},
+                {
+                    "id": 1,
+                    "blurb": "Grove blurb for the second item",
+                    "what": _SUBSTANCE_WHAT,
+                },
+            ]
 
         monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
 
@@ -690,7 +714,7 @@ class TestGenerateDailyDigest:
         db = _FakeDatabase(sample_posts)
 
         async def fake_call_grove(posts):
-            return [{"id": 0, "blurb": "grove blurb"}]
+            return [{"id": 0, "blurb": "grove blurb", "what": _SUBSTANCE_WHAT}]
 
         monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
         result = await daily_digest.generate_daily_digest(db=db, now=self.NOW)
@@ -700,16 +724,26 @@ class TestGenerateDailyDigest:
         assert result["items"][1]["blurb"] == "B" * 100
 
     async def test_invalid_json_from_grove_still_sends_the_digest(self, monkeypatch):
-        """When Grove returns nothing usable, the chosen items go out with body blurbs."""
-        db = _FakeDatabase([_slot_reddit("thread", 900), _slot_video("video", 30000)])
+        """When Grove returns nothing usable, the chosen items go out with body blurbs.
+
+        A Reddit thread with no `what` left loses its slot (task 22).
+        """
+        _fake_star_history(monkeypatch, {"acme/r1": 500})
+        posts = [
+            _slot_repo("r1"),
+            _slot_reddit("thread", 900),
+            _slot_video("video", 30000),
+        ]
 
         async def fake_call_grove(posts):
             return []
 
         monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
-        result = await daily_digest.generate_daily_digest(db=db, now=self.NOW)
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts), now=self.NOW
+        )
 
-        assert len(result["items"]) == 2
+        assert [item["title"] for item in result["items"]] == ["r1", "video"]
         assert all(item["blurb"] == "blurb" for item in result["items"])
 
     async def test_a_grove_failure_costs_the_blurbs_not_the_digest(self, monkeypatch):
@@ -992,7 +1026,7 @@ class TestItemStats:
     NOW = datetime(2026, 7, 23, 10, 0, 0, tzinfo=timezone.utc)
 
     async def _items(self, monkeypatch, posts, trending=()):
-        _grove_whats(monkeypatch, {})
+        _blurb_every_post(monkeypatch)
         db = _FakeDatabase(posts)
         db.trending_snapshots.rows = list(trending)
         result = await daily_digest.generate_daily_digest(db=db, now=self.NOW)
@@ -1135,7 +1169,14 @@ class TestUnpatchedRomBotRender:
             monkeypatch, {"acme/opensre": 900, "acme/tool": 700, "acme/kit": 500}
         )
         _fake_github(monkeypatch, readmes={"acme/opensre": _OPENSRE_README})
-        _grove_whats(monkeypatch, {0: _OPENSRE_WHAT, 1: "An invented engine."})
+        _grove_whats(
+            monkeypatch,
+            {
+                0: _OPENSRE_WHAT,
+                1: "An invented engine.",
+                3: "A local tracer that replays the run step by step.",
+            },
+        )
         posts = [
             _repo_post("opensre", _OPENSRE_ABOUT),
             _repo_post("tool", "A CLI that turns logs into timelines"),
@@ -1270,9 +1311,7 @@ class TestDigestSlotsRegression:
             "logitcai/tinybrain": _stars(283),
         }
 
-        result = daily_digest.compose_daily_digest(
-            posts, evidence, featured=set(), now=SLOT_NOW
-        )
+        result = _compose(posts, evidence)
 
         kinds = [chosen["post"]["project"]["kind"] for chosen in result["chosen"]]
         urls = [chosen["post"]["project"]["url"] for chosen in result["chosen"]]
@@ -1303,7 +1342,10 @@ def _slot_repo(name: str) -> dict:
     )
 
 
-_SUBSTANCE = "x" * 200
+# On topic, so the Show HN scope rule passes unless a test says otherwise;
+# "coding" maps to no topic emoji.
+_SUBSTANCE = ("coding " * 29)[:200]
+_SUBSTANCE_WHAT = "Coding."
 
 
 def _slot_reddit(
@@ -1369,9 +1411,15 @@ def _slot_video(name: str, views: int) -> dict:
     )
 
 
-def _compose(posts, evidence=None, featured=None):
+def _compose(posts, evidence=None, featured=None, whats=None):
+    """Every non-repo post has a final `what` unless ``whats`` says otherwise."""
+    described = {post["project"]["url"]: "A described item." for post in posts}
     return daily_digest.compose_daily_digest(
-        posts, evidence or {}, featured=featured or set(), now=SLOT_NOW
+        posts,
+        evidence or {},
+        featured=featured or set(),
+        now=SLOT_NOW,
+        whats={**described, **(whats or {})},
     )
 
 
@@ -1621,11 +1669,11 @@ class TestHnGate:
         # 199 visible characters: raw length is far over 200, plain text is not.
         escaped = "<p><i>" + "&#x27;" * 100 + "y" * 99 + "</i></p>"
         assert len(escaped) > 200
-        short = _slot_show_hn("short", 400, story_text=escaped)
+        short = _slot_show_hn("short agent", 400, story_text=escaped)
         result = _compose(*_with_two_repos(short))
         assert _slots(result) == ["repo", "repo"]
 
-        enough = _slot_show_hn("enough", 400, story_text=escaped + "z")
+        enough = _slot_show_hn("enough agent", 400, story_text=escaped + "z")
         result = _compose(*_with_two_repos(enough))
         assert _slots(result) == ["repo", "repo", "hn"]
 
@@ -1712,8 +1760,236 @@ class TestDigestGatesRegression:
             "https://i.redd.it/a9idfrkmbs3i1.jpeg",
         ]
         # No repo evidence: the digest is below its 2-item floor.
-        result = daily_digest.compose_daily_digest(
-            posts, {}, featured=set(), now=SLOT_NOW
-        )
+        result = _compose(posts)
         assert result["chosen"] == []
         assert result["belowFloor"] is True
+
+
+class TestNonRepoVerdictRule:
+    """Task 22: an `inflated` or `cooling` non-repo post never takes a slot."""
+
+    def test_the_excluded_verdicts_are_named(self):
+        assert daily_digest.NON_REPO_EXCLUDED_VERDICTS == {"inflated", "cooling"}
+
+    @pytest.mark.parametrize("verdict", ["inflated", "cooling"])
+    def test_a_high_engagement_thread_with_a_doubted_verdict_loses_its_slot(
+        self, verdict
+    ):
+        doubted = _slot_reddit("doubted", 2040, comments=480)
+        doubted["verdict"] = verdict
+        result = _compose(*_with_two_repos(doubted, _slot_reddit("believed", 400)))
+        assert _titles(result)[2:] == ["believed"]
+
+    def test_an_emerging_thread_takes_the_slot(self):
+        thread = _slot_reddit("emerging", 900)
+        thread["verdict"] = "emerging"
+        result = _compose(*_with_two_repos(thread))
+        assert _slots(result) == ["repo", "repo", "reddit"]
+
+    def test_the_top_up_never_admits_a_doubted_verdict(self):
+        inflated = _slot_reddit("inflated", 2040)
+        inflated["verdict"] = "inflated"
+        cooling = _slot_video("cooling-video", 900)
+        cooling["verdict"] = "cooling"
+        posts = [inflated, cooling, _slot_reddit("small", 120, comments=5)]
+        result = _compose(posts)
+        assert _titles(result) == ["small"]
+        assert result["belowFloor"] is True
+
+
+_SYNTH_STORY = (
+    "I made a game that runs through exercises where you learn as you build "
+    "patches on a modular rack. Each level gives you oscillators, filters and "
+    "envelopes, and you wire them until the sound matches the target patch."
+)
+_AGENT_STORY = (
+    "I made a local tracer that records every tool call an agent makes and "
+    "replays the run step by step, so you can see where the plan went wrong. "
+    "It runs offline and keeps the traces in a folder you own on your laptop."
+)
+
+
+class TestShowHnTopicRule:
+    """Task 22: a Show HN post must be about AI or dev tools (scope keywords)."""
+
+    def test_an_off_topic_show_hn_with_points_and_text_is_excluded(self):
+        game = _slot_show_hn("Synth Patch Hero", 125, story_text=_SYNTH_STORY)
+        result = _compose(*_with_two_repos(game))
+        assert _slots(result) == ["repo", "repo"]
+
+    def test_an_ai_show_hn_with_points_and_text_takes_the_slot(self):
+        tracer = _slot_show_hn("Agent replay", 125, story_text=_AGENT_STORY)
+        result = _compose(*_with_two_repos(tracer))
+        assert _slots(result) == ["repo", "repo", "hn"]
+
+    def test_a_scope_keyword_in_the_title_alone_is_enough(self):
+        cli = _slot_show_hn("A CLI for synth patches", 125, story_text=_SYNTH_STORY)
+        result = _compose(*_with_two_repos(cli))
+        assert _slots(result) == ["repo", "repo", "hn"]
+
+    def test_the_top_up_never_admits_an_off_topic_show_hn(self):
+        game = _slot_show_hn("Synth Patch Hero", 900, story_text=_SYNTH_STORY)
+        result = _compose([game, _slot_video("small-video", 900)])
+        assert _titles(result) == ["small-video"]
+
+
+def _undescribed(*posts) -> dict:
+    """The final `what` of these posts is null: Grove's was rejected, no fallback."""
+    return {post["project"]["url"]: None for post in posts}
+
+
+class TestNonRepoDescribedRule:
+    """Task 22: a Reddit or HN item takes a slot only with a final `what`."""
+
+    def test_an_undescribed_thread_gives_way_to_the_next_of_its_kind(self):
+        bare = _slot_reddit("bare", 2040)
+        posts, evidence = _with_two_repos(bare, _slot_reddit("described", 400))
+        result = _compose(posts, evidence, whats=_undescribed(bare))
+        assert _titles(result)[2:] == ["described"]
+
+    def test_with_no_described_candidate_left_the_slot_stays_empty(self):
+        bare = _slot_show_hn("bare agent", 400)
+        thread = _slot_reddit("thread", 900)
+        posts, evidence = _with_two_repos(bare, thread)
+        result = _compose(posts, evidence, whats=_undescribed(bare))
+        assert _slots(result) == ["repo", "repo", "reddit"]
+
+    def test_only_three_candidates_per_kind_are_tried(self):
+        bare = [_slot_reddit(f"bare-{n}", 2000 - n) for n in range(3)]
+        fourth = _slot_reddit("fourth", 500)
+        posts, evidence = _with_two_repos(*bare, fourth)
+        result = _compose(posts, evidence, whats=_undescribed(*bare))
+        assert _slots(result) == ["repo", "repo"]
+
+    def test_the_top_up_never_admits_an_undescribed_item(self):
+        bare = _slot_reddit("bare", 120, comments=5)
+        posts = [bare, _slot_reddit("small", 110, comments=5), _slot_video("v", 900)]
+        result = _compose(posts, whats=_undescribed(bare))
+        assert _titles(result) == ["small", "v"]
+        assert result["belowFloor"] is True
+
+    def test_a_video_needs_no_what(self):
+        result = _compose(*_with_two_repos(_slot_video("talk", 40_000)), whats={})
+        assert _slots(result) == ["repo", "repo", "video"]
+
+
+class TestDescribedSlotThroughGrove:
+    """The one batched Grove call: top candidates per kind, first validated wins."""
+
+    async def test_a_rejected_what_frees_the_slot_for_the_next_thread(
+        self, monkeypatch
+    ):
+        _fake_star_history(monkeypatch, {"acme/r1": 500, "acme/r2": 500})
+        first = _slot_reddit("first", 2040, body=_BODY)
+        second = _slot_reddit("second", 900, body=_BODY)
+        seen: list = []
+
+        async def fake_call_grove(entries):
+            seen.append([e["title"] for e in entries])
+            whats = {
+                "first": "A cloud tracer for agents.",
+                "second": "A local tracer that replays the run step by step.",
+            }
+            return [
+                {"id": e["id"], "blurb": "b", "what": whats.get(e["title"], "")}
+                for e in entries
+            ]
+
+        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+        db = _FakeDatabase([_slot_repo("r1"), _slot_repo("r2"), first, second])
+
+        result = await daily_digest.generate_daily_digest(db=db, now=SLOT_NOW)
+
+        assert len(seen) == 1
+        assert sorted(seen[0]) == ["first", "r1", "r2", "second"]
+        assert [item["title"] for item in result["items"]] == ["r1", "r2", "second"]
+        assert result["items"][2]["what"] == (
+            "A local tracer that replays the run step by step."
+        )
+
+    async def test_grove_sees_at_most_three_candidates_per_kind(self, monkeypatch):
+        _fake_star_history(monkeypatch, {"acme/r1": 500, "acme/r2": 500})
+        threads = [_slot_reddit(f"t{n}", 2000 - n, body=_BODY) for n in range(5)]
+        seen: list = []
+
+        async def fake_call_grove(entries):
+            seen.extend(e["title"] for e in entries)
+            return []
+
+        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+        db = _FakeDatabase([_slot_repo("r1"), _slot_repo("r2"), *threads])
+
+        result = await daily_digest.generate_daily_digest(db=db, now=SLOT_NOW)
+
+        assert sorted(seen) == ["r1", "r2", "t0", "t1", "t2"]
+        assert [item["title"] for item in result["items"]] == ["r1", "r2"]
+
+
+class TestDryRunNonRepoSlotsRegression:
+    """2026-11-27 dry run of 71edcdd: slot 4 was an `inflated` r/singularity
+    opinion thread with no `what`, slot 5 an off-topic Show HN synth game."""
+
+    async def test_neither_reaches_the_digest_and_the_three_repos_still_lead(
+        self, monkeypatch
+    ):
+        repos = {
+            "Claude-BugHunter": (
+                11892,
+                "A Claude Code skill bundle for bug hunting and external red-team work.",
+            ),
+            "ffmpeg-skill": (
+                3179,
+                "A local video editor for coding agents with FFmpeg tools and an MCP server.",
+            ),
+            "app-store-compliance": (
+                5224,
+                "Open playbook and pre-submission guard for App Store and Google Play rejections.",
+            ),
+        }
+        _fake_star_history(
+            monkeypatch,
+            {f"acme/{name}".lower(): weekly for name, (weekly, _) in repos.items()},
+        )
+        opinion = _slot_reddit(
+            "I can't believe it's really happening",
+            703,
+            comments=477,
+            body=(
+                "Five years ago people laughed when anyone said this would arrive "
+                "in our lifetime. Now it feels like every week something that "
+                "sounded impossible just ships, and nobody around me seems to "
+                "notice how fast it is all moving. I honestly can't believe it."
+            ),
+        )
+        opinion["project"]["url"] = (
+            "https://www.reddit.com/r/singularity/comments/1y67koi"
+        )
+        opinion["verdict"] = "inflated"
+        game = _slot_show_hn("Synth Patch Hero", 125, story_text=_SYNTH_STORY)
+        game["project"]["url"] = "https://swarkentin.github.io/synth-patch-hero/"
+        game["verdict"] = "emerging"
+        posts = [_repo_post(name, about) for name, (_, about) in repos.items()]
+        seen: list = []
+
+        async def fake_call_grove(entries):
+            seen.extend(e["title"] for e in entries)
+            return [
+                {"id": e["id"], "blurb": "b", "what": ""}
+                if e["agentHandle"] == "@reddit-pulse"
+                else {"id": e["id"], "blurb": "b"}
+                for e in entries
+            ]
+
+        monkeypatch.setattr(daily_digest, "_call_grove", fake_call_grove)
+
+        result = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase([*posts, opinion, game]), now=SLOT_NOW
+        )
+
+        assert [item["title"] for item in result["items"]] == [
+            "Claude-BugHunter",
+            "app-store-compliance",
+            "ffmpeg-skill",
+        ]
+        assert all(item["what"] for item in result["items"])
+        assert sorted(seen) == sorted(repos)

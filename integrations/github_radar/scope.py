@@ -8,25 +8,14 @@ Keywords match whole words, so "Email" is not "ai".
 
 import re
 
+from _shared.scope_keywords import in_scope, scope_words
+
 OFF_SCOPE = "off-scope: no AI/dev-tools keyword in topics, description or README"
 
-_KEYWORDS = (
-    r"ai|ml|llms?|gpt|chatgpt|openai|anthropic|claude|gemini|copilot|codex|mcp|rag"
-    r"|agents?|agentic|chatbots?|prompts?|inference|embeddings?|vectors?|neural"
-    r"|transformers?|diffusion|multimodal|generative|fine[ -]tun(?:e|ed|ing)"
-    r"|(?:large )?language models?|machine learning|deep learning"
-    r"|developers?|devtools?|dev tools?|cli|sdk|ide|coding|codebase|code review"
-    r"|code editor|compilers?|debuggers?|terminal|programming"
-)
-_KEYWORD_RE = re.compile(rf"\b(?:{_KEYWORDS})\b")
 # "Of course" is English, not a course.
 _COURSE_RE = re.compile(
     r"\b(tutorial|interview|course|roadmap|guide)s?\b(?<!\bof course)"
 )
-
-
-def _words(text: str) -> str:
-    return re.sub(r"[-_./]+", " ", text.lower())
 
 
 def drop_reason(
@@ -41,10 +30,10 @@ def drop_reason(
     name = slug.rsplit("/", 1)[-1].lower()
     if name == "awesome" or name.startswith("awesome-"):
         return "list: an awesome-* repo"
-    about = " ".join([_words(description), *map(_words, topics)])
-    course = _COURSE_RE.search(f"{_words(name)} {about}")
+    about = " ".join([scope_words(description), *map(scope_words, topics)])
+    course = _COURSE_RE.search(f"{scope_words(name)} {about}")
     if course:
         return f"list or course: '{course.group(1)}' in its name, description or topics"
-    if _KEYWORD_RE.search(f"{about} {_words(readme)}"):
+    if in_scope(f"{about} {readme}"):
         return None
     return OFF_SCOPE

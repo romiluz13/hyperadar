@@ -7,16 +7,21 @@ non-GitHub Show HN post and one video, each ranked only within its own kind.
 A non-repo item needs real content and real engagement: the
 Reddit gate reads ``project.bodyText`` and ``project.contentHref`` (written by
 reddit_pulse), the HN gate reads ``project.storyText`` (written by
-hidden_gems), and a post without those fields fails the content rule.
+hidden_gems), and a post without those fields fails the content rule. A
+non-repo post whose verdict is in ``NON_REPO_EXCLUDED_VERDICTS`` never takes a
+slot, and a Show HN post must name an AI or dev-tools scope keyword.
 
-Grove never chooses. In one call it writes a blurb for each chosen item and a
+Grove never chooses. In one call it writes a blurb for each candidate (the
+repos, and up to ``NON_REPO_CANDIDATES_PER_SLOT`` per other kind) and a
 `what` from the item's own sources: a repo's About line, README excerpt and
 topics, or a thread's own text. A `what` is kept only when
 ``item_text.grounded_what`` accepts it; otherwise the cleaned About line
 stands in, or nothing, and ``whatRejections`` on the stored digest counts
-each `what` Grove did not deliver. The numbers RomBot prints come only from
-the item's stat fields, and a trending rank only from that day's
-``trending_snapshots`` parse. Stores the digest in the digests collection.
+each chosen item's `what` Grove did not deliver. A Reddit or HN candidate
+left with no `what` gives its slot to the next candidate of its kind. The
+numbers RomBot prints come only from the item's stat fields, and a trending
+rank only from that day's ``trending_snapshots`` parse. Stores the digest in
+the digests collection.
 """
 
 import asyncio
@@ -39,6 +44,7 @@ from _shared.engagement import fetch_hn_engagement, fetch_hn_story, repo_slug  #
 from _shared.grove import grove_api_key  # noqa: E402
 from _shared.hype_score import hype_score  # noqa: E402
 from _shared.item_text import grounded_what, topic_emoji  # noqa: E402
+from _shared.scope_keywords import in_scope  # noqa: E402
 from _shared.star_history import fetch_stars_this_week_batch  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -67,6 +73,14 @@ VIDEO_MIN_VIEWS = 20_000
 # youtube_trends scans only its CHANNELS allow list, and a stored video post
 # keeps no channel handle, so its author is the allow-list check.
 VIDEO_AGENT_HANDLE = "@youtube-trends"
+# The post's own verdict doubts the hype, so it never takes a slot or a top-up.
+NON_REPO_EXCLUDED_VERDICTS = frozenset({"inflated", "cooling"})
+# Grove describes this many candidates per non-repo kind; past them the slot
+# stays empty.
+NON_REPO_CANDIDATES_PER_SLOT = 3
+# The kinds whose item needs a final `what`; a video never has one, its stored
+# description being a byline.
+_DESCRIBED_SLOTS = ("reddit", "hn")
 _REDDIT_MEDIA_HOSTS = {"i.redd.it", "v.redd.it"}
 _HTML_TAG = re.compile(r"<[^>]*>")
 _EVIDENCE_CONCURRENCY = 8
@@ -188,8 +202,9 @@ def _daily_post_filter(since: datetime) -> dict:
 def _build_grove_prompt(entries: list[dict]) -> str:
     """The one Grove prompt: a blurb for every item, a `what` for items with sources."""
     return (
-        "You are the HypeRadar editor. The following items are already chosen "
-        "and ordered; do not drop or reorder any. Return ONLY a JSON array of "
+        "You are the HypeRadar editor. The following items are already ranked "
+        "by code; do not drop, reorder or choose among any. Return ONLY a JSON "
+        "array of "
         "objects with keys id (integer), blurb and what.\n"
         "- blurb: for every item, a one-line English blurb explaining why it's "
         "hyped, based only on its title and body.\n"
@@ -206,7 +221,7 @@ def _build_grove_prompt(entries: list[dict]) -> str:
 
 
 async def _call_grove(entries: list[dict]) -> list[dict]:
-    """Call Grove once for the chosen items. Returns a list of {id, blurb, what}."""
+    """Call Grove once for the candidates. Returns a list of {id, blurb, what}."""
     prompt = _build_grove_prompt(entries)
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(
@@ -320,6 +335,20 @@ def _has_content(candidate: dict) -> bool:
     return False
 
 
+def _verdict_allowed(candidate: dict) -> bool:
+    return candidate["post"].get("verdict") not in NON_REPO_EXCLUDED_VERDICTS
+
+
+def _on_topic(candidate: dict) -> bool:
+    """A Show HN post is about AI or dev tools; Reddit and video sources are scoped."""
+    if candidate["slot"] != "hn":
+        return True
+    project = candidate["post"].get("project", {})
+    return in_scope(
+        f"{project.get('title', '')} {_plain_text(project.get('storyText'))}"
+    )
+
+
 def _meets_floor(candidate: dict) -> bool:
     """The engagement floor of the candidate's own slot."""
     post, slot = candidate["post"], candidate["slot"]
@@ -428,8 +457,44 @@ def _other_candidates(
     )
 
 
-def compose_daily_digest(
+def _url(candidate: dict) -> str:
+    return candidate["post"].get("project", {}).get("url", "")
+
+
+def _described(candidate: dict, whats: dict[str, str | None]) -> bool:
+    return candidate["slot"] not in _DESCRIBED_SLOTS or bool(whats.get(_url(candidate)))
+
+
+def digest_candidates(
     posts: list[dict], evidence: dict, featured: set[str], now: datetime
+) -> list[dict]:
+    """Every item the digest may choose, so every item Grove describes; no I/O.
+
+    Up to 3 repos by hype score, then per other kind, in slot order, up to
+    ``NON_REPO_CANDIDATES_PER_SLOT`` items past its content, verdict and topic
+    rules: those past the engagement floor first, then the rest, each group
+    by the kind's own signal.
+    """
+    chosen = _repo_candidates(posts, evidence, featured, now)[:DAILY_DIGEST_MAX_REPOS]
+    gated = [
+        c
+        for c in _other_candidates(posts, evidence, featured)
+        if _has_content(c) and _verdict_allowed(c) and _on_topic(c)
+    ]
+    for slot in _OTHER_SLOTS:
+        kind = [c for c in gated if c["slot"] == slot]
+        kind.sort(key=lambda c: not _meets_floor(c))
+        chosen += kind[:NON_REPO_CANDIDATES_PER_SLOT]
+    return chosen
+
+
+def compose_daily_digest(
+    posts: list[dict],
+    evidence: dict,
+    featured: set[str],
+    now: datetime,
+    *,
+    whats: dict[str, str | None],
 ) -> dict:
     """Choose the digest's items by slot (ADR 0008); no I/O.
 
@@ -437,21 +502,23 @@ def compose_daily_digest(
     ``starsThisWeek``, ``starsToday``, ``totalStars``, ``createdAt``,
     ``hnPoints`` and ``hnComments``, and a non-repo post's URL to its
     ``hnPoints`` and ``hnComments``; a missing key is unknown evidence.
-    ``featured`` holds the URLs of the last 30 days of digests.
+    ``featured`` holds the URLs of the last 30 days of digests. ``whats``
+    maps each ``digest_candidates`` item's URL to its final `what`.
 
     Up to 3 repos lead, then at most one item per other slot, each the
-    strongest of its kind past both its content rule and its engagement floor.
-    An empty slot stays empty: an unused slot is never refilled with another
-    kind. When all six slots fill, the video is dropped. Under 2 items, the
-    next non-repo items that pass their content rule (slot order, then each
-    kind's own signal) top the digest up to 2, ignoring only the engagement
+    strongest of its ``digest_candidates`` past its engagement floor whose
+    Reddit or HN item has a `what`. An empty slot stays empty: an unused slot
+    is never refilled with another kind. When all six slots fill, the video
+    is dropped. Under 2 items, the next such candidates (slot order, then
+    candidate order) top the digest up to 2, ignoring only the engagement
     floors, and ``belowFloor`` is set; no cross-kind score decides which.
 
     Returns ``{"chosen": [{"post", "slot", "evidence"}, ...], "belowFloor"}``
     in message order.
     """
-    chosen = _repo_candidates(posts, evidence, featured, now)[:DAILY_DIGEST_MAX_REPOS]
-    others = [c for c in _other_candidates(posts, evidence, featured) if _has_content(c)]
+    candidates = digest_candidates(posts, evidence, featured, now)
+    chosen = [c for c in candidates if c["slot"] == "repo"]
+    others = [c for c in candidates if c["slot"] != "repo" and _described(c, whats)]
     filled: set[str] = set()
     for candidate in others:
         if candidate["slot"] not in filled and _meets_floor(candidate):
@@ -631,7 +698,7 @@ async def _repo_sources(
 async def _what_sources(
     client: httpx.AsyncClient, candidate: dict, evidence: dict
 ) -> dict | None:
-    """The text a chosen item's `what` may be written from; None: it has no `what`.
+    """The text a candidate's `what` may be written from; None: it has no `what`.
 
     A repo speaks for itself. A Reddit thread or Show HN post with enough of its
     own text is summarised from it. A Reddit thread that links a GitHub repo
@@ -761,24 +828,24 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
 
     featured = await _recently_featured_urls(db, now)
     evidence = await _gather_evidence(posts, now)
-    composed = compose_daily_digest(posts, evidence, featured, now)
-    chosen = composed["chosen"]
-    if not chosen:
+    # Every candidate is described before any slot is filled, in one Grove
+    # call, so a Reddit or HN item whose `what` fails frees its slot for the
+    # next of its kind.
+    candidates = digest_candidates(posts, evidence, featured, now)
+    if not candidates:
         return None
-
-    trending = await _trending_ranks(db, now)
     async with httpx.AsyncClient(
         timeout=_GITHUB_FETCH_TIMEOUT_SECONDS, follow_redirects=True
     ) as client:
-        sources = [await _what_sources(client, c, evidence) for c in chosen]
+        sources = [await _what_sources(client, c, evidence) for c in candidates]
 
     # Grove writes; it never chooses. A Grove outage costs the blurbs (the
-    # post body stands in) and its whats (the About line stands in), never
-    # the digest.
+    # post body stands in), its whats (the About line stands in) and so the
+    # Reddit and HN items without one, never the digest.
     try:
         entries = [
             _grove_entry(i, candidate["post"], item_sources)
-            for i, (candidate, item_sources) in enumerate(zip(chosen, sources))
+            for i, (candidate, item_sources) in enumerate(zip(candidates, sources))
         ]
         picks = await _call_grove(entries)
     except Exception as e:
@@ -789,11 +856,23 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
         for pick in picks
         if isinstance(pick, dict) and isinstance(pick.get("id"), int)
     }
+    written, whats = {}, {}
+    for i, (candidate, item_sources) in enumerate(zip(candidates, sources)):
+        pick = by_id.get(i, {})
+        what, rejected = _choose_what(item_sources, pick.get("what"))
+        written[_url(candidate)] = (pick, what, rejected, item_sources)
+        whats[_url(candidate)] = what
+
+    composed = compose_daily_digest(posts, evidence, featured, now, whats=whats)
+    chosen = composed["chosen"]
+    if not chosen:
+        return None
+
+    trending = await _trending_ranks(db, now)
     items = []
     what_rejections = 0
-    for rank, (candidate, item_sources) in enumerate(zip(chosen, sources), start=1):
-        pick = by_id.get(rank - 1, {})
-        what, rejected = _choose_what(item_sources, pick.get("what"))
+    for rank, candidate in enumerate(chosen, start=1):
+        pick, what, rejected, item_sources = written[_url(candidate)]
         what_rejections += rejected
         items.append(_digest_item(rank, candidate, pick, what, item_sources, trending))
 

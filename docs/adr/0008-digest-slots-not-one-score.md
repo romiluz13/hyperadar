@@ -16,6 +16,7 @@ The digest ranked every kind of item on one `digestScore`, where Reddit upvotes 
   4. at most 1 video.
 - **Floors:** each kind has its own floor and is ranked only within its kind. An empty slot stays empty, and a repo slot is never refilled with another kind.
 - **Count:** at most 5 items (the video goes first when all six qualify), and at least 2.
+- **Quality (added 2026-11-27, after the first dry run):** a Reddit, HN or video item whose post verdict is `inflated` or `cooling` never takes a slot. A Reddit or HN item needs a validated `what`; up to 3 candidates per kind are tried before the slot stays empty. A Show HN post must match the AI and dev-tools scope keywords (`_shared/scope_keywords.py`). These rules also bind the 2-item top-up, which skips only the engagement floors.
 
 ## Consequences
 

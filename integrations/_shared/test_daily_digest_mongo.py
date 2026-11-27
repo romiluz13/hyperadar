@@ -14,6 +14,8 @@ NOW = datetime(2031, 1, 15, 8, 45, tzinfo=timezone.utc)
 TAG = "test-daily-digest-mongo"
 REPO_URL = "https://github.com/acme/slot-test-repo"
 THREAD_URL = "https://www.reddit.com/r/LocalLLaMA/comments/slottest"
+THREAD_BODY = ("A local agent tracer that replays every tool call. " * 5).strip()
+THREAD_WHAT = "A local agent tracer that replays every tool call."
 
 
 def _post(handle: str, kind: str, url: str, signal: dict, **project) -> dict:
@@ -46,7 +48,7 @@ def _seed(db, monkeypatch):
                 "thread",
                 THREAD_URL,
                 {"source": "reddit", "metric": "upvotes", "value": 2040, "delta": 63},
-                bodyText="x" * 200,
+                bodyText=THREAD_BODY,
                 contentHref="",
             ),
             _post(
@@ -65,8 +67,13 @@ def _seed(db, monkeypatch):
     async def no_lookup(*_args, **_kwargs):
         return None
 
-    async def fake_grove(posts):
-        return []
+    async def fake_grove(entries):
+        # Only the thread gets a `what`, which a Reddit slot needs (task 22).
+        return [
+            {"id": e["id"], "what": THREAD_WHAT}
+            for e in entries
+            if e["agentHandle"] == "@reddit-pulse"
+        ]
 
     monkeypatch.setattr(daily_digest, "fetch_stars_this_week_batch", fake_batch)
     async def no_readme(*_args, **_kwargs):
@@ -145,6 +152,7 @@ async def test_the_items_carry_the_stat_fields_and_today_s_trending_rank(
         assert (repo["weeklyGain"], repo["weeklyGainWindowDays"]) == (280, 7)
         assert (thread["upvotes"], thread["comments"]) == (2040, 63)
         assert thread["trendingRank"] is None
-        assert result["whatRejections"] == 2
+        assert thread["what"] == THREAD_WHAT
+        assert result["whatRejections"] == 1
     finally:
         _cleanup(db)
