@@ -5,7 +5,9 @@
 > current runtime truth. Start with `README.md` and `docs/README.md`. The fake
 > Vercel agent routes, webhook actions, and Vercel cron configuration described
 > below were retired; the active execution path is Port Workflow → GitHub
-> Actions → an isolated, frozen Python agent package.
+> Actions → an isolated, frozen Python agent package. Since commit db15beb
+> agents keep no LangGraph checkpoints, and @github-radar now picks by plain
+> code with no LLM.
 
 **Date:** 2026-07-13  
 **Branch:** `main` (tracks `origin/main`)  

@@ -414,12 +414,14 @@ async def fetch_reddit_candidates(
     for failure in failures:
         logging.warning("reddit_source fetch failed: %s", failure)
 
-    # Every subreddit failing is a dead source (an exhausted allowance, a
-    # changed markup), not a quiet day: fail the run so the refresh alert fires.
-    if not read:
+    # Over half the subreddits failing (an exhausted allowance, a changed
+    # markup, a source losing its reach) is not a quiet day: fail the run so the
+    # refresh alert fires.
+    failed = len(SUBREDDITS) - len(read)
+    if failed * 2 > len(SUBREDDITS):
         raise RuntimeError(
-            f"Reddit source down: all {len(SUBREDDITS)} subreddit fetches failed; "
-            f"last error: {failures[-1] if failures else 'Monid returned no page'}"
+            f"Reddit source down: {failed} of {len(SUBREDDITS)} subreddit fetches "
+            f"failed; last error: {failures[-1] if failures else 'Monid returned no page'}"
         )
 
     # Deduplicate by URL

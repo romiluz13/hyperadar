@@ -295,20 +295,23 @@ async def test_fetch_polls_an_async_run_until_it_completes():
     source = load_source()
     monkey_page = shreddit_post("async1", score=300, comments=40, created=fresh())
     polls = []
+    batch_urls = []
 
     def run_status(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
+            batch_urls[:] = json.loads(request.content)["input"]["urls"]
             return httpx.Response(202, json={"runId": "r-async", "status": "RUNNING"})
         polls.append(str(request.url))
         if len(polls) < 2:
             return httpx.Response(200, json={"runId": "r-async", "status": "RUNNING"})
+        results = [{"url": u, "text": monkey_page} for u in batch_urls]
         return httpx.Response(
             200,
             json={
                 "runId": "r-async",
                 "status": "COMPLETED",
                 "providerResponse": {"httpStatus": 200},
-                "output": {"results": [{"url": "u", "text": monkey_page}], "errors": []},
+                "output": {"results": results, "errors": []},
             },
         )
 
@@ -442,22 +445,48 @@ async def test_fetch_accepts_a_completed_run_with_a_null_provider_status():
     assert posts
 
 
-@pytest.mark.asyncio
-async def test_fetch_tolerates_some_subreddits_failing():
-    source = load_source()
+def _failing_some(source, failing: int):
+    """LocalLLaMA has one hot post; ``failing`` other subreddits time out."""
+    down = set(source.SUBREDDITS[1 : 1 + failing])
 
     def page_for(name: str):
         if name == "LocalLLaMA":
             return shreddit_post("ok", score=200, comments=20, created=fresh())
-        return {"error": "timeout"}
+        if name in down:
+            return {"error": "timeout"}
+        return shreddit_post(f"p{name}", score=5, subreddit=name, created=fresh())
+
+    return monid_client(page_for)
+
+
+@pytest.mark.asyncio
+async def test_fetch_tolerates_up_to_half_the_subreddits_failing():
+    source = load_source()
+    half = len(source.SUBREDDITS) // 2
 
     candidates = await source.fetch_reddit_candidates(
-        max_results=10, db=FakeDb(url_to_post={}), client=monid_client(page_for)
+        max_results=10, db=FakeDb(url_to_post={}), client=_failing_some(source, half)
     )
 
     assert [c["url"] for c in candidates] == [
         "https://www.reddit.com/r/LocalLLaMA/comments/ok"
     ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_raises_when_over_half_the_subreddits_fail():
+    source = load_source()
+    total = len(source.SUBREDDITS)
+    over_half = total // 2 + 1
+
+    with pytest.raises(
+        RuntimeError, match=f"Reddit source down: {over_half} of {total}.*timeout"
+    ):
+        await source.fetch_reddit_candidates(
+            max_results=10,
+            db=FakeDb(url_to_post={}),
+            client=_failing_some(source, over_half),
+        )
 
 
 @pytest.mark.asyncio

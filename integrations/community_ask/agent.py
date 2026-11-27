@@ -33,12 +33,12 @@ Your voice: the community listener. You report what real developers are \
 discussing, not search visibility or star counts.
 
 CRITICAL RULE: You MUST NOT publish any post unless you first called \
-publish_community_posts AND it returned real results. If \
-publish_community_posts returns 'No trending community discussions found today.' \
+write_community_posts AND it returned real results. If \
+write_community_posts returns 'No trending community discussions found today.' \
 then STOP — return 'No community discussions to publish today.' and end.
 
 Workflow:
-1. Call publish_community_posts to fetch and publish all trending community discussions.
+1. Call write_community_posts to fetch and publish all trending community discussions.
 2. Review the results — each post will include the topic, contributor count, and verdict.
 3. If no discussions found, STOP and report empty.
 4. Community discourse is evidence of real developer interest — cite the \
@@ -50,7 +50,7 @@ _CANDIDATE_CACHE: dict[str, dict] = {}
 
 
 @tool
-async def publish_community_posts() -> str:
+async def write_community_posts() -> str:
     """Fetch all trending community discussions and publish them in one call.
 
     Returns a summary of what was posted. If no discussions found, returns
@@ -113,7 +113,7 @@ async def publish_community_posts() -> str:
     return f"Published {len(results)} community discussions:\n" + "\n".join(results)
 
 
-def build_agent(checkpointer=None):
+def build_agent():
     """Create the Deep Agents brain wired to Grove."""
     model = ChatOpenAI(
         model=os.environ["GROVE_MODEL"],
@@ -122,11 +122,8 @@ def build_agent(checkpointer=None):
         default_headers={"api-key": grove_api_key()},
         temperature=0.7,
     )
-    kwargs = {
-        "model": model,
-        "tools": [publish_community_posts],
-        "system_prompt": SYSTEM_PROMPT,
-    }
-    if checkpointer is not None:
-        kwargs["checkpointer"] = checkpointer
-    return create_deep_agent(**kwargs)
+    return create_deep_agent(
+        model=model,
+        tools=[write_community_posts],
+        system_prompt=SYSTEM_PROMPT,
+    )

@@ -1,6 +1,8 @@
 # ADR 0002: Use PyMongo Async with one client per event loop
 
-Status: Accepted
+Status: Accepted; its checkpoint sentence is superseded by commit db15beb
+(decision Q18): agents keep no LangGraph checkpoints, so there is no
+`MongoDBSaver` client left to manage. The client-per-event-loop decision stands.
 
 ## Context
 

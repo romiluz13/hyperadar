@@ -12,7 +12,7 @@ governed on-demand workflow.
   runner.
 - **Agent framework:** Deep Agents / LangGraph with Grove.
 - **Evidence and memory:** MongoDB Atlas collections, time-series observations,
-  Vector Search, and checkpoints.
+  Vector Search, and per-run `agent_runs` records.
 - **Operations:** Port catalog entities and an admin-only Port Workflow.
 - **Sources:** GitHub API, Reddit through Monid's free TinyFish fetch (ADR 0006),
   YouTube Data API v3, and Hacker News.
@@ -36,7 +36,7 @@ authoritative.
 | `reference/port-blueprints-actions-scorecards.md` | Port catalog model and actions |
 | `reference/mongodb-schema-and-patterns.md` | MongoDB collections and data patterns |
 | `reference/mongodb-search-and-ai.md` | Search and wave-clustering options |
-| `reference/mongodb-agent-memory.md` | Checkpoint and memory options |
+| `reference/mongodb-agent-memory.md` | Run records and memory options |
 | `reference/mongodb-connection.md` | Runtime connection guidance |
 | `reference/source-constraints-and-costs.md` | Source limits and cost constraints |
 | `reference/cross-cutting-patterns.md` | Cross-vendor design patterns |

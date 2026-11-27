@@ -7,7 +7,6 @@ dependencies = [
   "deepagents",
   "langchain-openai",
   "langgraph",
-  "langgraph-checkpoint-mongodb",
   "pymongo>=4.16",
   "httpx",
   "python-dotenv",

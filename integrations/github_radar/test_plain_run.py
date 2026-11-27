@@ -531,3 +531,38 @@ async def test_a_plain_scan_past_the_runner_deadline_is_stopped(monkeypatch):
 
     assert cycle in done, "the runner let a hung plain scan run past its deadline"
     assert isinstance(cycle.exception(), TimeoutError)
+
+
+async def _eligible_day(site, count: int) -> list[str]:
+    """``count`` in-scope fixture repos with flat weeks, strongest first."""
+    import trending_source
+
+    rows = await trending_source.fetch_trending()
+    slugs = list(dict.fromkeys(row.slug for row in rows))[:count]
+    for i, slug in enumerate(slugs):
+        site.repos[slug] = _repo(
+            slug,
+            created="2020-01-01T00:00:00Z",
+            stars=50_000,
+            forks=5_000,
+            description="An AI agent framework",
+        )
+        site.histories[slug] = _history([1_000 - 50 * i] * 7)
+    return [f"https://github.com/{slug}" for slug in slugs]
+
+
+async def test_a_run_writes_only_the_top_ten_repos_by_hype(site, written):
+    urls = await _eligible_day(site, 12)
+
+    considered = await agent.scan(_Db(), now=_NOW)
+
+    assert [post["project"]["url"] for post in written] == urls[:10]
+    assert considered == _FIXTURE_SLUGS
+
+
+async def test_a_repo_in_cooldown_does_not_take_one_of_the_ten_places(site, written):
+    urls = await _eligible_day(site, 12)
+
+    await agent.scan(_Db(posted={urls[0]: 3}), now=_NOW)
+
+    assert [post["project"]["url"] for post in written] == urls[1:11]

@@ -34,6 +34,7 @@ from _shared.mongo import (
     get_last_published_days,
     load_active_star_histories,
 )
+from _shared.runner import add_run_note
 from hidden_gems.tracker import track_daily_snapshots
 
 _github_token = os.environ.get("GITHUB_TOKEN", "")
@@ -103,6 +104,11 @@ async def fetch_hn_candidates(
     finally:
         if owns_client:
             await client.aclose()
+    if not hits:
+        add_run_note(
+            f"HN Algolia returned 0 Show HN stories over {SHOW_HN_MIN_POINTS} points "
+            f"in the last {SHOW_HN_WINDOW_HOURS}h"
+        )
     hits.sort(key=lambda hit: hit.get("points") or 0, reverse=True)
     for hit in hits:
         if len(candidates) >= max_results:

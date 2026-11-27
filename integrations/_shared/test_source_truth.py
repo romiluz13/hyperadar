@@ -160,82 +160,6 @@ def test_hidden_gem_hn_evidence_never_becomes_github_stars():
 
 
 @pytest.mark.asyncio
-async def test_momentum_history_reads_only_synchronized_receipts(monkeypatch):
-    from _shared import mongo
-
-    post_id = ObjectId()
-    signal_id = ObjectId()
-
-    class FakeCursor:
-        def __init__(self, documents):
-            self.documents = documents
-
-        def sort(self, *_args):
-            return self
-
-        def limit(self, *_args):
-            return self
-
-        async def to_list(self, length=None):
-            return list(self.documents if length is None else self.documents[:length])
-
-    class FakePosts:
-        query = None
-
-        def find(self, query, _projection):
-            self.query = query
-            return FakeCursor([{"_id": post_id}])
-
-    class FakeReceipts:
-        query = None
-
-        def find(self, query, _projection):
-            self.query = query
-            return FakeCursor([{"signalId": signal_id}])
-
-    class FakeSignals:
-        query = None
-
-        def find(self, query):
-            self.query = query
-            return FakeCursor([])
-
-    class FakeDatabase:
-        posts = FakePosts()
-        signal_receipts = FakeReceipts()
-        signals = FakeSignals()
-
-    database = FakeDatabase()
-    monkeypatch.setattr(mongo, "_get_db", lambda: database)
-
-    await mongo.get_momentum_history(
-        "https://github.com/example/project",
-        source="github",
-        metric="github_stars",
-    )
-
-    assert database.posts.query == {
-        "project.url": "https://github.com/example/project",
-        "portSyncStatus": "synced",
-        "evidenceContractVersion": 2,
-        "legacyDuplicateOf": {"$exists": False},
-    }
-    assert database.signal_receipts.query == {
-        "_id": {"$in": [str(post_id)]},
-        "state": "complete",
-        "signal.projectId": "https://github.com/example/project",
-        "signal.source": "github",
-        "signal.metric": "github_stars",
-    }
-    assert database.signals.query == {
-        "_id": {"$in": [signal_id]},
-        "projectId": "https://github.com/example/project",
-        "source": "github",
-        "metric": "github_stars",
-    }
-
-
-@pytest.mark.asyncio
 async def test_weekly_digest_summary_is_derived_only_from_synchronized_wave_counts(
     monkeypatch,
 ):
@@ -871,16 +795,11 @@ def test_agent_identity_sync_preserves_operator_health_state(monkeypatch):
 
 def test_source_evidence_copy_is_generated_only_from_observed_values():
     from _shared.evidence_copy import (
-        github_evidence_copy,
         hidden_gem_evidence_copy,
         reddit_evidence_copy,
         youtube_evidence_copy,
     )
 
-    assert github_evidence_copy(338.4, 2294, False) == (
-        "AVG 338.4★/wk since creation. 2,294 GitHub stars observed; "
-        "recent growth was not independently measured."
-    )
     assert youtube_evidence_copy(362154) == (
         "362,154 YouTube views observed. Search surfaced this video; "
         "upload-age view velocity was not measured."
@@ -2188,7 +2107,9 @@ async def test_post_is_published_when_port_rejects_login(db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_audit_failure_keeps_post_private_until_retry(db, monkeypatch):
+async def test_an_audit_outage_publishes_the_post_and_repair_writes_the_audit(
+    db, monkeypatch
+):
     from _shared import embeddings, episodic_memory, port_client
     from _shared import write_post as write_post_module
 
@@ -2225,37 +2146,27 @@ async def test_audit_failure_keeps_post_private_until_retry(db, monkeypatch):
     signal = {"source": "test", "metric": "mentions", "value": 1, "delta": 1}
 
     try:
-        with pytest.raises(RuntimeError, match="simulated audit outage"):
-            await write_post_module.write_post(
-                "@test-agent",
-                "Test Agent",
-                "Tests audit recovery",
-                "test",
-                project,
-                "Audit should gate publication.",
-                "emerging",
-                signal,
-                60,
-            )
-
-        pending = db.posts.find_one({"project.url": url})
-        assert pending["portSyncStatus"] == "pending"
-
-        repaired_id = await write_post_module.write_post(
+        post_id = await write_post_module.write_post(
             "@test-agent",
             "Test Agent",
             "Tests audit recovery",
             "test",
             project,
-            "Audit should gate publication.",
+            "An audit outage must not hold the post back.",
             "emerging",
             signal,
             60,
         )
-        assert repaired_id == str(pending["_id"])
-        repaired = db.posts.find_one({"_id": pending["_id"]})
-        assert repaired["portSyncStatus"] == "synced"
-        assert db.embeddings_audit.count_documents({"postId": repaired_id}) == 1
+
+        published = db.posts.find_one({"_id": ObjectId(post_id)})
+        assert published["portSyncStatus"] == "synced"
+        assert db.embeddings_audit.count_documents({"postId": post_id}) == 0
+
+        await write_post_module.repair_pending_posts(
+            "@test-agent", "Test Agent", "Tests audit recovery", "test"
+        )
+
+        assert db.embeddings_audit.count_documents({"postId": post_id}) == 1
         assert db.posts.count_documents({"project.url": url}) == 1
         assert db.signals.count_documents({"projectId": url}) == 1
     finally:

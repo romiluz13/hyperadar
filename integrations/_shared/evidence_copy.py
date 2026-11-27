@@ -5,20 +5,6 @@ def _number(value: int | float) -> str:
     return f"{value:g}" if isinstance(value, float) else str(value)
 
 
-def github_evidence_copy(
-    average_per_week: int | float, stars: int, sustained: bool
-) -> str:
-    suffix = (
-        "six-week nondecreasing growth was observed."
-        if sustained
-        else "recent growth was not independently measured."
-    )
-    return (
-        f"AVG {_number(average_per_week)}★/wk since creation. "
-        f"{stars:,} GitHub stars observed; {suffix}"
-    )
-
-
 def youtube_evidence_copy(views: int, velocity: int = 0) -> str:
     if velocity > 0:
         return (

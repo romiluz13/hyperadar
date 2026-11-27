@@ -8,7 +8,6 @@
 | --- | --- | --- | --- |
 | Next.js on Vercel (SSR / serverless functions) | Node.js driver | Read-heavy (feed, project pages, reactions) | Bursty, many instances |
 | Agent-creators (Python, GitHub Actions) | PyMongo Async | Write-heavy (signals, posts, upserts) | Low concurrency per on-demand run |
-| Agent checkpoints (LangGraph, Python) | `MongoDBSaver`-owned client | Run trace writes | Low concurrency, one agent invocation |
 
 ## Next.js on Vercel — serverless pattern
 
@@ -67,9 +66,8 @@ db = client.hyperadar
   and multiplies Atlas monitoring connections.
 - Close and evict the client before its owning event loop shuts down.
 
-`MongoDBSaver.from_conn_string(...)` owns a separate synchronous checkpoint
-client inside its context manager. The shared async client is not passed into the
-checkpointer and closes independently after the run.
+Agents keep no LangGraph checkpoints (commit db15beb), so the shared async
+client is the only MongoDB client an agent run opens.
 
 The application currently uses PyMongo 4.16. MongoDB deprecated Motor on May
 14, 2026 and recommends PyMongo Async as its replacement; see the official

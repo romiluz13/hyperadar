@@ -182,6 +182,7 @@ async def test_unhealthy_run_records_its_summary_and_doctor_findings(monkeypatch
             "posts_written": 0,
             "synced_this_run": 0,
             "pending_port_syncs": 0,
+            "synced_without_embedding": 0,
             "ok": False,
         }
 
@@ -228,8 +229,8 @@ async def test_recording_failure_never_masks_the_runs_own_error(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_an_llm_run_builds_its_agent_without_a_checkpointer(monkeypatch):
-    """The faked agent is a real LangGraph graph compiled with whatever the
-    runner hands ``build_agent_fn``; with no checkpointer it keeps no state.
+    """``build_agent_fn`` takes no arguments, as every agent's ``build_agent``
+    does, and its real LangGraph graph is compiled with no checkpointer.
 
     MONGODB_URI points at an unresolvable host, so a runner that still opened
     a checkpointer fails fast instead of writing to ``checkpointing_db``.
@@ -242,16 +243,14 @@ async def test_an_llm_run_builds_its_agent_without_a_checkpointer(monkeypatch):
     class _State(TypedDict):
         messages: str
 
-    build_kwargs = []
     graphs = []
 
-    def build_agent_fn(**kwargs):
-        build_kwargs.append(kwargs)
+    def build_agent_fn():
         graph = StateGraph(_State)
         graph.add_node("scan", lambda state: {"messages": state["messages"]})
         graph.add_edge(START, "scan")
         graph.add_edge("scan", END)
-        graphs.append(graph.compile(checkpointer=kwargs.get("checkpointer")))
+        graphs.append(graph.compile())
         return graphs[-1]
 
     async def no_preflight(_handle):
@@ -287,5 +286,5 @@ async def test_an_llm_run_builds_its_agent_without_a_checkpointer(monkeypatch):
         "@reddit-pulse", "Reddit Pulse", "bio", "reddit", build_agent_fn, {}
     )
 
-    assert build_kwargs == [{}]
+    assert len(graphs) == 1
     assert graphs[0].checkpointer is None

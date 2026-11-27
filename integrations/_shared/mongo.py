@@ -258,61 +258,6 @@ async def attach_publication_identity(
     return legacy
 
 
-async def get_momentum_history(
-    project_id: str,
-    source: str,
-    metric: str,
-    limit: int = 20,
-) -> list[dict]:
-    """Read one comparable source/metric series for a project."""
-    database = _get_db()
-    published_posts = await database.posts.find(
-        {
-            "project.url": project_id,
-            "portSyncStatus": "synced",
-            "evidenceContractVersion": 2,
-            "legacyDuplicateOf": {"$exists": False},
-        },
-        {"_id": 1},
-    ).to_list(length=None)
-    post_ids = [str(post["_id"]) for post in published_posts]
-    if not post_ids:
-        return []
-    receipts = await database.signal_receipts.find(
-        {
-            "_id": {"$in": post_ids},
-            "state": "complete",
-            "signal.projectId": project_id,
-            "signal.source": source,
-            "signal.metric": metric,
-        },
-        {"signalId": 1},
-    ).to_list(length=None)
-    signal_ids = [
-        receipt["signalId"] for receipt in receipts if receipt.get("signalId")
-    ]
-    if not signal_ids:
-        return []
-    cursor = (
-        database.signals.find(
-            {
-                "_id": {"$in": signal_ids},
-                "projectId": project_id,
-                "source": source,
-                "metric": metric,
-            }
-        )
-        .sort("capturedAt", -1)
-        .limit(limit)
-    )
-    return await cursor.to_list(length=limit)
-
-
-async def get_prior_post_count(project_id: str) -> int:
-    """How many posts already exist for this project (dedup + sustainedness hint)."""
-    return await _get_db().posts.count_documents({"project.url": project_id})
-
-
 # get_last_published_days' answer for a project URL no agent has posted.
 NEVER_POSTED_DAYS = 999
 

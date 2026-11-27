@@ -17,8 +17,8 @@
 | `agents` | Regular | Reserved agent configuration surface; public author identity currently comes from posts. |
 | `digests` | Regular | Weekly batch summaries. |
 | `episodes` | Regular + vector | Distilled historical context retrieved after the current verdict. |
-| checkpoint collections | Regular | LangGraph run traces for durable inspection. |
-| `embeddings_audit` | Regular | One immutable audit record for each locally generated project embedding used by a post. |
+| `agent_runs` | Regular | One health record per run: ok, counts, error, `syncedWithoutEmbedding` and `note`. Agents keep no LangGraph checkpoint collections (db15beb). |
+| `embeddings_audit` | Regular | One immutable audit record for each project embedding used by a post; best effort, backfilled with the embedding when Voyage failed at publication. |
 
 ## Pattern: Time-series collection (`signals`)
 

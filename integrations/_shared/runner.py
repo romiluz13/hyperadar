@@ -10,6 +10,7 @@ state would never be resumed and would only grow the database (decision Q18).
 import asyncio
 import os
 import sys
+from contextvars import ContextVar
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -23,6 +24,17 @@ from _shared import mongo  # noqa: E402
 from _shared import doctor, port_client, write_post  # noqa: E402
 
 AGENT_INVOCATION_TIMEOUT_SECONDS = 20 * 60
+
+_run_notes: ContextVar[list[str] | None] = ContextVar(
+    "hyperadar_run_notes", default=None
+)
+
+
+def add_run_note(note: str) -> None:
+    """Attach an explanation to this run's agent_runs ``note``, e.g. why it was quiet."""
+    notes = _run_notes.get()
+    if notes is not None:
+        notes.append(note)
 
 
 async def _record_run_health(record: dict) -> None:
@@ -92,12 +104,21 @@ async def summarize_run(
     pending_port_syncs = await mongo.db.posts.count_documents(
         {"agentHandle": agent_handle, "portSyncStatus": "pending"}
     )
+    synced_without_embedding = await mongo.db.posts.count_documents(
+        {
+            "agentHandle": agent_handle,
+            "runId": thread_id,
+            "portSyncStatus": "synced",
+            "embeddingMissing": True,
+        }
+    )
     return {
         "thread_id": thread_id,
         "posts_today": posts_today,
         "posts_written": posts_written,
         "synced_this_run": synced_this_run,
         "pending_port_syncs": pending_port_syncs,
+        "synced_without_embedding": synced_without_embedding,
         "ok": _run_ok(
             posts_written, synced_this_run, pending_port_syncs, agent_was_active
         ),
@@ -141,6 +162,8 @@ async def run_agent(
     """
     started_at = datetime.now(timezone.utc)
     run_record: dict = {"agentHandle": agent_handle, "ok": False, "doctor": []}
+    notes: list[str] = []
+    notes_token = _run_notes.set(notes)
     try:
         summary = await _run_agent_cycle(
             agent_handle,
@@ -155,11 +178,15 @@ async def run_agent(
         run_record["postsWritten"] = summary["posts_written"]
         run_record["syncedThisRun"] = summary["synced_this_run"]
         run_record["pendingPortSyncs"] = summary["pending_port_syncs"]
+        run_record["syncedWithoutEmbedding"] = summary["synced_without_embedding"]
         return summary
     except Exception as error:
         run_record["error"] = repr(error)
         raise
     finally:
+        _run_notes.reset(notes_token)
+        if notes:
+            run_record["note"] = "; ".join(notes)
         run_record["threadId"] = run_record.get("threadId") or (
             f"{agent_handle}:crash:{started_at.isoformat()}"
         )

@@ -5,7 +5,9 @@
 
 ## Current implementation status
 
-`MongoDBSaver` currently checkpoints each run. The custom `episodes` collection
+Runs keep no LangGraph checkpoints (commit db15beb, decision Q18): every run
+starts a fresh thread, so a stored checkpoint was never resumed and only grew
+the database. Each run instead leaves one `agent_runs` health record. The custom `episodes` collection
 stores embeddings and supports Atlas Vector Search retrieval. The shared write
 path retrieves similar episodes and records them as transparent context on the
 published post, but retrieval happens after the LLM has selected its verdict.
@@ -16,15 +18,15 @@ or that agents learn across runs. The pre-verdict loop below is the target desig
 
 | Layer | Tool | Purpose | HypeRadar use |
 | --- | --- | --- | --- |
-| **Short-term (current)** | `MongoDBSaver` (Checkpointer) | Persist one run's execution trace | Inspect the current scrape cycle after execution |
+| **Short-term** | None; `agent_runs` holds one health record per run | Show whether a run worked | Read why a run was quiet or failed |
 | **Long-term (partial)** | Custom `episodes` collection + Atlas Vector Search | Store and retrieve distilled episodes | Attach similar historical evidence to a published post |
 | **Learning loop (target)** | Pre-verdict episodic retrieval | Supply recalled lessons to agent reasoning | Influence a future verdict with prior confirmed outcomes |
 
-## Current short-term state: MongoDBSaver
+## Earlier short-term state: MongoDBSaver (removed in db15beb)
 
-Persists a durable trace for each run. Every invocation currently generates a
-fresh timestamped thread ID, so automatic resume into a failed prior invocation
-is not implemented and must not be claimed in the demo.
+Until commit db15beb each run was checkpointed. Every invocation generated a
+fresh timestamped thread ID, so a checkpoint was never resumed. The snippet and
+hardening notes below describe what a resumable design would need.
 
 ```python
 from langgraph.checkpoint.mongodb import MongoDBSaver
@@ -104,7 +106,7 @@ For each candidate project from the source:
 ## Target value of the completed memory loop
 
 - **Current:** MongoDB is load-bearing for source observations, projects, posts,
-  social reactions, vector retrieval, and durable checkpoint traces.
+  social reactions, vector retrieval, and per-run `agent_runs` health records.
 - **Not current:** automatic crash resume and episode-informed verdict improvement.
 - **Target:** moving retrieval before verdict selection would complete the
   cross-run learning loop described above.

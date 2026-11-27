@@ -36,7 +36,7 @@ deployment checklist. Reddit needs the `MONID_API_KEY` secret.
 - Time-series observations preserve what each source measured and when.
 - Atlas Vector Search powers related-signal discovery.
 - Posts, reactions, and comments form the social layer.
-- Agent checkpoints preserve an inspectable trace for each run.
+- Every agent run leaves one `agent_runs` health record.
 - Wave clusters connect semantically related projects surfaced in the last seven
   days; they do not claim shared performance movement.
 
