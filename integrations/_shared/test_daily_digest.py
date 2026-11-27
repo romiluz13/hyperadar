@@ -398,6 +398,7 @@ class TestGenerateDailyDigest:
                     "title": "awesome-repo",
                     "url": "https://github.com/owner/awesome-repo",
                     "kind": "repo",
+                    "description": "An agent framework",
                     "momentumScore": 85,
                 },
             },
@@ -557,6 +558,7 @@ class TestGenerateDailyDigest:
             _make_post(
                 1,
                 title="Breakout",
+                description="Breakout does a thing",
                 url="https://github.com/Acme/Breakout",
                 signal={"source": "github", "metric": "github_stars", "value": 9000},
             ),
@@ -594,7 +596,7 @@ class TestGenerateDailyDigest:
             created = "2019-01-01T00:00:00Z"
             if repo == "newborn":
                 created = "2026-06-30T09:00:00Z"
-            return {"created_at": created, "stargazers_count": 1000}
+            return {"created_at": created, "stargazers_count": 1000, "description": f"{repo} tool"}
 
         monkeypatch.setattr(daily_digest, "_fetch_github_repo", fake_repo)
         _blurb_every_post(monkeypatch)
@@ -945,11 +947,11 @@ class TestDigestItemWhat:
         _grove_whats(monkeypatch, {})
 
         result = await daily_digest.generate_daily_digest(
-            db=_FakeDatabase([_repo_post(n) for n in names]), now=self.NOW
+            db=_FakeDatabase([_repo_post(n, about=f"{n} tool") for n in names]), now=self.NOW
         )
 
-        assert len(result["items"]) == 3
-        assert sorted(calls) == ["acme/a", "acme/b", "acme/c"]
+        assert len(result["items"]) == 4
+        assert sorted(calls) == ["acme/a", "acme/b", "acme/c", "acme/d"]
 
     async def test_a_reddit_body_is_summarised_under_the_same_check(self, monkeypatch):
         threads = [
@@ -1458,7 +1460,7 @@ def _titles(result) -> list[str]:
 
 
 class TestRepoSlotRules:
-    """Up to 3 repos lead, by hype score, with at least 100 stars this week."""
+    """Up to 5 repos lead, by hype score, with at least 100 stars this week."""
 
     def test_a_repo_needs_100_stars_this_week(self):
         posts = [_slot_repo("hundred"), _slot_repo("ninety-nine"), _slot_repo("unknown")]
@@ -1478,11 +1480,25 @@ class TestRepoSlotRules:
         }
         assert _titles(_compose(posts, evidence, featured)) == ["fresh"]
 
-    def test_at_most_three_repos_strongest_hype_first(self):
-        weekly = {"a": 200, "b": 5000, "c": 900, "d": 150, "e": 3000}
+    def test_at_most_five_repos_strongest_hype_first(self):
+        weekly = {"a": 200, "b": 5000, "c": 900, "d": 150, "e": 3000, "f": 1200, "g": 400}
         posts = [_slot_repo(name) for name in weekly]
         evidence = {f"acme/{name}": _stars(stars) for name, stars in weekly.items()}
-        assert _titles(_compose(posts, evidence)) == ["b", "e", "c"]
+        assert _titles(_compose(posts, evidence)) == ["b", "e", "f", "c", "g"]
+
+    def test_a_repo_without_a_what_gives_way_to_the_next_repo(self):
+        weekly = {"a": 900, "b": 800, "c": 700, "d": 600, "e": 500, "f": 400, "g": 300}
+        posts = [_slot_repo(name) for name in weekly]
+        evidence = {f"acme/{name}": _stars(stars) for name, stars in weekly.items()}
+        whats = _undescribed(posts[1])
+        assert _titles(_compose(posts, evidence, whats=whats)) == ["a", "c", "d", "e", "f"]
+
+    def test_two_repos_past_the_five_are_tried(self):
+        weekly = {f"r{n}": 900 - n for n in range(8)}
+        posts = [_slot_repo(name) for name in weekly]
+        evidence = {f"acme/{name}": _stars(stars) for name, stars in weekly.items()}
+        result = _compose(posts, evidence, whats=_undescribed(*posts[:3]))
+        assert _titles(result) == ["r3", "r4", "r5", "r6"]
 
     def test_an_unused_repo_slot_is_never_refilled_with_another_kind(self):
         posts = [
@@ -1492,7 +1508,7 @@ class TestRepoSlotRules:
             _slot_reddit("third", 814),
         ]
         result = _compose(posts, {"acme/only-repo": _stars(400)})
-        assert _titles(result) == ["only-repo", "first"]
+        assert _titles(result) == ["only-repo", "first", "second"]
         assert result["belowFloor"] is False
 
     def test_with_no_repo_the_digest_still_goes_out_with_the_other_slots(self):
@@ -1508,33 +1524,32 @@ class TestRepoSlotRules:
 
 
 class TestDigestCountRules:
-    """At most 5 items, at least 2 (decision Q31)."""
+    """At most 10 items (Rom, 2026-11-27: "5 to 10"), at least 2 (decision Q31)."""
 
-    def _six_slots(self, repos: int) -> tuple[list[dict], dict]:
-        names = ["r1", "r2", "r3"][:repos]
+    def _every_slot(self, repos: int) -> tuple[list[dict], dict]:
+        names = ["r1", "r2", "r3", "r4", "r5"][:repos]
         posts = [_slot_repo(name) for name in names] + [
-            _slot_reddit("thread", 900),
+            _slot_gem("gem-a"),
+            _slot_gem("gem-b"),
+            _slot_reddit("thread-a", 900),
+            _slot_reddit("thread-b", 800),
             _slot_show_hn("launch", 180),
             _slot_video("video", 40000),
         ]
         return posts, {f"acme/{name}": _stars(500) for name in names}
 
-    def test_when_all_six_slots_qualify_the_video_is_dropped(self):
-        result = _compose(*self._six_slots(repos=3))
-        assert [c["slot"] for c in result["chosen"]] == [
-            "repo",
-            "repo",
-            "repo",
-            "reddit",
-            "hn",
-        ]
+    def test_when_all_eleven_slots_qualify_the_video_is_dropped(self):
+        result = _compose(*self._every_slot(repos=5))
+        assert _slots(result) == ["repo"] * 5 + ["gem", "gem", "reddit", "reddit", "hn"]
+        assert len(result["chosen"]) == daily_digest.DAILY_DIGEST_MAX_ITEMS == 10
         assert result["belowFloor"] is False
 
-    def test_with_five_slots_filled_the_video_stays(self):
-        result = _compose(*self._six_slots(repos=2))
-        assert [c["slot"] for c in result["chosen"]] == [
-            "repo",
-            "repo",
+    def test_with_ten_slots_filled_the_video_stays(self):
+        result = _compose(*self._every_slot(repos=4))
+        assert _slots(result) == ["repo"] * 4 + [
+            "gem",
+            "gem",
+            "reddit",
             "reddit",
             "hn",
             "video",
@@ -1544,7 +1559,7 @@ class TestDigestCountRules:
         posts = [
             _slot_repo("slow"),
             _slot_reddit("first", 2040),
-            _slot_reddit("second", 1150),
+            _slot_reddit("second", 150),
         ]
         result = _compose(posts, {"acme/slow": _stars(60)})
         assert _titles(result) == ["first"]
@@ -1554,7 +1569,7 @@ class TestDigestCountRules:
         posts = [
             _slot_repo("slow"),
             _slot_reddit("first", 2040),
-            _slot_reddit("second", 1150),
+            _slot_reddit("second", 150),
             _slot_video("small-video", 900),
         ]
         result = _compose(posts, {"acme/slow": _stars(60)})
@@ -1565,6 +1580,108 @@ class TestDigestCountRules:
         result = _compose([_slot_repo("slow"), _slot_video("video", 900)])
         assert _titles(result) == ["video"]
         assert result["belowFloor"] is True
+
+    def test_up_to_two_reddit_threads_strongest_first(self):
+        posts, evidence = _with_two_repos(
+            _slot_reddit("third", 700), _slot_reddit("first", 2040), _slot_reddit("second", 900)
+        )
+        assert _titles(_compose(posts, evidence))[2:] == ["first", "second"]
+
+
+def _slot_gem(name: str, rank_score: float = 90, about: str = "A coding agent for the terminal") -> dict:
+    """A repo hidden-gems found on its own GitHub scan (hidden_gems/source.py)."""
+    url = f"https://github.com/acme/{name}"
+    post = _make_post(
+        0,
+        agent="@hidden-gems",
+        rank_score=rank_score,
+        title=name,
+        url=url,
+        description=about,
+        signal={"source": "github", "metric": "github_stars", "value": 60, "evidenceUrl": url},
+    )
+    post["project"]["topics"] = ["hn", "hidden-gem", "ai"]
+    return post
+
+
+class TestHiddenGemSlot:
+    """Rom, 2026-11-27: "every day there are hidden gems". Up to 2 follow the repos."""
+
+    def test_a_gem_under_100_stars_this_week_follows_the_repos(self):
+        posts, evidence = _with_two_repos(_slot_gem("tiny-agent"), _slot_reddit("thread", 900))
+        evidence["acme/tiny-agent"] = _stars(12)
+        result = _compose(posts, evidence)
+        assert _slots(result) == ["repo", "repo", "gem", "reddit"]
+        assert _titles(result)[2] == "tiny-agent"
+
+    def test_a_gem_carries_its_star_history_for_rombot_s_stat_line(self):
+        posts, evidence = _with_two_repos(_slot_gem("tiny-agent"))
+        evidence["acme/tiny-agent"] = _stars(40, stars_today=9)
+        gem = _compose(posts, evidence)["chosen"][2]
+        assert (gem["evidence"]["starsThisWeek"], gem["evidence"]["starsToday"]) == (40, 9)
+
+    def test_a_gem_with_unknown_star_history_still_qualifies(self):
+        result = _compose(*_with_two_repos(_slot_gem("new-agent")))
+        assert _slots(result) == ["repo", "repo", "gem"]
+
+    def test_at_most_two_gems_by_hidden_gems_own_score(self):
+        posts, evidence = _with_two_repos(
+            _slot_gem("low", rank_score=80), _slot_gem("top", rank_score=99), _slot_gem("mid", rank_score=90)
+        )
+        assert _titles(_compose(posts, evidence))[2:] == ["top", "mid"]
+
+    def test_a_gem_already_leading_as_a_trending_repo_is_not_repeated(self):
+        posts, evidence = _with_two_repos(_slot_gem("breakout"), _slot_gem("quiet"))
+        evidence["acme/breakout"] = _stars(900)
+        result = _compose(posts, evidence)
+        assert _titles(result) == ["breakout", "r1", "r2", "quiet"]
+        assert _slots(result) == ["repo", "repo", "repo", "gem"]
+
+    def test_a_gem_in_the_30_day_memory_does_not_qualify(self):
+        posts, evidence = _with_two_repos(_slot_gem("seen"), _slot_gem("fresh"))
+        featured = {"https://github.com/Acme/seen/tree/main"}
+        assert _titles(_compose(posts, evidence, featured))[2:] == ["fresh"]
+
+    def test_an_off_topic_gem_is_excluded(self):
+        posts, evidence = _with_two_repos(
+            _slot_gem("recipes", about="Family recipes, one per page"), _slot_gem("tracer")
+        )
+        assert _titles(_compose(posts, evidence))[2:] == ["tracer"]
+
+    def test_a_gem_needs_a_what(self):
+        bare = _slot_gem("bare", rank_score=99)
+        posts, evidence = _with_two_repos(bare, _slot_gem("described"))
+        result = _compose(posts, evidence, whats=_undescribed(bare))
+        assert _titles(result)[2:] == ["described"]
+
+    def test_a_doubted_gem_is_excluded(self):
+        inflated = _slot_gem("inflated", rank_score=99)
+        inflated["verdict"] = "inflated"
+        posts, evidence = _with_two_repos(inflated, _slot_gem("real"))
+        assert _titles(_compose(posts, evidence))[2:] == ["real"]
+
+    def test_a_github_radar_repo_never_takes_a_gem_slot(self):
+        posts, evidence = _with_two_repos(_slot_repo("slow"))
+        evidence["acme/slow"] = _stars(40)
+        assert _slots(_compose(posts, evidence)) == ["repo", "repo"]
+
+    async def test_a_gem_item_is_marked_hidden_gem_for_rombot(self, monkeypatch):
+        _fake_star_history(monkeypatch, {"acme/r1": 500, "acme/r2": 500})
+
+        async def no_grove(entries):
+            return []
+
+        monkeypatch.setattr(daily_digest, "_call_grove", no_grove)
+        db = _FakeDatabase([_slot_repo("r1"), _slot_repo("r2"), _slot_gem("tiny-agent")])
+
+        result = await daily_digest.generate_daily_digest(db=db, now=SLOT_NOW)
+
+        assert [(i["title"], i["kind"], i["hiddenGem"]) for i in result["items"]] == [
+            ("r1", "repo", False),
+            ("r2", "repo", False),
+            ("tiny-agent", "repo", True),
+        ]
+        assert result["items"][2]["what"] == "A coding agent for the terminal"
 
 
 class TestShowHnPointsJoinTheRepo:
@@ -1796,7 +1913,7 @@ class TestWeakDayAndTopUp:
             _slot_video("weak-video", 900),
         )
         result = _compose(posts, evidence)
-        assert _slots(result) == ["repo", "repo", "reddit"]
+        assert _slots(result) == ["repo", "repo", "reddit", "reddit"]
         assert result["belowFloor"] is False
 
     def test_the_top_up_ignores_engagement_floors_but_never_the_content_rule(self):
@@ -1845,7 +1962,15 @@ class TestDigestGatesRegression:
             "https://i.redd.it/560sypctfn3i1.png",
             "https://i.redd.it/a9idfrkmbs3i1.jpeg",
         ]
-        # No repo evidence: the digest is below its 2-item floor.
+        # No repo evidence, so only that day's two hidden-gems repos qualify,
+        # as gems; neither image post gets in, as an item or a top-up.
+        result = _compose(posts)
+        assert _slots(result) == ["gem", "gem"]
+        assert {c["post"]["agentHandle"] for c in result["chosen"]} == {"@hidden-gems"}
+        assert result["belowFloor"] is False
+
+    def test_without_the_gems_the_image_posts_still_stay_out_of_the_top_up(self):
+        posts = [p for p in self._live_posts() if p["agentHandle"] != "@hidden-gems"]
         result = _compose(posts)
         assert result["chosen"] == []
         assert result["belowFloor"] is True
@@ -1942,10 +2067,10 @@ class TestNonRepoDescribedRule:
         result = _compose(posts, evidence, whats=_undescribed(bare))
         assert _slots(result) == ["repo", "repo", "reddit"]
 
-    def test_only_three_candidates_per_kind_are_tried(self):
-        bare = [_slot_reddit(f"bare-{n}", 2000 - n) for n in range(3)]
-        fourth = _slot_reddit("fourth", 500)
-        posts, evidence = _with_two_repos(*bare, fourth)
+    def test_two_candidates_past_a_slots_capacity_are_tried(self):
+        bare = [_slot_reddit(f"bare-{n}", 2000 - n) for n in range(4)]
+        fifth = _slot_reddit("fifth", 500)
+        posts, evidence = _with_two_repos(*bare, fifth)
         result = _compose(posts, evidence, whats=_undescribed(*bare))
         assert _slots(result) == ["repo", "repo"]
 
@@ -1995,9 +2120,9 @@ class TestDescribedSlotThroughGrove:
             "A local tracer that replays the run step by step."
         )
 
-    async def test_grove_sees_at_most_three_candidates_per_kind(self, monkeypatch):
+    async def test_grove_sees_at_most_four_reddit_candidates(self, monkeypatch):
         _fake_star_history(monkeypatch, {"acme/r1": 500, "acme/r2": 500})
-        threads = [_slot_reddit(f"t{n}", 2000 - n, body=_BODY) for n in range(5)]
+        threads = [_slot_reddit(f"t{n}", 2000 - n, body=_BODY) for n in range(6)]
         seen: list = []
 
         async def fake_call_grove(entries):
@@ -2009,7 +2134,7 @@ class TestDescribedSlotThroughGrove:
 
         result = await daily_digest.generate_daily_digest(db=db, now=SLOT_NOW)
 
-        assert sorted(seen) == ["r1", "r2", "t0", "t1", "t2"]
+        assert sorted(seen) == ["r1", "r2", "t0", "t1", "t2", "t3"]
         assert [item["title"] for item in result["items"]] == ["r1", "r2"]
 
 

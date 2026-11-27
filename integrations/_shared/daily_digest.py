@@ -1,9 +1,11 @@
-"""Daily digest — up to 5 items from the last 24h, composed by slots (ADR 0008).
+"""Daily digest — up to 10 items from the last 24h, composed by slots (ADR 0008).
 
 Queries MongoDB for external agent posts, skips anything featured in the last
-30 daily digests, and fills slots in a fixed order: up to 3 repos ranked by the
-hype score on their star history, then at most one Reddit thread, one
-non-GitHub Show HN post and one video, each ranked only within its own kind.
+30 daily digests, and fills slots in a fixed order: up to 5 repos ranked by the
+hype score on their star history, then up to 2 hidden gems, 2 Reddit threads,
+one non-GitHub Show HN post and one video, each ranked only within its own kind.
+A hidden gem is a repo @hidden-gems found on its own GitHub scan; it needs no
+star floor, only the repo scope rule and a `what`.
 A non-repo item needs real content and real engagement: the
 Reddit gate reads ``project.bodyText`` and ``project.contentHref`` (written by
 reddit_pulse), the HN gate reads ``project.storyText`` (written by
@@ -14,7 +16,7 @@ slot. A Show HN post, and a repo github_radar did not post, must pass
 rest still goes out, and the digest stores ``starHistoryFailed``.
 
 Grove never chooses. In one call it writes a blurb for each candidate (the
-repos, and up to ``NON_REPO_CANDIDATES_PER_SLOT`` per other kind) and a
+repos and items up to ``SPARE_CANDIDATES`` past each slot's capacity) and a
 `what` from the item's own sources: a repo's About line, README excerpt and
 topics, or a thread's own text. A `what` is kept only when
 ``item_text.grounded_what`` accepts it; otherwise the cleaned About line
@@ -22,7 +24,7 @@ stands in, or nothing, and ``whatRejections`` on the stored digest counts
 each chosen item's `what` Grove did not deliver. Grove's blurb is kept only
 when ``item_text.safe_blurb`` accepts it; otherwise the post's code-built
 evidence line stands in. A Reddit or HN candidate left with no `what` gives
-its slot to the next candidate of its kind. The numbers RomBot prints come
+its slot to the next candidate of its kind, and so does a repo or a gem. The numbers RomBot prints come
 only from the item's stat fields, and a trending rank only from that day's
 ``trending_snapshots`` parse. Stores the digest in the digests collection.
 """
@@ -72,15 +74,17 @@ DAILY_DIGEST_AGENT_HANDLES = [
     if agent["handle"] not in ("@community-radar", "@weekly-digest")
 ]
 
-DAILY_DIGEST_MAX_ITEMS = 5
+DAILY_DIGEST_MAX_ITEMS = 10
 # A thin day still sends two items (RomBot never trims below two).
 DAILY_DIGEST_MIN_ITEMS = 2
-DAILY_DIGEST_MAX_REPOS = 3
+DAILY_DIGEST_MAX_REPOS = 5
 DAILY_DIGEST_REPO_MIN_STARS_THIS_WEEK = 100
 DAILY_DIGEST_MEMORY_DAYS = 30
 DAILY_DIGEST_CANDIDATES_PER_SIDE = 50
-# The slots after the repos, in message order; each holds at most one item.
-_OTHER_SLOTS = ("reddit", "hn", "video")
+# The slots after the repos, in message order, and how many items each holds.
+_SLOT_CAPACITY = {"gem": 2, "reddit": 2, "hn": 1, "video": 1}
+_OTHER_SLOTS = tuple(_SLOT_CAPACITY)
+GEM_AGENT_HANDLE = "@hidden-gems"
 REDDIT_MIN_UPVOTES = 300
 REDDIT_MIN_COMMENTS = 30
 REDDIT_MIN_BODY_CHARS = 200
@@ -92,12 +96,12 @@ VIDEO_MIN_VIEWS = 20_000
 VIDEO_AGENT_HANDLE = "@youtube-trends"
 # The post's own verdict doubts the hype, so it never takes a slot or a top-up.
 NON_REPO_EXCLUDED_VERDICTS = frozenset({"inflated", "cooling"})
-# Grove describes this many candidates per non-repo kind; past them the slot
-# stays empty.
-NON_REPO_CANDIDATES_PER_SLOT = 3
+# Grove describes this many candidates past each slot's capacity, repos
+# included; past them the slot stays empty.
+SPARE_CANDIDATES = 2
 # The kinds whose item needs a final `what`; a video never has one, its stored
 # description being a byline.
-_DESCRIBED_SLOTS = ("reddit", "hn")
+_DESCRIBED_SLOTS = ("repo", "gem", "reddit", "hn")
 _REDDIT_MEDIA_HOSTS = {"i.redd.it", "v.redd.it"}
 _EVIDENCE_CONCURRENCY = 8
 _HN_ITEM_ID = re.compile(r"news\.ycombinator\.com/item\?id=(\d+)")
@@ -301,6 +305,9 @@ def _other_slot(post: dict) -> str | None:
     """The non-repo slot a post competes for, or None when it fits none."""
     kind = post.get("project", {}).get("kind")
     metric = _metric(post)
+    if kind == "repo":
+        gem = post.get("agentHandle") == GEM_AGENT_HANDLE and metric == "github_stars"
+        return "gem" if gem else None
     if kind == "video":
         return "video"
     if kind == "thread" and metric == "upvotes":
@@ -350,15 +357,18 @@ def _has_content(candidate: dict) -> bool:
         return len(plain_text(project.get("storyText"))) >= HN_MIN_STORY_CHARS
     if slot == "video":
         return post.get("agentHandle") == VIDEO_AGENT_HANDLE
-    return False
+    return slot == "gem"
 
 
 def _verdict_allowed(candidate: dict) -> bool:
     return candidate["post"].get("verdict") not in NON_REPO_EXCLUDED_VERDICTS
 
 
-def _on_topic(candidate: dict) -> bool:
-    """A Show HN post is about AI or dev tools; Reddit and video sources are scoped."""
+def _on_topic(candidate: dict, evidence: dict) -> bool:
+    """A Show HN post or a gem is about AI or dev tools; Reddit and video sources are scoped."""
+    if candidate["slot"] == "gem":
+        post = candidate["post"]
+        return _repo_in_scope([post], evidence.get(_repo_key(post), {}))
     if candidate["slot"] != "hn":
         return True
     project = candidate["post"].get("project", {})
@@ -377,7 +387,8 @@ def _meets_floor(candidate: dict) -> bool:
         return _signal_value(post) >= HN_MIN_POINTS
     if slot == "video":
         return _signal_value(post) >= VIDEO_MIN_VIEWS
-    return False
+    # hidden-gems publishes only repos past its own momentum and fake-star gates.
+    return slot == "gem"
 
 
 def _max_known(*values: int | None) -> int | None:
@@ -470,30 +481,52 @@ def _repo_candidates(
     return candidates
 
 
+def _rank_value(post: dict) -> float:
+    """What a non-repo candidate ranks by within its kind: a gem by hidden-gems' score."""
+    if _other_slot(post) == "gem":
+        return post.get("rankScore") or 0
+    return _signal_value(post)
+
+
 def _other_candidates(
     posts: list[dict], evidence: dict, featured: set[str]
 ) -> list[dict]:
-    """Non-repo candidates in slot order, each slot ranked by its own signal."""
+    """Non-repo candidates in slot order, each slot ranked by ``_rank_value``.
+
+    A gem's evidence and its 30-day memory are matched by repo, as a repo's
+    are, so a gem carries its star history for RomBot's stat line.
+    """
+    featured_repos = {_slug_key(url) for url in featured} - {None}
     by_url: dict[str, dict] = {}
     for post in posts:
         slot = _other_slot(post)
         url = post.get("project", {}).get("url", "")
         if slot is None or url in featured:
             continue
+        if slot == "gem" and _repo_key(post) in featured_repos:
+            continue
         best = by_url.get(url)
-        if best is None or _signal_value(post) > _signal_value(best["post"]):
-            found = evidence.get(url, {})
+        if best is None or _rank_value(post) > _rank_value(best["post"]):
+            found = evidence.get(_repo_key(post) if slot == "gem" else url, {})
             by_url[url] = {
                 "post": post,
                 "slot": slot,
                 "evidence": {
                     "hnPoints": found.get("hnPoints"),
                     "hnComments": found.get("hnComments"),
+                    **(
+                        {
+                            "starsThisWeek": found.get("starsThisWeek"),
+                            "starsToday": found.get("starsToday"),
+                        }
+                        if slot == "gem"
+                        else {}
+                    ),
                 },
             }
     return sorted(
         by_url.values(),
-        key=lambda c: (_OTHER_SLOTS.index(c["slot"]), -_signal_value(c["post"])),
+        key=lambda c: (_OTHER_SLOTS.index(c["slot"]), -_rank_value(c["post"])),
     )
 
 
@@ -510,21 +543,28 @@ def digest_candidates(
 ) -> list[dict]:
     """Every item the digest may choose, so every item Grove describes; no I/O.
 
-    Up to 3 repos by hype score, then per other kind, in slot order, up to
-    ``NON_REPO_CANDIDATES_PER_SLOT`` items past its content, verdict and topic
-    rules: those past the engagement floor first, then the rest, each group
-    by the kind's own signal.
+    Up to 5 repos by hype score plus ``SPARE_CANDIDATES`` more, then per
+    other kind, in slot order, up to its capacity plus ``SPARE_CANDIDATES`` items past its content,
+    verdict and topic rules: those past the engagement floor first, then the
+    rest, each group by the kind's own ranking. A gem already among the repos
+    is not a gem candidate.
     """
-    chosen = _repo_candidates(posts, evidence, featured, now)[:DAILY_DIGEST_MAX_REPOS]
+    chosen = _repo_candidates(posts, evidence, featured, now)[
+        : DAILY_DIGEST_MAX_REPOS + SPARE_CANDIDATES
+    ]
+    leading = {_repo_key(c["post"]) for c in chosen[:DAILY_DIGEST_MAX_REPOS]}
     gated = [
         c
         for c in _other_candidates(posts, evidence, featured)
-        if _has_content(c) and _verdict_allowed(c) and _on_topic(c)
+        if _has_content(c)
+        and _verdict_allowed(c)
+        and _on_topic(c, evidence)
+        and not (c["slot"] == "gem" and _repo_key(c["post"]) in leading)
     ]
-    for slot in _OTHER_SLOTS:
+    for slot, capacity in _SLOT_CAPACITY.items():
         kind = [c for c in gated if c["slot"] == slot]
         kind.sort(key=lambda c: not _meets_floor(c))
-        chosen += kind[:NON_REPO_CANDIDATES_PER_SLOT]
+        chosen += kind[: capacity + SPARE_CANDIDATES]
     return chosen
 
 
@@ -545,11 +585,11 @@ def compose_daily_digest(
     ``featured`` holds the URLs of the last 30 days of digests. ``whats``
     maps each ``digest_candidates`` item's URL to its final `what`.
 
-    Up to 3 repos lead, then at most one item per other slot, each the
+    Up to 5 described repos lead, then each other slot takes up to its capacity, the
     strongest of its ``digest_candidates`` past its engagement floor whose
-    Reddit or HN item has a `what`. An empty slot stays empty: an unused slot
-    is never refilled with another kind. When all six slots fill, the video
-    is dropped. Under 2 items, candidates of the still-empty kinds (slot order,
+    gem, Reddit or HN item has a `what`. An empty slot stays empty: an unused
+    slot is never refilled with another kind. When all eleven places fill, the
+    video is dropped. Under 2 items, candidates of the still-empty kinds (slot order,
     then candidate order, one per kind) top the digest up towards 2, ignoring
     only the engagement floors, and ``belowFloor`` is set; no cross-kind score
     decides which.
@@ -558,13 +598,23 @@ def compose_daily_digest(
     in message order.
     """
     candidates = digest_candidates(posts, evidence, featured, now)
-    chosen = [c for c in candidates if c["slot"] == "repo"]
-    others = [c for c in candidates if c["slot"] != "repo" and _described(c, whats)]
-    filled: set[str] = set()
+    repos = [c for c in candidates if c["slot"] == "repo" and _described(c, whats)]
+    chosen = repos[:DAILY_DIGEST_MAX_REPOS]
+    leading = {_repo_key(c["post"]) for c in chosen}
+    others = [
+        c
+        for c in candidates
+        if c["slot"] != "repo"
+        and _described(c, whats)
+        and not (c["slot"] == "gem" and _repo_key(c["post"]) in leading)
+    ]
+    taken = {slot: 0 for slot in _SLOT_CAPACITY}
     for candidate in others:
-        if candidate["slot"] not in filled and _meets_floor(candidate):
-            filled.add(candidate["slot"])
+        slot = candidate["slot"]
+        if taken[slot] < _SLOT_CAPACITY[slot] and _meets_floor(candidate):
+            taken[slot] += 1
             chosen.append(candidate)
+    filled = {slot for slot, count in taken.items() if count}
     if len(chosen) > DAILY_DIGEST_MAX_ITEMS:
         chosen = [c for c in chosen if c["slot"] != "video"]
     below_floor = len(chosen) < DAILY_DIGEST_MIN_ITEMS
@@ -846,6 +896,7 @@ def _digest_item(
         "title": title,
         "url": project.get("url", ""),
         "kind": project.get("kind", "repo"),
+        "hiddenGem": candidate["slot"] == "gem",
         "blurb": _blurb(pick, post),
         "what": what,
         "emoji": topic_emoji(topics, f"{what or ''} {title}"),
