@@ -204,6 +204,18 @@ jobs:
           print('items:', len(result['items']) if result else 0)
           "
 
+      # healthchecks.io alerts when no ping arrives by 10:23 UTC, which also
+      # covers a run GitHub never started.
+      - name: Tell healthchecks.io the digest is saved
+        env:
+          PING_URL: ${{ secrets.HEALTHCHECKS_DIGEST_PING_URL }}
+        run: |
+          if [ -z "$PING_URL" ]; then
+            echo "::warning::HEALTHCHECKS_DIGEST_PING_URL is not configured"
+            exit 0
+          fi
+          curl -fsS -m 10 --retry 5 --retry-all-errors --retry-max-time 30 -o /dev/null "$PING_URL" || echo "::warning::healthchecks.io ping failed"
+
       # After the agents (this job needs them) and even when the digest fails,
       # so hidden-gems' snapshot rows never pile up past Atlas Free.
       - name: Prune old snapshot signals
