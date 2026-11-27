@@ -321,7 +321,19 @@ class _FakeDigests:
         )
 
     async def update_one(self, query, update, upsert=False):
+        """Records the call and applies its ``$set`` and ``$addToSet`` like MongoDB."""
         self.upserted = (query, update, upsert)
+        doc = next(
+            (d for d in self.history if all(d.get(k) == v for k, v in query.items())),
+            None,
+        )
+        if doc is None:
+            doc = dict(query)
+            self.history.append(doc)
+        doc.update(update.get("$set", {}))
+        for field, spec in update.get("$addToSet", {}).items():
+            values = doc.setdefault(field, [])
+            values.extend(v for v in spec["$each"] if v not in values)
 
 
 class _FakeTrendingSnapshots:
@@ -536,6 +548,44 @@ class TestGenerateDailyDigest:
         assert item["signalValue"] == 2109
         assert item["signalDelta"] == 724
         assert result["belowFloor"] is True
+
+    async def test_a_rerun_keeps_what_an_earlier_run_of_the_day_served(
+        self, monkeypatch
+    ):
+        """RomBot may already have sent the first run's digest (2026-11-27)."""
+        _fake_star_history(
+            monkeypatch, {f"acme/{name}": 500 for name in ("r1", "r2", "r3", "r4")}
+        )
+        _blurb_every_post(monkeypatch)
+        db = _FakeDatabase(
+            [_slot_repo("r1"), _slot_repo("r2"), _slot_video("morning", 90_000)]
+        )
+        await daily_digest.generate_daily_digest(db=db, now=SLOT_NOW)
+
+        db.posts = _FakePosts(
+            [_slot_repo("r1"), _slot_repo("r2"), _slot_video("evening", 30_000)]
+        )
+        await daily_digest.generate_daily_digest(
+            db=db, now=SLOT_NOW + timedelta(hours=10)
+        )
+
+        db.posts = _FakePosts(
+            [
+                _slot_repo("r3"),
+                _slot_repo("r4"),
+                _slot_video("morning", 90_000),
+                _slot_video("fresh", 25_000),
+            ]
+        )
+        result = await daily_digest.generate_daily_digest(
+            db=db, now=SLOT_NOW + timedelta(days=1)
+        )
+
+        assert [item["url"] for item in result["items"]] == [
+            "https://github.com/acme/r3",
+            "https://github.com/acme/r4",
+            "https://www.youtube.com/watch?v=fresh",
+        ]
 
     async def test_no_posts_returns_none(self, monkeypatch):
         """When there are no posts, no digest is generated."""

@@ -628,7 +628,11 @@ def compose_daily_digest(
 
 
 async def _recently_featured_urls(db, now: datetime) -> set[str]:
-    """URLs in the last 30 days of daily digests, today's own run excluded."""
+    """URLs in the last 30 days of daily digests, today's own run excluded.
+
+    ``servedUrls`` keeps the items of every run of a day: a rerun replaces
+    ``items``, but RomBot may already have sent the earlier version.
+    """
     try:
         docs = await db.digests.find(
             {
@@ -636,16 +640,17 @@ async def _recently_featured_urls(db, now: datetime) -> set[str]:
                 "createdAt": {"$gte": now - timedelta(days=DAILY_DIGEST_MEMORY_DAYS)},
                 "date": {"$ne": now.strftime("%Y-%m-%d")},
             },
-            {"items.url": 1},
+            {"items.url": 1, "servedUrls": 1},
         ).to_list(None)
     except Exception as e:
         logger.warning("Digest memory skipped: %s", e)
         return set()
     return {
-        item.get("url")
+        url
         for doc in docs
-        for item in doc.get("items") or []
-        if item.get("url")
+        for url in [item.get("url") for item in doc.get("items") or []]
+        + (doc.get("servedUrls") or [])
+        if url
     }
 
 
@@ -1013,7 +1018,12 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
 
     await db.digests.update_one(
         {"date": date_str, "digestType": "daily"},
-        {"$set": digest},
+        {
+            "$set": digest,
+            "$addToSet": {
+                "servedUrls": {"$each": [item["url"] for item in items if item["url"]]}
+            },
+        },
         upsert=True,
     )
 
