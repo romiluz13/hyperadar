@@ -1,8 +1,8 @@
 """The code runs on MongoDB 8.0 (Atlas Free): no query feature newer than 8.0.
 
 The list comes from the 8.3 release notes (the 8.1 and 8.2 notes are not
-published; ticket 09 Comments) plus $rankFusion and $rerank from the Free fit
-check. Comments and docstrings may name a feature; only code is checked.
+published) plus $rerank from the Free fit check. $rankFusion is in 8.0 and is
+allowed. Comments and docstrings may name a feature; only code is checked.
 """
 
 import io
@@ -13,7 +13,6 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parents[2]
 _FEATURES = [
     ("$scoreFusion", re.compile(r"\$scoreFusion\b")),
-    ("$rankFusion", re.compile(r"\$rankFusion\b")),
     ("$rerank", re.compile(r"\$rerank\b")),
     ("$$IDX", re.compile(r"\$\$IDX\b")),
     ("arrayIndexAs", re.compile(r"\barrayIndexAs\b")),
@@ -114,14 +113,24 @@ def _plant(root: Path, relative: str, text: str) -> None:
     path.write_text(text)
 
 
-def test_a_planted_rank_fusion_stage_fails_the_guard(tmp_path):
+def test_a_planted_score_fusion_stage_fails_the_guard(tmp_path):
+    _plant(
+        tmp_path,
+        "apps/web/lib/feed.ts",
+        "const pipeline = [\n  { $scoreFusion: { input: { pipelines: {} } } },\n];\n",
+    )
+
+    assert post_80_features(tmp_path) == ["apps/web/lib/feed.ts:2: $scoreFusion"]
+
+
+def test_a_rank_fusion_stage_is_allowed_on_80(tmp_path):
     _plant(
         tmp_path,
         "apps/web/lib/feed.ts",
         "const pipeline = [\n  { $rankFusion: { input: { pipelines: {} } } },\n];\n",
     )
 
-    assert post_80_features(tmp_path) == ["apps/web/lib/feed.ts:2: $rankFusion"]
+    assert post_80_features(tmp_path) == []
 
 
 def test_each_listed_feature_in_code_fails_the_guard(tmp_path):

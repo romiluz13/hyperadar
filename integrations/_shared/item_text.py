@@ -6,6 +6,14 @@ sources do not hold, and no other word outside the sources and a short list of
 English function words. A word matches its source with or without one trailing
 ``s`` or ``es``, so "whiteboards" is grounded by the topic "whiteboard".
 
+The sources are written by strangers, so grounding alone would let Grove copy
+an instruction or a payload out of them. ``grounded_what`` and ``safe_blurb``
+reject any text with a link (``://``, ``www.``, a domain followed by a path,
+an email address, a ``javascript:`` or ``mailto:`` scheme or a Markdown link)
+or a markup character (``<``, ``>`` or a backtick). A blurb may run to two
+sentences of the same 25-word cap each. Both are capped in characters before
+any pattern runs, since one model-written "word" can be any length.
+
 ``topic_emoji`` picks one emoji from a fixed topic map, in code; no model
 chooses it.
 """
@@ -14,6 +22,10 @@ import html
 import re
 
 WHAT_MAX_WORDS = 25
+BLURB_MAX_SENTENCES = 2
+BLURB_MAX_WORDS = BLURB_MAX_SENTENCES * WHAT_MAX_WORDS
+WHAT_MAX_CHARS = 300
+BLURB_MAX_CHARS = BLURB_MAX_SENTENCES * WHAT_MAX_CHARS
 FUNCTION_WORDS = frozenset(
     "a an the of to for and or with that this is are by in on as it its their "
     "from at into your you not".split()
@@ -70,6 +82,12 @@ TOPIC_EMOJI = (
 )
 
 _TOKEN = re.compile(r"[^\W_]+")
+_LINK_OR_MARKUP = re.compile(
+    r"://|www\.|[\w-]\.[a-z]{2,}/|\w@[\w-]+\.|\b(?:javascript|mailto):|\]\(|[<>`]",
+    re.IGNORECASE,
+)
+# Only the first mark of a run may start a match, so "!!!!" stays linear.
+_SENTENCE_END = re.compile(r"(?<![.!?])[.!?]+(?=\s|$)")
 
 
 def _tokens(text: str) -> list[str]:
@@ -85,12 +103,24 @@ def _forms(token: str) -> set[str]:
     return forms
 
 
+def carries_link_or_markup(text: str) -> bool:
+    """Whether ``text`` holds a link shape or a markup character."""
+    return bool(_LINK_OR_MARKUP.search(text))
+
+
+def _cleaned(text: object, max_words: int, max_chars: int) -> str | None:
+    if not isinstance(text, str) or len(text) > max_chars:
+        return None
+    cleaned = " ".join(html.unescape(text).split())
+    if not 1 <= len(cleaned.split()) <= max_words or carries_link_or_markup(cleaned):
+        return None
+    return cleaned
+
+
 def grounded_what(text: object, sources: list[str]) -> str | None:
     """``text`` cleaned when every word is grounded in ``sources``, else None."""
-    if not isinstance(text, str):
-        return None
-    sentence = " ".join(html.unescape(text).split())
-    if not 1 <= len(sentence.split()) <= WHAT_MAX_WORDS:
+    sentence = _cleaned(text, WHAT_MAX_WORDS, WHAT_MAX_CHARS)
+    if sentence is None:
         return None
     known = {token for source in sources for token in _tokens(source)}
     for token in _tokens(sentence):
@@ -100,6 +130,14 @@ def grounded_what(text: object, sources: list[str]) -> str | None:
         elif token not in FUNCTION_WORDS and not _forms(token) & known:
             return None
     return sentence
+
+
+def safe_blurb(text: object) -> str | None:
+    """``text`` cleaned: at most two short sentences, with no link or markup."""
+    blurb = _cleaned(text, BLURB_MAX_WORDS, BLURB_MAX_CHARS)
+    if blurb is None or len(_SENTENCE_END.findall(blurb)) > BLURB_MAX_SENTENCES:
+        return None
+    return blurb
 
 
 def _emoji_for(tokens: set[str]) -> str | None:

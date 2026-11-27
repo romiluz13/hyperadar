@@ -48,6 +48,11 @@ still corroborates in the snapshot corpus. A page where no post carries
 a page whose readable posts all sit under the 10-upvote noise floor is a quiet
 subreddit. Scoring, heat, snapshots and the publish gate are unchanged.
 
+> **Superseded in part by ADR 0007:** @github-radar no longer matches repos
+> against a Reddit snapshot corpus, so "corroborates in the snapshot corpus"
+> above no longer holds. The body is still read; the daily digest's Reddit slot
+> uses it as the thread's own text.
+
 `MONID_API_KEY` replaces `BRIGHTDATA_API_KEY` in the workflows, the doctor and
 the Port catalog setup. The workflows no longer install the Bright Data CLI.
 
@@ -91,3 +96,8 @@ Nine scheduled runs after this ADR (2026-11-10 to 11-18) showed three things
 - The stage counts that explain an empty @github-radar run (`momentum stages: ...`,
   `corroboration kept ...`) are printed, not logged: the agents configure no log
   handler, so `logging.info` never reaches the CI log.
+  **Superseded by ADR 0007:** those momentum and corroboration stages and their
+  prints were deleted. @github-radar now prints `considered=… in_scope=…
+  scored=… published=…`, still with `print`. The launch-subreddit corpus point
+  above is superseded the same way: launch posts no longer feed a @github-radar
+  match.

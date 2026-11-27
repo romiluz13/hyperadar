@@ -1,4 +1,4 @@
-"""The farm check: signs that a repo's stars were bought (decision Q33).
+"""The farm check: signs that a repo's stars were bought (ADR 0007).
 
 Event data that could show who starred is gone (ADR 0007), so a fork and
 burst check does that job. It is the only fork filter @github-radar applies.

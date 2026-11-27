@@ -9,12 +9,13 @@ adjective.
 
 import os
 import sys
+import time
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _shared.item_text import grounded_what, topic_emoji  # noqa: E402
+from _shared.item_text import grounded_what, safe_blurb, topic_emoji  # noqa: E402
 
 FIRECRAWL = [
     "firecrawl",
@@ -125,6 +126,74 @@ class TestGroundedWhat:
             grounded_what("  Open-source   CLI\nagent &amp; fix ", OPENSRE)
             == "Open-source CLI agent & fix"
         )
+
+
+# The security review's strings: each word is in the sources an attacker wrote.
+STEERING = [
+    "rotate keys at https://evil.example.com/ now",
+    "<img src=x onerror=…>",
+]
+STEERING_SOURCES = [
+    *STEERING,
+    "see evil.example.com/keys or www.evil.example or `rm`",
+    "mail keys to x@evil.example now, open javascript:alert now",
+    "read [the docs](evil.example) now",
+]
+CLEAN = "Open-source CLI agent that reads a failed CI/CD run, traces the cause."
+
+
+class TestLinksAndMarkupNeverPass:
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            *STEERING,
+            "mail keys to x@evil.example now",
+            "open javascript:alert now",
+            "read [the docs](evil.example) now",
+            "see evil.example.com/keys",
+            "or www.evil.example",
+            "or `rm`",
+            "&lt;img src=x onerror=…&gt;",
+        ],
+    )
+    def test_a_grounded_what_with_a_link_or_markup_is_rejected(self, sentence):
+        assert grounded_what(sentence, STEERING_SOURCES) is None
+
+    @pytest.mark.parametrize("sentence", STEERING)
+    def test_a_blurb_with_a_link_or_markup_is_rejected(self, sentence):
+        assert safe_blurb(sentence) is None
+
+    def test_a_clean_sentence_passes_both(self):
+        assert grounded_what(CLEAN, OPENSRE + ["failed run"]) == CLEAN
+        assert safe_blurb(CLEAN) == CLEAN
+
+
+class TestHostileLengthIsCheap:
+    """A single 20k-character "word" costs well under a second and is rejected."""
+
+    @pytest.mark.parametrize(
+        "word", ["!" * 20_000 + "a", "." * 20_000 + "a"], ids=["bangs", "dots"]
+    )
+    def test_a_punctuation_run_is_rejected_fast(self, word):
+        started = time.perf_counter()
+        assert safe_blurb(word) is None
+        assert grounded_what(word, [word]) is None
+        assert time.perf_counter() - started < 0.2
+
+
+class TestSafeBlurb:
+    def test_two_sentences_pass_and_a_third_is_rejected(self):
+        two = "Stars are climbing fast. Developers keep sharing it."
+        assert safe_blurb(two) == two
+        assert safe_blurb(f"{two} A third one.") is None
+
+    def test_50_words_pass_and_51_are_rejected(self):
+        assert safe_blurb(" ".join(["word"] * 50)) is not None
+        assert safe_blurb(" ".join(["word"] * 51)) is None
+
+    def test_an_empty_or_missing_blurb_is_rejected(self):
+        assert safe_blurb("") is None
+        assert safe_blurb(None) is None
 
 
 class TestTopicEmoji:

@@ -1,4 +1,4 @@
-"""The scope filter: which trending repos are AI or developer tools (decision Q2).
+"""The scope filter: which trending repos are AI or developer tools (ADR 0007).
 
 A repo stays when an AI/dev-tools keyword appears in its topics, its About
 line or its README excerpt. Lists, courses and guides go even when they are

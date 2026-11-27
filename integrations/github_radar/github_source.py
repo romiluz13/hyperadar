@@ -1,5 +1,5 @@
 """GitHub's REST API for @github-radar: repo enrichment, README excerpts and the
-search fallback used when the trending pages fail (ADR 0007, decision Q5).
+search fallback used when the trending pages fail (ADR 0007).
 """
 
 import asyncio

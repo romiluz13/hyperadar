@@ -9,7 +9,9 @@ Reddit gate reads ``project.bodyText`` and ``project.contentHref`` (written by
 reddit_pulse), the HN gate reads ``project.storyText`` (written by
 hidden_gems), and a post without those fields fails the content rule. A
 non-repo post whose verdict is in ``NON_REPO_EXCLUDED_VERDICTS`` never takes a
-slot, and a Show HN post must name an AI or dev-tools scope keyword.
+slot. A Show HN post, and a repo github_radar did not post, must pass
+``scope_keywords.hn_on_topic``. When star history fails, no repo qualifies, the
+rest still goes out, and the digest stores ``starHistoryFailed``.
 
 Grove never chooses. In one call it writes a blurb for each candidate (the
 repos, and up to ``NON_REPO_CANDIDATES_PER_SLOT`` per other kind) and a
@@ -17,11 +19,12 @@ repos, and up to ``NON_REPO_CANDIDATES_PER_SLOT`` per other kind) and a
 topics, or a thread's own text. A `what` is kept only when
 ``item_text.grounded_what`` accepts it; otherwise the cleaned About line
 stands in, or nothing, and ``whatRejections`` on the stored digest counts
-each chosen item's `what` Grove did not deliver. A Reddit or HN candidate
-left with no `what` gives its slot to the next candidate of its kind. The
-numbers RomBot prints come only from the item's stat fields, and a trending
-rank only from that day's ``trending_snapshots`` parse. Stores the digest in
-the digests collection.
+each chosen item's `what` Grove did not deliver. Grove's blurb is kept only
+when ``item_text.safe_blurb`` accepts it; otherwise the post's code-built
+evidence line stands in. A Reddit or HN candidate left with no `what` gives
+its slot to the next candidate of its kind. The numbers RomBot prints come
+only from the item's stat fields, and a trending rank only from that day's
+``trending_snapshots`` parse. Stores the digest in the digests collection.
 """
 
 import asyncio
@@ -40,12 +43,26 @@ import httpx
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _shared.agent_catalog import AGENT_CATALOG  # noqa: E402
-from _shared.engagement import fetch_hn_engagement, fetch_hn_story, repo_slug  # noqa: E402
+from _shared.engagement import (  # noqa: E402
+    fetch_hn_engagement,
+    fetch_hn_story,
+    is_repo_segment,
+    repo_slug,
+)
 from _shared.grove import grove_api_key  # noqa: E402
+from _shared.html_text import PLAIN_TEXT_MAX_CHARS, plain_text  # noqa: E402
 from _shared.hype_score import hype_score  # noqa: E402
-from _shared.item_text import grounded_what, topic_emoji  # noqa: E402
-from _shared.scope_keywords import in_scope  # noqa: E402
-from _shared.star_history import fetch_stars_this_week_batch  # noqa: E402
+from _shared.item_text import (  # noqa: E402
+    carries_link_or_markup,
+    grounded_what,
+    safe_blurb,
+    topic_emoji,
+)
+from _shared.scope_keywords import hn_on_topic  # noqa: E402
+from _shared.star_history import (  # noqa: E402
+    StarHistoryBatchFailed,
+    fetch_stars_this_week_batch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +99,6 @@ NON_REPO_CANDIDATES_PER_SLOT = 3
 # description being a byline.
 _DESCRIBED_SLOTS = ("reddit", "hn")
 _REDDIT_MEDIA_HOSTS = {"i.redd.it", "v.redd.it"}
-_HTML_TAG = re.compile(r"<[^>]*>")
 _EVIDENCE_CONCURRENCY = 8
 _HN_ITEM_ID = re.compile(r"news\.ycombinator\.com/item\?id=(\d+)")
 DAILY_DIGEST_WHAT_MAX_CHARS = 140
@@ -92,8 +108,10 @@ _DANGLING_CONNECTIVES = {"and", "or", "with", "for", "&"}
 _GITHUB_FETCH_TIMEOUT_SECONDS = 5.0
 _README_EXCERPT_CHARS = 1_500
 _CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
-_MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
-_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+# Neither bracket class may cross the next opener, so ``[[[[`` and ``![![``
+# cost linear time.
+_MD_IMAGE = re.compile(r"!\[[^\[\]]*\]\([^()]*\)")
+_MD_LINK = re.compile(r"\[([^\[\]]*)\]\([^()]*\)")
 _URL = re.compile(r"https?://\S+")
 # Only the all-languages pages rank a repo among all of trending.
 _TRENDING_PAGES = {"all/daily": "daily", "all/weekly": "weekly"}
@@ -135,6 +153,8 @@ async def _fetch_github_repo(
     client: httpx.AsyncClient, owner: str, repo: str
 ) -> dict | None:
     """The repo's ``/repos`` document, or None on any failure."""
+    if not (is_repo_segment(owner) and is_repo_segment(repo)):
+        return None
     try:
         response = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}",
@@ -160,15 +180,17 @@ async def _fetch_github_repo(
 
 def _readme_text(markdown: str) -> str:
     """The README's opening prose: code, images, link targets and markup removed."""
-    text = _CODE_FENCE.sub(" ", markdown)
+    text = _CODE_FENCE.sub(" ", markdown[:PLAIN_TEXT_MAX_CHARS])
     text = _MD_IMAGE.sub(" ", text)
     text = _MD_LINK.sub(r"\1", text)
     text = _URL.sub(" ", text)
-    return _plain_text(text)[:_README_EXCERPT_CHARS]
+    return plain_text(text)[:_README_EXCERPT_CHARS]
 
 
 async def _fetch_github_readme(client: httpx.AsyncClient, owner: str, repo: str) -> str:
     """The README excerpt, or "" on any failure."""
+    if not (is_repo_segment(owner) and is_repo_segment(repo)):
+        return ""
     try:
         response = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/readme",
@@ -257,7 +279,10 @@ async def _call_grove(entries: list[dict]) -> list[dict]:
 def _slug_key(url: str) -> str | None:
     """Lowercase ``owner/repo`` of any github.com URL, subpaths included."""
     slug = repo_slug(url)
-    return slug.removesuffix(".git").lower() if slug else None
+    if not slug:
+        return None
+    key = slug.removesuffix(".git").lower()
+    return key if all(map(is_repo_segment, key.split("/"))) else None
 
 
 def _repo_key(post: dict) -> str | None:
@@ -294,13 +319,6 @@ def _signal_value(post: dict) -> float:
     return _signal_number(post, "value")
 
 
-def _plain_text(value: object) -> str:
-    """Visible text of an HTML fragment: tags stripped, entities decoded."""
-    if not isinstance(value, str):
-        return ""
-    return " ".join(html.unescape(_HTML_TAG.sub(" ", value)).split())
-
-
 def _host(link: str) -> str:
     return (urlparse(link).hostname or "").lower()
 
@@ -325,11 +343,11 @@ def _has_content(candidate: dict) -> bool:
         link = project.get("contentHref") or ""
         if _is_reddit_media(link):
             return False
-        return len(_plain_text(project.get("bodyText"))) >= REDDIT_MIN_BODY_CHARS or (
+        return len(plain_text(project.get("bodyText"))) >= REDDIT_MIN_BODY_CHARS or (
             _is_github_repo(link)
         )
     if slot == "hn":
-        return len(_plain_text(project.get("storyText"))) >= HN_MIN_STORY_CHARS
+        return len(plain_text(project.get("storyText"))) >= HN_MIN_STORY_CHARS
     if slot == "video":
         return post.get("agentHandle") == VIDEO_AGENT_HANDLE
     return False
@@ -344,9 +362,7 @@ def _on_topic(candidate: dict) -> bool:
     if candidate["slot"] != "hn":
         return True
     project = candidate["post"].get("project", {})
-    return in_scope(
-        f"{project.get('title', '')} {_plain_text(project.get('storyText'))}"
-    )
+    return hn_on_topic(project.get("title", ""), plain_text(project.get("storyText")))
 
 
 def _meets_floor(candidate: dict) -> bool:
@@ -369,16 +385,39 @@ def _max_known(*values: int | None) -> int | None:
     return max(known) if known else None
 
 
+# github_radar posts only repos its own scope filter kept (topics, About line
+# and README); every other repo post is checked here on what it carries.
+_SCOPE_CHECKED_HANDLE = "@github-radar"
+
+
+def _repo_in_scope(repo_posts: list[dict], found: dict) -> bool:
+    """Its names, About line and topics count as a title; a story needs two keywords."""
+    if any(p.get("agentHandle") == _SCOPE_CHECKED_HANDLE for p in repo_posts):
+        return True
+    names = [found.get("about") or "", *(found.get("topics") or [])]
+    stories = []
+    for post in repo_posts:
+        project = post.get("project", {})
+        names += [
+            project.get("title") or "",
+            project.get("description") or "",
+            *(project.get("topics") or []),
+        ]
+        stories.append(plain_text(project.get("storyText")))
+    return hn_on_topic(" ".join(names), " ".join(stories))
+
+
 def _repo_candidates(
     posts: list[dict], evidence: dict, featured: set[str], now: datetime
 ) -> list[dict]:
     """Qualifying repos, strongest hype score first.
 
     Every repo post (trending, fallback, hidden gems, a GitHub-linked Show HN)
-    joins one pool keyed by repo. A repo qualifies outside the 30-day memory
-    with ``starsThisWeek`` of at least ``DAILY_DIGEST_REPO_MIN_STARS_THIS_WEEK``;
-    unknown star history never qualifies. A linked Show HN post's points become
-    the repo's HN points, over any other story found for it.
+    joins one pool keyed by repo. A repo qualifies when it is in scope, outside
+    the 30-day memory, with ``starsThisWeek`` of at least
+    ``DAILY_DIGEST_REPO_MIN_STARS_THIS_WEEK``; unknown star history never
+    qualifies. A linked Show HN post's points become the repo's HN points,
+    over any other story found for it.
     """
     featured_repos = {_slug_key(url) for url in featured} - {None}
     pool: dict[str, list[dict]] = {}
@@ -395,6 +434,7 @@ def _repo_candidates(
         if (
             stars_this_week is None
             or stars_this_week < DAILY_DIGEST_REPO_MIN_STARS_THIS_WEEK
+            or not _repo_in_scope(repo_posts, found)
         ):
             continue
         show_hn = [p for p in repo_posts if _metric(p) == "hn_points"]
@@ -509,9 +549,10 @@ def compose_daily_digest(
     strongest of its ``digest_candidates`` past its engagement floor whose
     Reddit or HN item has a `what`. An empty slot stays empty: an unused slot
     is never refilled with another kind. When all six slots fill, the video
-    is dropped. Under 2 items, the next such candidates (slot order, then
-    candidate order) top the digest up to 2, ignoring only the engagement
-    floors, and ``belowFloor`` is set; no cross-kind score decides which.
+    is dropped. Under 2 items, candidates of the still-empty kinds (slot order,
+    then candidate order, one per kind) top the digest up towards 2, ignoring
+    only the engagement floors, and ``belowFloor`` is set; no cross-kind score
+    decides which.
 
     Returns ``{"chosen": [{"post", "slot", "evidence"}, ...], "belowFloor"}``
     in message order.
@@ -527,9 +568,12 @@ def compose_daily_digest(
     if len(chosen) > DAILY_DIGEST_MAX_ITEMS:
         chosen = [c for c in chosen if c["slot"] != "video"]
     below_floor = len(chosen) < DAILY_DIGEST_MIN_ITEMS
-    if below_floor:
-        spare = [c for c in others if c not in chosen]
-        chosen += spare[: DAILY_DIGEST_MIN_ITEMS - len(chosen)]
+    for candidate in others if below_floor else []:
+        if len(chosen) == DAILY_DIGEST_MIN_ITEMS:
+            break
+        if candidate["slot"] not in filled:
+            filled.add(candidate["slot"])
+            chosen.append(candidate)
     return {"chosen": chosen, "belowFloor": below_floor}
 
 
@@ -595,12 +639,14 @@ async def _own_story(post: dict) -> dict:
     }
 
 
-async def _gather_evidence(posts: list[dict], now: datetime) -> dict:
-    """The evidence ``compose_daily_digest`` reads, one lookup per repo or story.
+async def _gather_evidence(posts: list[dict], now: datetime) -> tuple[dict, bool]:
+    """(evidence, star history failed): what ``compose_daily_digest`` reads.
 
-    Star history runs once per distinct repo and raises
-    ``StarHistoryBatchFailed`` when over half the repos fail, so a broken
-    source fails the job loudly instead of reading as a quiet GitHub day.
+    One lookup per repo or story. Star history runs once per distinct repo
+    and raises ``StarHistoryBatchFailed`` when over half the repos fail. The
+    digest still goes out with whatever qualifies: no repo has
+    ``starsThisWeek``, so none passes the repo floor, and the flag is stored
+    on the digest. github_radar's own scan keeps failing loudly.
     """
     repo_urls: dict[str, str] = {}
     for post in posts:
@@ -613,8 +659,15 @@ async def _gather_evidence(posts: list[dict], now: datetime) -> dict:
         if _other_slot(post) == "hn"
     }
     stars = {}
+    star_history_failed = False
     if repo_urls:
-        stars, _failures = await fetch_stars_this_week_batch(list(repo_urls), now=now)
+        try:
+            stars, _failures = await fetch_stars_this_week_batch(
+                list(repo_urls), now=now
+            )
+        except StarHistoryBatchFailed as e:
+            logger.warning("Star history failed; no repo qualifies today: %s", e)
+            star_history_failed = True
     limit = asyncio.Semaphore(_EVIDENCE_CONCURRENCY)
 
     async def bounded(lookup):
@@ -638,7 +691,7 @@ async def _gather_evidence(posts: list[dict], now: datetime) -> dict:
             "starsThisWeek": weekly["starsThisWeek"] if weekly else None,
             "starsToday": weekly["starsToday"] if weekly else None,
         }
-    return evidence
+    return evidence, star_history_failed
 
 
 async def _trending_ranks(db, now: datetime) -> dict[str, tuple[int, str]]:
@@ -689,7 +742,7 @@ async def _repo_sources(
     readme = await _fetch_github_readme(client, *key.split("/", 1)) if key else ""
     return {
         "title": project.get("title") or (key or "").split("/")[-1],
-        "about": _plain_text(about),
+        "about": plain_text(about),
         "readme": readme,
         "topics": profile.get("topics") or project.get("topics") or [],
     }
@@ -713,9 +766,9 @@ async def _what_sources(
     if project.get("kind") != "thread":
         return None
     if _other_slot(post) == "reddit":
-        text, minimum = _plain_text(project.get("bodyText")), REDDIT_MIN_BODY_CHARS
+        text, minimum = plain_text(project.get("bodyText")), REDDIT_MIN_BODY_CHARS
     else:
-        text, minimum = _plain_text(project.get("storyText")), HN_MIN_STORY_CHARS
+        text, minimum = plain_text(project.get("storyText")), HN_MIN_STORY_CHARS
     link = project.get("contentHref") or ""
     linked = (
         await _repo_sources(client, _slug_key(link), evidence, None)
@@ -732,13 +785,31 @@ def _source_texts(sources: dict) -> list[str]:
 
 
 def _choose_what(sources: dict | None, grove_what: object) -> tuple[str | None, bool]:
-    """(what, rejected): Grove's grounded sentence, else the About line, else None."""
+    """(what, rejected): Grove's grounded sentence, else the About line, else None.
+
+    The About line is the repo owner's own text, so one with a link or markup
+    stands in for nothing.
+    """
     if sources is None:
         return None, False
     accepted = grounded_what(grove_what, _source_texts(sources))
     if accepted:
         return accepted, False
-    return _clean_what(sources.get("about")), True
+    about = _clean_what(sources.get("about"))
+    return (None if about and carries_link_or_markup(about) else about), True
+
+
+def _blurb(pick: dict, post: dict) -> str:
+    """Grove's blurb when it is safe, else the post's code-built evidence line.
+
+    A post body is built from the item's numbers, but a hidden-gems body can
+    end in a quoted HN comment, so one with a link or markup gives "".
+    """
+    blurb = safe_blurb(pick.get("blurb"))
+    if blurb:
+        return blurb
+    body = post.get("body", "")[:100]
+    return "" if carries_link_or_markup(body) else body
 
 
 def _grove_entry(i: int, post: dict, sources: dict | None) -> dict:
@@ -775,7 +846,7 @@ def _digest_item(
         "title": title,
         "url": project.get("url", ""),
         "kind": project.get("kind", "repo"),
-        "blurb": pick.get("blurb") or post.get("body", "")[:100],
+        "blurb": _blurb(pick, post),
         "what": what,
         "emoji": topic_emoji(topics, f"{what or ''} {title}"),
         "verdict": post.get("verdict") or None,
@@ -827,7 +898,7 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
         return None
 
     featured = await _recently_featured_urls(db, now)
-    evidence = await _gather_evidence(posts, now)
+    evidence, star_history_failed = await _gather_evidence(posts, now)
     # Every candidate is described before any slot is filled, in one Grove
     # call, so a Reddit or HN item whose `what` fails frees its slot for the
     # next of its kind.
@@ -883,6 +954,7 @@ async def generate_daily_digest(db=None, now: datetime | None = None) -> dict | 
         "items": items,
         "belowFloor": composed["belowFloor"],
         "whatRejections": what_rejections,
+        "starHistoryFailed": star_history_failed,
         "publicationSyncStatus": "synced",
         "evidenceContractVersion": 2,
         "createdAt": now,

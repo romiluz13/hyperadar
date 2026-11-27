@@ -4,7 +4,7 @@ One run reads the trending pages (or REST search when they fail), looks each
 repo up, keeps the AI/dev-tools ones, reads their star history, drops likely
 farmed ones, orders the rest by hype score and writes a post for each one
 outside the republish cooldown, up to ``MAX_POSTS_PER_RUN``. No LLM picks a
-repo or sets a verdict (ADR 0007, decision Q3).
+repo or sets a verdict (ADR 0007).
 """
 
 from dataclasses import dataclass
@@ -211,10 +211,10 @@ async def scan(db, now: datetime | None = None) -> int:
     """Run today's selection and write its posts. Returns the repos considered.
 
     Trending failing its loud-failure rule switches discovery to REST search
-    (decision Q5). A repo posted by any agent inside the republish cooldown is
+    (ADR 0007). A repo posted by any agent inside the republish cooldown is
     skipped, and at most ``MAX_POSTS_PER_RUN`` of the rest, highest hype first,
     are written. Writes ``trending_snapshots`` and posts, never ``signals``
-    snapshot rows (decision Q19).
+    snapshot rows, which hidden-gems alone needs.
     """
     now = now or datetime.now(timezone.utc)
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:

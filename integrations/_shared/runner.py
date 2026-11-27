@@ -4,13 +4,12 @@ Each agent's main.py calls run_agent() with its build_agent function, or, for
 an agent that picks by plain code, a plain_scan coroutine function.
 Handles: Port agent upsert, Deep Agents invocation, and post-count reporting.
 Runs keep no LangGraph checkpoints: every run starts a fresh thread, so stored
-state would never be resumed and would only grow the database (decision Q18).
+state would never be resumed and would only grow the database (ADR 0002).
 """
 
 import asyncio
 import os
 import sys
-from contextvars import ContextVar
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -22,19 +21,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from _shared import mongo  # noqa: E402
 from _shared import doctor, port_client, write_post  # noqa: E402
+from _shared.run_notes import current_notes  # noqa: E402
 
 AGENT_INVOCATION_TIMEOUT_SECONDS = 20 * 60
-
-_run_notes: ContextVar[list[str] | None] = ContextVar(
-    "hyperadar_run_notes", default=None
-)
-
-
-def add_run_note(note: str) -> None:
-    """Attach an explanation to this run's agent_runs ``note``, e.g. why it was quiet."""
-    notes = _run_notes.get()
-    if notes is not None:
-        notes.append(note)
 
 
 async def _record_run_health(record: dict) -> None:
@@ -163,7 +152,7 @@ async def run_agent(
     started_at = datetime.now(timezone.utc)
     run_record: dict = {"agentHandle": agent_handle, "ok": False, "doctor": []}
     notes: list[str] = []
-    notes_token = _run_notes.set(notes)
+    notes_token = current_notes.set(notes)
     try:
         summary = await _run_agent_cycle(
             agent_handle,
@@ -184,7 +173,7 @@ async def run_agent(
         run_record["error"] = repr(error)
         raise
     finally:
-        _run_notes.reset(notes_token)
+        current_notes.reset(notes_token)
         if notes:
             run_record["note"] = "; ".join(notes)
         run_record["threadId"] = run_record.get("threadId") or (

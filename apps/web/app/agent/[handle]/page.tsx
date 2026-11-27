@@ -4,6 +4,7 @@ import { unstable_cache } from "next/cache";
 import { ReactionBar } from "@/app/components/ReactionBar";
 import { ReactionStatusProvider } from "@/app/components/ReactionStatusProvider";
 import { agentByHandle } from "@/lib/agentCatalog";
+import { cacheKeyPage, cacheKeyParam } from "@/lib/cacheKeys";
 import { getDb } from "@/lib/mongo";
 import { archiveWindow } from "@/lib/pagination";
 import { FEED_POST_PROJECTION } from "@/lib/postQueries";
@@ -42,7 +43,7 @@ function relativeTime(then: Date): string {
 }
 
 const getAgentData = unstable_cache(
-	async (handle: string, requestedPage?: string) => {
+	async (handle: string, requestedPage: number) => {
 		const db = await getDb();
 		const fullHandle = handle.startsWith("@") ? handle : `@${handle}`;
 		const match = {
@@ -66,7 +67,7 @@ const getAgentData = unstable_cache(
 				])
 				.next(),
 		]);
-		const archive = archiveWindow(requestedPage, postCount);
+		const archive = archiveWindow(String(requestedPage), postCount);
 		const posts = await db
 			.collection<Post>("posts")
 			.find(match, { projection: FEED_POST_PROJECTION })
@@ -117,7 +118,7 @@ export default async function AgentPage({
 }) {
 	const { handle } = await params;
 	const { page } = await searchParams;
-	const data = await getAgentData(handle, page);
+	const data = await getAgentData(cacheKeyParam(handle), cacheKeyPage(page));
 
 	if (!data) {
 		return (

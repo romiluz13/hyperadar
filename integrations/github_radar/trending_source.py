@@ -35,6 +35,8 @@ _LANGUAGE_RE = re.compile(r'itemprop="programmingLanguage">([^<]+)<')
 # The number must sit between the icon's </svg> and the closing tag, so a
 # description that mentions "N stars today" cannot stand in for a missing one.
 _WINDOW_RE = re.compile(r"</svg>\s*([\d,]+) stars? (today|this week)\s*</span>")
+# Not _shared.html_text: a description's inline <a> tags go without adding a
+# space, and its input is one <p> that GitHub escaped, so no "<" run reaches it.
 _TAG_RE = re.compile(r"<[^>]+>")
 _WINDOWS = {"today": "daily", "this week": "weekly"}
 

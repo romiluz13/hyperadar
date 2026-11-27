@@ -53,7 +53,7 @@ _REDDIT_RECENCY_HALF_LIFE_HOURS = 12.0
 
 _OUTFORM_FULL_AT = 3.0  # outperform ratio that earns full breakout marks
 
-# --- Publish gate (ticket 03) — stub threshold, calibrated in ticket 05 -------
+# --- Publish gate: a stub threshold, to be calibrated -----------------------
 _HEAT_THRESHOLD_INITIAL = 40
 _REDDIT_COOLDOWN_DAYS = 7
 _YOUTUBE_COOLDOWN_DAYS = 14
@@ -76,8 +76,8 @@ def should_publish_heat(
     All of:
     - past the source cooldown (7d reddit, 14d youtube — the latter fixes the
       re-post-every-run bug)
-    - heat_score >= threshold (stub 40, calibrated from the post-gate score
-      distribution in ticket 05)
+    - heat_score >= threshold (stub 40, to be calibrated from the post-gate
+      score distribution)
     - past the source noise floor (reddit: >=20 upvotes and >=1 comment;
       youtube: >=100 views and age >=1h)
     - when the baseline confidence is high, a genuine breakout (>=3.0x the

@@ -2,7 +2,7 @@
 
 Every agent-creator calls write_post() to persist a hype post. A new claim is
 private until its evidence is written; the embedding and its audit are best
-effort (decision Q4): a post whose embedding failed is still published, carries
+effort: a post whose embedding failed is still published, carries
 ``embeddingMissing`` (``embeddingAuditMissing`` for a missing audit), and
 repair_pending_posts backfills both later. Port
 twins are mirrored best effort: a Port failure is logged, never blocks

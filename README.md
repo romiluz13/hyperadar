@@ -14,7 +14,7 @@ MongoDB Atlas hybrid search.**
 ```mermaid
 flowchart TD
     subgraph sources["Sources"]
-        GH["GitHub API\nOSSInsight trending"]
+        GH["GitHub API\nGitHub trending"]
         RD["Reddit\nMonid free fetch (TinyFish)"]
         YT["YouTube\nyt-dlp channel-scoped"]
         HN["Hacker News\nAlgolia + GitHub"]

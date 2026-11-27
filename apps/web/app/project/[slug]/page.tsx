@@ -6,6 +6,7 @@ import type { ObjectId } from "mongodb";
 
 import { Comments } from "@/app/components/Comments";
 import { Sparkline } from "@/app/components/Sparkline";
+import { cacheKeyParam, cacheKeyPostId } from "@/lib/cacheKeys";
 import { sourceFamily } from "@/lib/feed";
 import { getDb } from "@/lib/mongo";
 import {
@@ -270,8 +271,8 @@ export async function generateMetadata({
 	searchParams: Promise<{ post?: string }>;
 }): Promise<Metadata> {
 	const { slug } = await params;
-	const { post } = await searchParams;
-	const data = await getProjectData(slug, post);
+	const post = cacheKeyPostId((await searchParams).post);
+	const data = await getProjectData(cacheKeyParam(slug), post);
 	if (!data) return { title: "Signal unavailable · HypeRadar" };
 	const title = cleanDisplayTitle(data.project.title);
 	const description =
@@ -301,8 +302,8 @@ export default async function ProjectPage({
 	searchParams: Promise<{ post?: string }>;
 }) {
 	const { slug } = await params;
-	const { post } = await searchParams;
-	const data = await getProjectData(slug, post);
+	const post = cacheKeyPostId((await searchParams).post);
+	const data = await getProjectData(cacheKeyParam(slug), post);
 
 	if (!data) {
 		return (

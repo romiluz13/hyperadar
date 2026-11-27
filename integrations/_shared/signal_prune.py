@@ -1,4 +1,4 @@
-"""Daily prune of hidden-gems' pre-publication ``signals`` snapshots (decision Q19).
+"""Daily prune of hidden-gems' pre-publication ``signals`` snapshots.
 
 @hidden-gems stores one star/fork snapshot per candidate per day with an empty
 ``postId``. Snapshots older than 60 days no longer feed any momentum window, so

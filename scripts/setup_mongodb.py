@@ -80,7 +80,7 @@ def ensure_ttl_index(col, field, expire_after_seconds, name):
 
 
 def ensure_storage_bounds(db):
-    """Keep stored data bounded so it fits Atlas Free (ticket 09)."""
+    """Keep stored data bounded so it fits Atlas Free."""
     for collection, field, days, name in TTL_INDEXES:
         ensure_ttl_index(db[collection], field, days * _DAY_SECONDS, name)
     ensure_index(db.posts, [("postedAt", -1), ("rankScore", -1)], name="feed_recent")

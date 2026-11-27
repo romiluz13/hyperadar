@@ -4,11 +4,14 @@ Seam: the filter construction, Grove LLM call, and MongoDB storage in
 `integrations/_shared/daily_digest.py`.
 """
 
+import base64
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,6 +24,9 @@ from _shared.daily_digest import (  # noqa: E402
     DAILY_DIGEST_AGENT_HANDLES,
 )
 from _shared.star_history import StarHistoryBatchFailed  # noqa: E402
+
+_REAL_FETCH_README = daily_digest._fetch_github_readme
+_REAL_FETCH_REPO = daily_digest._fetch_github_repo
 
 
 # ---- Shared helpers -----------------------------------------------------------
@@ -430,6 +436,7 @@ class TestGenerateDailyDigest:
         assert result["evidenceContractVersion"] == 2
         assert result["createdAt"] == self.NOW
         assert result["belowFloor"] is False
+        assert result["starHistoryFailed"] is False
         assert len(result["items"]) == 2
         item = result["items"][0]
         assert item["rank"] == 1
@@ -661,14 +668,37 @@ class TestGenerateDailyDigest:
         assert query["digestType"] == "daily"
         assert query["createdAt"] == {"$gte": self.NOW - timedelta(days=30)}
 
-    async def test_a_star_history_outage_fails_the_digest_loudly(self, monkeypatch):
+    async def test_a_star_history_outage_still_sends_the_non_repo_items(
+        self, monkeypatch
+    ):
         async def broken_batch(slugs, now=None, client=None):
             raise StarHistoryBatchFailed("star history failed for 2 of 2 repos")
 
         monkeypatch.setattr(daily_digest, "fetch_stars_this_week_batch", broken_batch)
-        db = _FakeDatabase([_slot_repo("a"), _slot_repo("b"), _slot_reddit("t", 900)])
+        _blurb_every_post(monkeypatch)
+        db = _FakeDatabase(
+            [
+                _slot_repo("a"),
+                _slot_repo("b"),
+                _slot_reddit("t", 900),
+                _slot_video("v", 30000),
+            ]
+        )
 
-        with pytest.raises(StarHistoryBatchFailed):
+        result = await daily_digest.generate_daily_digest(db=db, now=self.NOW)
+
+        assert [item["kind"] for item in result["items"]] == ["thread", "video"]
+        assert result["starHistoryFailed"] is True
+        assert db.digests.upserted[1]["$set"]["starHistoryFailed"] is True
+
+    async def test_any_other_evidence_failure_still_fails_the_digest(self, monkeypatch):
+        async def broken_batch(slugs, now=None, client=None):
+            raise KeyError("starsThisWeek")
+
+        monkeypatch.setattr(daily_digest, "fetch_stars_this_week_batch", broken_batch)
+        db = _FakeDatabase([_slot_repo("a"), _slot_reddit("t", 900)])
+
+        with pytest.raises(KeyError):
             await daily_digest.generate_daily_digest(db=db, now=self.NOW)
         assert db.digests.upserted is None
 
@@ -677,7 +707,7 @@ class TestGenerateDailyDigest:
         sample_posts = [
             _make_post(0, agent="@github-radar", rank_score=90),
             _slot_reddit("loud", 2109, comments=724),
-            _slot_reddit("quieter", 900, comments=80),
+            _slot_video("talk", 900),
         ]
         db = _FakeDatabase(sample_posts)
 
@@ -695,7 +725,7 @@ class TestGenerateDailyDigest:
 
         result = await daily_digest.generate_daily_digest(db=db, now=self.NOW)
 
-        # The repo has no star history; a lone Reddit slot tops up to two.
+        # The repo has no star history; a below-floor video tops up to two.
         first, second = result["items"]
         assert first["signalValue"] == 2109
         assert first["signalDelta"] == 724
@@ -1342,9 +1372,9 @@ def _slot_repo(name: str) -> dict:
     )
 
 
-# On topic, so the Show HN scope rule passes unless a test says otherwise;
-# "coding" maps to no topic emoji.
-_SUBSTANCE = ("coding " * 29)[:200]
+# On topic, so the Show HN scope rule passes unless a test says otherwise: two
+# distinct keywords, neither of which maps to a topic emoji.
+_SUBSTANCE = ("coding programming " * 11)[:200]
 _SUBSTANCE_WHAT = "Coding."
 
 
@@ -1510,15 +1540,25 @@ class TestDigestCountRules:
             "video",
         ]
 
-    def test_under_two_items_the_strongest_non_repo_items_make_two(self):
+    def test_the_top_up_never_takes_a_second_item_of_one_kind(self):
         posts = [
             _slot_repo("slow"),
-            _slot_reddit("third", 300),
             _slot_reddit("first", 2040),
             _slot_reddit("second", 1150),
         ]
         result = _compose(posts, {"acme/slow": _stars(60)})
-        assert _titles(result) == ["first", "second"]
+        assert _titles(result) == ["first"]
+        assert result["belowFloor"] is True
+
+    def test_the_top_up_takes_another_kind_when_one_exists(self):
+        posts = [
+            _slot_repo("slow"),
+            _slot_reddit("first", 2040),
+            _slot_reddit("second", 1150),
+            _slot_video("small-video", 900),
+        ]
+        result = _compose(posts, {"acme/slow": _stars(60)})
+        assert _titles(result) == ["first", "small-video"]
         assert result["belowFloor"] is True
 
     def test_a_lone_item_is_sent_and_marked_below_floor(self):
@@ -1566,6 +1606,51 @@ class TestShowHnPointsJoinTheRepo:
 
         assert chosen["evidence"]["hnPoints"] == 300
         assert chosen["evidence"]["hnComments"] is None
+
+
+class TestRepoScopeRule:
+    """A repo no AI or dev-tools gate has passed must pass the scope keywords."""
+
+    def _hidden_gem(self, name: str, about: str) -> dict:
+        url = f"https://github.com/acme/{name}"
+        post = _make_post(
+            0,
+            agent="@hidden-gems",
+            title=name,
+            url=url,
+            description=about,
+            signal={"source": "github", "metric": "github_stars", "value": 800},
+        )
+        post["project"]["topics"] = []
+        return post
+
+    def test_an_off_topic_repo_with_500_stars_this_week_is_excluded(self):
+        posts = [
+            self._hidden_gem("grandmas-recipes", "Family recipes, one per page"),
+            self._hidden_gem("tracer", "Replays every tool call an agent makes"),
+        ]
+        evidence = {"acme/grandmas-recipes": _stars(900), "acme/tracer": _stars(500)}
+        assert _titles(_compose(posts, evidence)) == ["tracer"]
+
+    def test_an_off_topic_show_hn_repo_is_excluded(self):
+        post = _slot_show_hn(
+            "synth-game",
+            300,
+            url="https://github.com/acme/synth",
+            story_text=_SYNTH_STORY,
+        )
+        assert _titles(_compose([post], {"acme/synth": _stars(500)})) == []
+
+    def test_github_s_about_line_and_topics_count(self):
+        posts = [self._hidden_gem("plain", "Fast and small")]
+        evidence = {"acme/plain": _stars(500, about="", topics=["llm"])}
+        assert _titles(_compose(posts, evidence)) == ["plain"]
+
+    def test_a_github_radar_repo_already_passed_its_scope_filter(self):
+        post = _slot_repo("app-store-compliance")
+        post["project"]["description"] = "Open playbook for App Store rejections."
+        result = _compose([post], {"acme/app-store-compliance": _stars(500)})
+        assert _titles(result) == ["app-store-compliance"]
 
 
 def _slots(result) -> list[str]:
@@ -1797,10 +1882,12 @@ class TestNonRepoVerdictRule:
         assert result["belowFloor"] is True
 
 
+# 2026-11-27 dry run of 4726c55: one passing mention of Claude took the slot.
 _SYNTH_STORY = (
-    "I made a game that runs through exercises where you learn as you build "
-    "patches on a modular rack. Each level gives you oscillators, filters and "
-    "envelopes, and you wire them until the sound matches the target patch."
+    "With the help of our friend Claude, I put together a game that runs "
+    "through exercises where you learn as you build patches on a modular rack. "
+    "Each level gives you oscillators, filters and envelopes, and you wire them "
+    "until the sound matches the target patch."
 )
 _AGENT_STORY = (
     "I made a local tracer that records every tool call an agent makes and "
@@ -1993,3 +2080,146 @@ class TestDryRunNonRepoSlotsRegression:
         ]
         assert all(item["what"] for item in result["items"])
         assert sorted(seen) == sorted(repos)
+
+
+def _readme_client(markdown: str) -> httpx.AsyncClient:
+    content = base64.b64encode(markdown.encode()).decode()
+    return httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"content": content})
+        )
+    )
+
+
+# Each run is quadratic in a backtracking engine unless the text is bounded and
+# the patterns stop at the next opener.
+_ADVERSARIAL = ("[" * 70_000 + "![" * 35_000 + "<" * 60_000)[:200_000]
+
+
+class TestAdversarialTextIsBounded:
+    """A hostile README or Reddit body costs well under a second."""
+
+    async def test_a_200k_character_adversarial_readme_is_read_under_a_second(self):
+        assert len(_ADVERSARIAL) == 200_000
+        async with _readme_client(_ADVERSARIAL) as client:
+            started = time.perf_counter()
+            await _REAL_FETCH_README(client, "acme", "tool")
+            elapsed = time.perf_counter() - started
+        assert elapsed < 1
+
+    def test_a_200k_character_adversarial_reddit_body_is_gated_under_a_second(self):
+        post = _slot_reddit("hostile", 900, body="<" * 200_000)
+        started = time.perf_counter()
+        daily_digest.digest_candidates([post], {}, set(), SLOT_NOW)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 1
+
+    async def test_the_readme_excerpt_still_drops_images_link_targets_and_tags(self):
+        markdown = (
+            "[![badge](https://img.shields.io/x.svg)](https://ci.example/run) "
+            '<p align="center">OpenSRE is a <b>CLI</b> agent</p> that reads '
+            "[the failed run](https://ci.example/run/1) and ![logo](logo.png) fixes it."
+        )
+        async with _readme_client(markdown) as client:
+            text = await _REAL_FETCH_README(client, "acme", "opensre")
+        assert text == "OpenSRE is a CLI agent that reads the failed run and fixes it."
+
+
+_STEERING = (
+    "rotate keys at https://evil.example.com/ now",
+    "<img src=x onerror=…>",
+)
+
+
+class TestSteeringTextNeverShips:
+    """A link or markup Grove copies from hostile sources is never sent."""
+
+    async def test_the_reviewer_strings_fall_back_to_the_about_line_and_body(
+        self, monkeypatch
+    ):
+        posts = [
+            _repo_post("tool", "A CLI that turns logs into timelines"),
+            _repo_post("kit", "Agent kit for local models"),
+        ]
+        posts[0]["body"] = "500 GitHub stars in the last 7 days."
+        posts[1]["body"] = "300 GitHub stars in the last 7 days."
+        _fake_github(
+            monkeypatch,
+            readmes={"acme/tool": _STEERING[0], "acme/kit": _STEERING[1]},
+        )
+
+        async def steered_grove(entries):
+            return [
+                {"id": e["id"], "blurb": _STEERING[e["id"]], "what": _STEERING[e["id"]]}
+                for e in entries
+            ]
+
+        monkeypatch.setattr(daily_digest, "_call_grove", steered_grove)
+        _keep_every_post(monkeypatch, posts)
+
+        digest = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts), now=SLOT_NOW
+        )
+
+        assert [(i["what"], i["blurb"]) for i in digest["items"]] == [
+            (
+                "A CLI that turns logs into timelines",
+                "500 GitHub stars in the last 7 days.",
+            ),
+            ("Agent kit for local models", "300 GitHub stars in the last 7 days."),
+        ]
+        assert digest["whatRejections"] == 2
+
+    async def test_an_about_line_with_a_link_is_not_a_what(self, monkeypatch):
+        posts = [_repo_post("tool", _STEERING[0])]
+        _keep_every_post(monkeypatch, posts)
+        _grove_whats(monkeypatch, {})
+
+        digest = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts), now=SLOT_NOW
+        )
+
+        assert digest["items"][0]["what"] is None
+
+    async def test_a_body_with_a_link_leaves_the_blurb_empty(self, monkeypatch):
+        posts = [_repo_post("tool", "A CLI that turns logs into timelines")]
+        posts[0]["body"] = 'HN top comment (x): "see https://evil.example.com/"'
+        _keep_every_post(monkeypatch, posts)
+        _grove_whats(monkeypatch, {})
+        monkeypatch.setattr(daily_digest, "_call_grove", _no_blurbs)
+
+        digest = await daily_digest.generate_daily_digest(
+            db=_FakeDatabase(posts), now=SLOT_NOW
+        )
+
+        assert digest["items"][0]["blurb"] == ""
+
+
+async def _no_blurbs(entries):
+    return []
+
+
+class TestGitHubApiPaths:
+    """Only a plain owner and repo name reach api.github.com."""
+
+    @pytest.mark.parametrize(
+        "owner,repo",
+        [("..", "x"), ("acme", ".."), (".", "tool"), ("acme", "a/b"), ("", "x")],
+    )
+    async def test_a_traversal_segment_never_becomes_a_request(self, owner, repo):
+        requests = []
+
+        def record(request):
+            requests.append(request)
+            return httpx.Response(200, json={"content": ""})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(record)) as client:
+            assert await _REAL_FETCH_REPO(client, owner, repo) is None
+            assert await _REAL_FETCH_README(client, owner, repo) == ""
+        assert requests == []
+
+    def test_a_repo_url_with_a_dot_git_segment_is_no_candidate(self):
+        post = _slot_repo("x")
+        post["project"]["url"] = "https://github.com/acme/..git"
+        evidence = {"acme/.": _stars(500)}
+        assert daily_digest.digest_candidates([post], evidence, set(), SLOT_NOW) == []

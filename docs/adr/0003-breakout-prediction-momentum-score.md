@@ -1,7 +1,8 @@
 # ADR 0003: Breakout Prediction Momentum Score for Hidden Gems
 
 **Date:** 2026-07-21
-**Status:** Accepted
+**Status:** Accepted. Superseded for @github-radar by ADR 0007, which picks
+trending repos by the hype score; it still holds for @hidden-gems.
 
 ## Context
 

@@ -34,7 +34,7 @@ from _shared.mongo import (
     get_last_published_days,
     load_active_star_histories,
 )
-from _shared.runner import add_run_note
+from _shared.run_notes import add_run_note
 from hidden_gems.tracker import track_daily_snapshots
 
 _github_token = os.environ.get("GITHUB_TOKEN", "")
