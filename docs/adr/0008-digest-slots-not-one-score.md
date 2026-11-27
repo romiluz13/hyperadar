@@ -27,3 +27,15 @@ The digest ranked every kind of item on one `digestScore`, where Reddit upvotes 
 
 - GitHub always leads. A weak day gives a shorter message, not filler.
 - Do not merge the kinds back into one score: their signals don't share a scale, and that merge caused the 2026-11-26 digest.
+
+## Amended 2026-11-27: up to 10 items, and a hidden-gem slot
+
+Rom asked for "5 to 10, not only 5" and for hidden gems every day. Before this, a hidden gem reached the digest only past the 100 stars-this-week repo floor, which a young repo almost never has: none of hidden-gems' daily picks reached RomBot.
+
+- **Slots, in order:** up to 5 repos (hype score, 100+ stars this week); up to 2 hidden gems (hidden-gems' own score, no star floor, the repo scope rule and a validated What, never a repo already leading); up to 2 Reddit threads; 1 Show HN post; 1 video.
+- **Count:** at most 10 items. When all eleven places fill, the video goes first. The 2-item top-up is unchanged.
+- **Every repo needs a What too.** On the first 10-item dry run a fifth repo went out with none (an empty About line, Grove's sentence rejected). A repo without one gives its slot to the next, as a thread does.
+- **Candidates:** Grove describes up to two candidates past each slot's capacity, the repo slots included.
+- A gem item carries `hiddenGem: true`, so RomBot can mark it.
+- The floors stay: a weak day sends fewer than 5 rather than filler.
+

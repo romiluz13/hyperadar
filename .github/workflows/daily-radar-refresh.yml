@@ -2,22 +2,59 @@ name: Daily Radar Refresh
 
 on:
   schedule:
-    # 00:23 UTC every day — the digest must be ready before RomBot fetches at
-    # 09:30 UTC (12:30 Israel IDT) or 10:30 UTC (12:30 Israel IST). GitHub
-    # starts scheduled runs late: over 16 days a 05:00 schedule began 4.1-7.9h
-    # late (median 4.9h) and the run took up to 22 minutes, so the digest
-    # landed after the 09:30 UTC fetch on 14 of 15 days and after 10:30 UTC on
-    # 5 of 16. Replaying those delays at 00:23 puts the digest done by 08:31
-    # UTC at the latest. The odd minute avoids the top-of-hour rush.
+    # The digest must be ready before RomBot fetches at 09:30 UTC (12:30 Israel
+    # IDT) or 10:30 UTC (12:30 Israel IST). GitHub starts scheduled runs late
+    # and may drop one under load: from 2026-11-11 to 11-26 the 00:23 schedule
+    # began 6.4-9.8h late, and the 11-24 digest landed at 10:19 UTC. Three
+    # chances, the first to start does the day and the `due` job turns the
+    # later ones into a no-op. Every schedule stays inside one UTC day, since
+    # the digest is dated by the day it runs. Odd minutes avoid the
+    # top-of-hour rush.
     - cron: "23 0 * * *"
+    - cron: "23 2 * * *"
+    - cron: "23 4 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A later schedule waits for a running one, then finds today's digest served.
+# Only schedules share the group: a group keeps one pending run and a newer
+# arrival cancels it, which must never cancel a manual run.
+concurrency:
+  group: ${{ github.event_name == 'schedule' && 'daily-radar-schedule' || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
+  due:
+    name: Is today's digest still due
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      # Reads what RomBot reads. Any failure to read it counts as due, and a
+      # manual run always runs.
+      - name: Check the served digest's date
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          today=$(date -u +%F)
+          served=$(curl -sS -m 20 https://hyperadar.today/api/daily-digest | jq -r '.date // empty' || true)
+          [[ "$served" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || served=""
+          if [ "$EVENT" = schedule ] && [ "$served" = "$today" ]; then
+            echo "Today's digest ($today) is already served; nothing to do."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Served digest: ${served:-none}; running for $today."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   run-all-agents:
     name: Run ${{ matrix.agent }}
+    needs: [due]
+    if: needs.due.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -133,8 +170,8 @@ jobs:
     name: Generate Daily Digest
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [run-all-agents]
-    if: always()
+    needs: [due, run-all-agents]
+    if: always() && needs.due.outputs.run == 'true'
 
     steps:
       - name: Check out HypeRadar
@@ -180,8 +217,11 @@ jobs:
 
   notify:
     name: Notify on failure
-    needs: [run-all-agents, generate-digest]
-    if: always() && (needs.run-all-agents.result != 'success' || needs.generate-digest.result != 'success')
+    needs: [due, run-all-agents, generate-digest]
+    if: >-
+      always() && (needs.due.result != 'success' ||
+      (needs.due.outputs.run == 'true' &&
+      (needs.run-all-agents.result != 'success' || needs.generate-digest.result != 'success')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -191,16 +231,17 @@ jobs:
           # ntfy topic URL (https://ntfy.sh/<topic>); the phone app shows the
           # alert and opens the run on tap.
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          DUE_RESULT: ${{ needs.due.result }}
           AGENTS_RESULT: ${{ needs.run-all-agents.result }}
           DIGEST_RESULT: ${{ needs.generate-digest.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ -z "$ALERT_WEBHOOK_URL" ]; then
-            echo "::error::HypeRadar daily refresh failed (agents: $AGENTS_RESULT, digest: $DIGEST_RESULT) and ALERT_WEBHOOK_URL is not configured, so no alert was sent."
+            echo "::error::HypeRadar daily refresh failed (due check: $DUE_RESULT, agents: $AGENTS_RESULT, digest: $DIGEST_RESULT) and ALERT_WEBHOOK_URL is not configured, so no alert was sent."
             exit 1
           fi
           curl -sS -f --max-time 15 -X POST "$ALERT_WEBHOOK_URL" \
             -H "Title: HypeRadar daily refresh failed" \
             -H "Priority: high" \
             -H "Click: $RUN_URL" \
-            -d "Agents: $AGENTS_RESULT, digest: $DIGEST_RESULT. Tomorrow's digest may be stale. Tap to open the run."
+            -d "Due check: $DUE_RESULT, agents: $AGENTS_RESULT, digest: $DIGEST_RESULT. Tomorrow's digest may be stale. Tap to open the run."

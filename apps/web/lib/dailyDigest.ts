@@ -23,6 +23,8 @@ export type DailyDigestItem = {
 	what?: string | null;
 	/** Topic emoji chosen by code from a fixed map. */
 	emoji?: string;
+	/** A repo @hidden-gems found, in the gem slot after the trending repos. */
+	hiddenGem?: boolean;
 	verdict?: string | null;
 	starsThisWeek?: number | null;
 	starsToday?: number | null;
