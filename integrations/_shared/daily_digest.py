@@ -391,18 +391,18 @@ _SCOPE_CHECKED_HANDLE = "@github-radar"
 
 
 def _repo_in_scope(repo_posts: list[dict], found: dict) -> bool:
-    """Its names, About line and topics count as a title; a story needs two keywords."""
+    """Its names, About line and GitHub topics count as a title; a story needs two keywords.
+
+    A post's own ``project.topics`` are the posting agent's labels (hidden-gems
+    tags every post "ai"), not the repo's, so only GitHub's topics count.
+    """
     if any(p.get("agentHandle") == _SCOPE_CHECKED_HANDLE for p in repo_posts):
         return True
     names = [found.get("about") or "", *(found.get("topics") or [])]
     stories = []
     for post in repo_posts:
         project = post.get("project", {})
-        names += [
-            project.get("title") or "",
-            project.get("description") or "",
-            *(project.get("topics") or []),
-        ]
+        names += [project.get("title") or "", project.get("description") or ""]
         stories.append(plain_text(project.get("storyText")))
     return hn_on_topic(" ".join(names), " ".join(stories))
 

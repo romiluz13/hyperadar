@@ -1621,7 +1621,8 @@ class TestRepoScopeRule:
             description=about,
             signal={"source": "github", "metric": "github_stars", "value": 800},
         )
-        post["project"]["topics"] = []
+        # hidden-gems stamps every post with these labels (hidden_gems/source.py).
+        post["project"]["topics"] = ["hn", "hidden-gem", "ai"]
         return post
 
     def test_an_off_topic_repo_with_500_stars_this_week_is_excluded(self):

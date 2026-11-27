@@ -20,6 +20,7 @@ chooses it.
 
 import html
 import re
+import unicodedata
 
 WHAT_MAX_WORDS = 25
 BLURB_MAX_SENTENCES = 2
@@ -82,8 +83,15 @@ TOPIC_EMOJI = (
 )
 
 _TOKEN = re.compile(r"[^\W_]+")
+# Chat apps link any name.tld, and no TLD list stays complete, so every
+# name.letters shape counts as a link (Fireworks.ai included: it would render as
+# one), in any script. File suffixes that are no TLD keep names like Node.js and
+# package.json; .md and .py are real TLDs, so AGENTS.md counts as a link.
+_FILE_SUFFIXES = "js|ts|jsx|tsx|txt|json|yml|yaml|toml|lock|cfg|ini"
 _LINK_OR_MARKUP = re.compile(
-    r"://|www\.|[\w-]\.[a-z]{2,}/|\w@[\w-]+\.|\b(?:javascript|mailto):|\]\(|[<>`]",
+    r"://|www\.|\w@[\w-]+\.|\b(?:javascript|mailto):|\]\(|[<>`]"
+    rf"|[\w-][.\u3002\uff61](?!(?:{_FILE_SUFFIXES})(?![^\W\d_]))[^\W\d_]{{2}}"
+    r"|\b\d{1,3}(?:\.\d{1,3}){3}\b",
     re.IGNORECASE,
 )
 # Only the first mark of a run may start a match, so "!!!!" stays linear.
@@ -104,8 +112,14 @@ def _forms(token: str) -> set[str]:
 
 
 def carries_link_or_markup(text: str) -> bool:
-    """Whether ``text`` holds a link shape or a markup character."""
-    return bool(_LINK_OR_MARKUP.search(text))
+    """Whether ``text`` holds a link shape or a markup character.
+
+    NFKC folds full-width letters and dots to ASCII, and dropping format
+    characters (zero-width spaces) stops them splitting a domain unseen.
+    """
+    folded = unicodedata.normalize("NFKC", text)
+    visible = "".join(c for c in folded if unicodedata.category(c) != "Cf")
+    return bool(_LINK_OR_MARKUP.search(visible))
 
 
 def _cleaned(text: object, max_words: int, max_chars: int) -> str | None:
